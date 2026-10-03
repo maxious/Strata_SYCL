@@ -270,6 +270,9 @@ if(STRATA_SYCL_PARITY)
   add_test(NAME reorder_esimd_bench COMMAND reorder_esimd_bench --selftest)   # the reorder+ESIMD decode correctness gate
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  # the GDN recurrence alone, its variants selected by env (DPCT1053 lead: the key-head kernel's cp.async)
+  add_executable(gdn_rec_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gdn_rec_bench.cpp)
+  target_link_libraries(gdn_rec_bench PRIVATE strata_prefill)
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
   add_executable(xmx_int8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_int8_bench.cpp)   # int8 XMX IQ4_NL GEMM prototype
