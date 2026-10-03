@@ -556,12 +556,14 @@ test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 
   `qsa_prompt_attn`, `qsa_select`'s block scores, `native_qsa_score`. The SYCL build takes the "older card"
   fallback the CUDA build uses below sm_80. `qsa_prompt_attn` also has an XMX version (`joint_matrix`, opt-in
   `STRATA_PROMPT_ATTN_XMX=1`): correct, but slower than the fallback (see "XMX prompt attention v2").
-- The ggml MMQ prefill path (`moe_mmq.cu`) is not built. **Decided 2026-10-03 (experiment 09):** the SYCL
-  i-quant prompt matmul was ported (mmvq `mul_mat_vec_q_iq*_q8_1` kernels beind `strata::prefill::mmq`) and is
-  parity-exact and CUDA-free, but a measured ~6x prefill regression (73 vs 571.7 tok/s at 1,280 tokens: the
-  matvec shape's per-token i-quant dots lose to oneMKL GEMM - same reason llama.cpp keeps SYCL MMQ off,
-  `supports_mmq`->false). Kept **opt-in** (`STRATA_PREFILL_MMQ=1`; default off); the FP16 dequant+oneMKL path
-  stays the default at 571.7 tok/s. A real prompt win needs a GEMM-shaped INT8 path, not a matvec port.
+- The ggml MMQ prefill path (`moe_mmq.cu`) is not built. **Decided 2026-10-03 (experiments 09 + 10):** the SYCL
+  i-quant prompt matmul was ported (mmvq `mul_mat_vec_q_iq*_q8_1` kernels behind `strata::prefill::mmq`),
+  parity-exact and CUDA-free, but a measured ~6x prefill regression (73 vs 571.7 tok/s at 1,280 tokens). Then
+  researched for the GEMM-shaped INT8 path: **llama.cpp has none for SYCL i-quants** (MMQ disabled,
+  `supports_mmq`->false; reorder-MMVQ = Q1_0..Q6_K only; the only GEMM-shaped i-quant path is CUDA
+  `mmq-load-tiles.cuh`, tensor-core-tuned, and the B60's dp4a measured 0.24-0.37x of oneMKL FP16). MMQ stays
+  **opt-in** (`STRATA_PREFILL_MMQ=1`); the FP16 dequant+oneMKL path is the accepted prompt frontier at
+  571.7 tok/s.
 - AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
   compiling on the first window).
 
