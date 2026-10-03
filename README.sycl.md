@@ -92,6 +92,30 @@ Coder IQ1_M unless noted.
 
 ---
 
+**New since the last revision (2026-10-04; B60 with VTune 2026.4 and the IGC ISA dump).**
+
+- **The decode stall that had no explanation was a completion gate, not the graph.** `verify.cpp`'s per-layer
+  wait asked `DPCT_CHECK_ERROR(cs_->ext_oneapi_empty())` for a yes/no; that macro evaluates its expression as a
+  *statement and discards its value*, so `q != 1` was always true and the host abandoned a layer ~2 ms after any
+  pause while reporting "graph finished". One statement fixed it: decode **17.4 tok/s** (16 tokens) and
+  **20.2-20.7** (32 tokens). The capture layer is clean (23 exactly-once captures, 0 breaks, node counts pinned by
+  two goldens in `sycl/bench/graph-golden/`) and the stall reproduced with the graphs removed entirely, so the
+  graph was never the fault.
+- **GPU Hotspots works with hardware counters** once `dev.xe.observation_paranoid=0`. On a 256-token decode: GPU
+  time 15.141 s of 29.9 s elapsed, **XVE array stalled/idle 92.3%** of GPU-busy time, top kernels
+  `native_mmvq_q6k_wide_a2` 3.713 s, `wait_flag_ge_kernel` (the handshake spin) 2.510 s,
+  `native_gu_port<18,8>` 1.426 s. Collection perturbs the handshake, so the ranking is trustworthy and the token
+  stream under instrumentation is not.
+- **The top kernel is pipe-bound, not memory-bound.** `mmvq_bench` under stall sampling: **Pipe 16.8% of samples
+  against Send 0.0%** (Send is the memory stall). Its 384 B spill is measurably free (256 GRF removes it; 26.1 us
+  either way - exp 21), it is not bandwidth-limited (281 GB/s at 1 column, of ~608 peak) and not
+  parallelism-starved (20480 rows: 205.3 GB/s).
+- **The port still links no oneDNN.** oneDNN **3.11.4** is installed (`/opt/intel/oneapi/dnnl/2026.0/`,
+  `libdnnl.so.3.11`, a CMake package dir, SYCL in the same library) and `grep dnnl sycl/CMakeLists.txt` is empty.
+  See the new library tier in the todo.
+
+---
+
 ## 3. Models in the checkout that run on Strata
 
 The port is validated against these GGUF shards, all under the llama.cpp checkout's parent folder
@@ -141,6 +165,33 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   kernels' column-vectorization. NOT wired into production (it would regress). Parked as not-a-win; do not
   reopen without new measurements. (The earlier "2.13x" note was a bench bug - it ran the single-column
   kernel once against nc columns.)
+  - exp 22/23 (2026-10-04) add the half this item was missing: for the Q6_K wide kernel the target is **not**
+    memory. Its stalls are Pipe 16.8% against Send 0.0%, and its best rate is 281 GB/s at 1 column - so a reorder
+    has no stall to remove there, and the 44.9 -> 54 tok/s alignment win cited above was a *different*, alignment-
+    bound case. Keep this item for the types INTEL.md still lists as misaligned; do not expect it to move Q6_K.
+
+- [ ] **The dense decode MMVQ (Q6_K/Q8_0/Q5_K wide): ~25% of decode GPU time and PIPE-bound.** Exp 20 puts
+  `native_mmvq_q6k_wide_a2` at **3.713 s of 15.141 s** GPU time on a 256-token decode; exp 23 puts its stalls at
+  **Pipe 16.8% vs Send 0.0%**; exp 22 gives the cost curve the engine lives on:
+
+  | `mmvq_bench` cols (2560x2560, 4 cols = the engine's shape) | 1 | 2 | 4 | 6 | 8 |
+  |---|---|---|---|---|---|
+  | us / GB/s of weights | 19.1 / 281 | 21.5 / 250 | 26.2 / 206 | 35.9 / 150 | 55.4 / 97 |
+
+  The engine calls it at **ncols = 1** (`layer.cpp:154`, every layer's dense projection, x quantized for one
+  token) and at **ncols = T** (`mtp.cpp`, the drafter's window, T up to 6 with `--spec 4`). Avenues, cheapest
+  first:
+  1. **Decode slimming on the pipe.** The currency is ops on the bottleneck pipe *per weight byte* - a lighter
+     Q6_K unpack/scale sequence - **not** instruction count: exp 21 removed 23 instructions (2.3%) for 0% change.
+     Gate: `mmvq_bench` (26.1 us) plus its `wide vs shared rel 5.449e-08` correctness line.
+  2. **The `NCOLS>=5` unroll.** Cost per added pair of columns roughly doubles (2->4 -> 4->6 -> 6->8), and
+     `NCOLS=8` spills 6272 B in 1631 instructions against 384 B / 985 at `NCOLS=4` - the register blow-up is a
+     symptom of unrolling all columns into one work-item. A small column *loop* instead of a full unroll is the
+     thing to try, measured against the curve above; llama.cpp's `Q4_K multi-column MMVQ redundant-work cut`
+     (#27062, in the mined list below) is the same shape of change for a sibling type.
+  3. **XMX / oneMKL** - see the library tier below.
+  Do not redo: the 384 B spill (exp 21: free) and the cache policy (exp 22: the sweep was null because the option
+  never reached the compiler, so it is untested rather than refuted).
 - [~] **GEMM-shaped INT8 prompt dequant path** (the open prompt lever; re-scoped from the parked MMQ item, exp
   07 / 09 / 10 / 11). llama.cpp disables SYCL i-quant MMQ and has no SYCL i-quant prompt GEMM, and its SYCL
   dequant kernels are not on any prompt path (exp 10/11). Strata's `iq_dequant_f16` reads only 12-30% of card
@@ -165,12 +216,47 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   decode work adds wide-load MMVQ and ESIMD DMMV for Q8_0, and completes reordered-ESIMD for the K-quants.
   Extends the L1 reorder/ESIMD fast path to the remaining dense types; a decode follow-on to the item above.
 
+### P0b - library avenues: XMX, oneMKL, oneDNN (oneDNN is not linked at all today)
+
+Ranked by how directly the library replaces work the port currently hand-writes.
+
+- [ ] **oneDNN: `Dequantize` -> `MatMul` as one graph, for the dequant-bound prompt path.** Verified on this box:
+  oneDNN **3.11.4**, `libdnnl.so.3.11`, a CMake package dir, SYCL in the same library, and the port links none of
+  it. Its graph API's op kinds include **`MatMul`, `Dequantize`, `DynamicDequantize`, `Quantize`, `RMSNorm`,
+  `GroupNorm`, `LayerNorm`, `SoftMax`, `Reorder`** - and **no SDPA and no grouped-matmul op**, so llama.cpp's
+  "fused-XMX SDPA" is a *composed* MatMul/SoftMax/MatMul subgraph that oneDNN's graph compiler fuses, not a
+  primitive we can call. The fits, best first:
+  1. **`Dequantize` + `MatMul` fused by the graph compiler.** This is the direct attack on P0's dequant half
+     (dequant is 27-30% of the prompt) and it is **not** what `xmx_gemm_iq` tried - that was a hand-written
+     `joint_matrix` kernel, 4-5x slower. Letting oneDNN fuse the dequant into the XMX GEMM is the thing
+     llama.cpp's fattn-onednn actually relies on. Acceptance: prompt tok/s at 2,184 / 8,000 tokens with output
+     identical, against the 571.7 tok/s dequant+oneMKL baseline.
+  2. **`MatMul` with `Quantize`/`Dequantize` for the parked INT8 prompt path** (P0): the per-row requantization
+     that killed exp 13 (0.065 ms against the FP16 dequant's 0.014) is a library reorder/quantize job, not
+     necessarily a hand-written kernel.
+  3. **`RMSNorm`/`SoftMax` fusion and `Reorder`** for the P1 fusion items and the L1 reorder item respectively.
+  Every one of these is subject to the **P2 caveat below**: a oneDNN/MKL call must not fight graph capture, so
+  each A/B runs with `STRATA_WARM_GRAPHS` on AND off, and each stays opt-in until it is measured faster.
+- [ ] **oneMKL: the FP16 XMX GEMM is the prompt path already; the untested shape is the decode batch.**
+  `xmx_gemm_bench` measures 30-60 TFLOP/s at prompt shapes and `int8_gemm_bench` measures INT8 at 1.4-2.2x FP16.
+  Nobody has measured a oneMKL GEMM at **M=1..6** - the decode/verify window - against `native_mmvq`. The traffic
+  arithmetic says why it is doubtful: unfused, it must materialize FP16 weights (13.1 MB for 2560x2560) against
+  the packed 5.4 MB, before *every* call, so it loses at M=1 unless the FP16 copy is persistent; with a persistent
+  copy it is 2.4x the weight traffic but moves the work off the pipe (exp 23). One measurement decides it.
+- [ ] **XMX for the dense decode matvec: the untried version is dequant-then-GEMM, not another fused quantized
+  kernel.** Every refuted XMX result here is *fused quantized* (`xmx_gemm_iq` 4-5x slower; the expert dots
+  1.4-3x; `qsa_prompt_attn_xmx` ~3x), while the one that wins is FP16 dense GEMM through oneMKL (30-60 TFLOP/s).
+  Since exp 23 leaves the matrix units idle while the pipe is the bottleneck, "dequantize once into a persistent
+  FP16 copy and GEMM on XMX" is the version worth a single A/B - stated up front with its cost: 2x the dense
+  weights resident in VRAM.
+
 ### P1 - attention A/Bs and fusion (mostly gated on P0, or low measured headroom)
 
 - [ ] **oneDNN fused-XMX SDPA A/B for prompt attention.** llama.cpp has it (`fattn-onednn.hpp`); we have FP32 and
-  our own XMX kernel, and our XMX is ~2-3x slower than FP32. One experiment: route prompt attention through
-  oneDNN's fused SDPA and compare against the FP32 fallback at 8K/40K/128K. If it wins, keep it behind the same
-  probe-and-verify gate.
+  our own XMX kernel, and our XMX is ~2-3x slower than FP32. Note from the P0b reconnaissance: this oneDNN has
+  **no SDPA op kind**, so the A/B means composing MatMul/SoftMax/MatMul in a graph and letting its compiler fuse
+  it (which is what llama.cpp's header does) - budget accordingly. Compare against the FP32 fallback at
+  8K/40K/128K, with `STRATA_WARM_GRAPHS` on AND off. If it wins, keep it behind the same probe-and-verify gate.
 - [ ] **prompt-attention GEMM A/B (the #25025/#25222 lever, re-scoped).** llama.cpp runs prompt attention as
   oneMKL XMX GEMM; Strata's prompt attention is sparse/gather-bound QSA (each query selects its own cells), so a
   direct oneMKL-GEMM flash-attention copy does not map (NOTE: the "~350+ tok/s prefill" branch note is llama.cpp's
@@ -221,6 +307,12 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | [14](sycl-experiments/14-dpct-sweep.md) | DPCT migration-marker sweep (1,151 markers, 33 codes): the GDN cp.async lead (DPCT1053) and the barrier audit (DPCT1118) | GDN: **`gdn_rec_kh_kernel` is 6.0-7.3x SLOWER than the default** on the B60 (`gdn_rec_bench`), and the phase it targets is 0.6% of prompt time (`gdn recurrence` 127 of 22,271 ms; `gemm down` alone is 50.2%) - a perfect 1.4x would be 0.16% end to end.  Barriers: **0 of 187 group calls sit under a thread-dependent guard**, so all 75 DPCT1118 markers are conservative false positives (barriers are siblings of the `if`s; early returns test `get_group`, not the local id; `continue` precedes the *next* iteration's barrier).  ctest 25/27 with both failures documented pre-existing | PARKED (no code): do not port cp.async to the GDN key-head kernel; DPCT1118 retired as an audit. Next from the sweep: DPCT1110 (register pressure), DPCT1098 (`__ldg`) |
 | [15](sycl-experiments/15-dpct-sweep-2.md) | DPCT sweep round 2: register pressure (DPCT1110, 46 markers) and `__ldg` (DPCT1098, 42) | **DPCT1110 does not predict spills**: with the IGC ISA dump (`//.spill size`, all kernels `numGRF=128`), the flagged `native_mmvq_multi_kernel`, `s_gemv` and `sampler_greedy/one_block/split_merge` kernels spill **0 B**, while the **unflagged** `native_mmvq_q6k_wide` spills 384 B - so "fix the 46 flagged kernels" aims at the wrong list.  The one flagged spiller is `sampler_split_part_kernel` at **2176 B**, and it runs once per *token* (~1 MB of logits to scan ≈ 5 us against a 12.8 ms token).  `__ldg` has no Xe counterpart: every one of the 42 sites is a deref of an already-`const __restrict__` chain, and Xe's L1 is unified | PARKED (no code) for both; the sampler spill is a bounded follow-up if a sampler bench is ever wanted |
 | [17](sycl-experiments/17-parity-fixes.md) | the two failing parity tests: `s2_expert_grouped_parity` and `ple_parity` | **Neither was a kernel bug.** `s2_expert_grouped_parity`: the grouped entry point's two kernels are the *same expression* (`chunk_dot`'s `dw*dx*(s-hx)` vs the transposed `dw*dx*(chunk_s-dh.y())`) compiled differently, so they differ by float order - **measured worst 1.5e-07 of the row scale**, and the fp16 packed output is bitwise identical; the old assertion demanded bit-identity, which the kernel's own header says is impossible.  Now: per-hit cases stay byte-for-byte, the grouped cases validate **both** runs against the double-precision reference (worst 9.7e-08, 0 rows outside tolerance each) and bound old-vs-new at 1e-5.  `ple_parity`: the port registered it BARE through the generic loop (no `--in`/`--out`, working directory the build dir), so it looked for `bench/micro/ple_{in,out}.bin` under `sycl/build-b60/` and could never find the capture on any machine; upstream passes the paths and pins the source tree | FIXED: ctest **100%, 26 tests** (was 25/27); `ple_parity` is registered only where its gitignored CUDA-side capture exists, and CMake says so at configure time - never skipped-as-passed |
+| [18](sycl-experiments/18-graph-capture-audit.md) | capture audit + the "is the graph at fault" A/B | 23 exactly-once captures, **0 breaks**, in every arm; the stall reproduced with the graphs removed | audit kept (`graph_audit_test`, node goldens); the stall was the gate, fixed in 19 |
+| [19](sycl-experiments/19-doorbell-completion-gate.md) | the doorbell completion gate | `DPCT_CHECK_ERROR` **discards its expression's value**, so `q != 1` was always true and the host abandoned each layer after 2 ms while reporting "graph finished" | **FIXED**: decode 17.4 tok/s (16 tokens) / 20.2-20.7 (32), coherent output, ctest 27/27 |
+| [20](sycl-experiments/20-followups-eager-and-vtune.md) | VTune GPU Hotspots + where the eager divergence lives | counters land (XVE stalled/idle 92.3%); top kernels 3.713 / 2.510 / 1.426 s; collection perturbs the handshake and degenerates the token stream; eager differs from the graph path from token 1, and is **identical** to it once the handshake is off | profile = kernel ranking only; the divergence localizes to the per-layer handshake |
+| [21](sycl-experiments/21-q6k-mmvq-isa-dump.md) | the Q6_K MMVQ ISA dump | the 384 B spill is 4 of 985 instructions with **no loop**; `IGC_ExtraOCLOptions=-ze-opt-large-register-file` removes it entirely (spill 0, 962 instructions) and 26.1 us is unchanged, 4 runs of 4 | the spill is free; do not chase it |
+| [22](sycl-experiments/22-q6k-mmvq-shape-curves.md) | Q6_K MMVQ shape curves | cols 1/2/4/6/8 = 19.1/21.5/26.2/35.9/55.4 us (281 -> 97 GB/s); rows 2560 -> 20480 = 205.7 -> 205.3 GB/s; 256 GRF identical at every point; a `-cl-load-cache-default` sweep was **null** (the option never reached the compiler) | not bandwidth- or parallelism-bound; the cache policy is untested, not refuted |
+| [23](sycl-experiments/23-q6k-mmvq-stall-reasons.md) | Q6_K MMVQ stall reasons | 8,061 instances, 27 us average (matches the bench); stalls **Pipe 16.8%, Send 0.0%**, Dist or Acc 2.1% | **PIPE-bound, not memory-bound** - the lever is arithmetic per weight byte |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)
@@ -261,6 +353,12 @@ backend), bf16/fp16 op type widening, clean-dup/revert churn, CI/build fixes.
   staging is disabled on SYCL, but the kernel itself is 6.0-7.3x slower than the default column kernel on the
   B60 (26.5 vs 3.6 ms at T=2048, `gdn_rec_bench`), and the phase it would speed up is 0.6% of prompt time. Do
   not port the staging to this kernel; a different GDN kernel would be a new measurement, not a reopen.
+- **The Q6_K wide MMVQ's 384 B spill** (exp 21): 4 instructions of 985, once per work-item, and forcing 256 GRF
+  removes every spilled byte for **26.1 us either way**. Measured free; do not reopen.
+- **Cache-policy tuning of the MMVQ through `IGC_ExtraOCLOptions`** (exp 22): the 13-run sweep was null because
+  `-cl-load/store-cache-default` never reached the compiler on a SYCL/SPIR-V input (verified by re-dumping). It is
+  *untested*, not refuted - and if retried it must be set in the source (`-Xs`/attributes at build), because IGC
+  ignores an unknown option silently. Always confirm an option applied by re-dumping.
 
 ---
 
@@ -278,8 +376,20 @@ Every P0/P1 item has the same checklist, from INTEL.md's "Trap worth knowing":
 4. **Keep it opt-in with a flag when it is not strictly faster** (`STRATA_*=0` to revert, like every previous
    round), and keep the default on the measured-fastest path.
 
+5. **Capture changes go through the audit.** Run `graph_audit_test` (it proves all six of its assertions fire,
+   including that `DPCT_CHECK_ERROR` discards its expression's value) and check the node goldens
+   (`STRATA_GRAPH_GOLDEN=sycl/bench/graph-golden/<config>.txt`, `STRATA_GRAPH_GOLDEN_WRITE` to refresh): a node
+   that stops being recorded shows up as `GOLDEN MISMATCH` / `MISSING` instead of silence. `STRATA_GRAPH_AUDIT=1`
+   prints a line per capture, and `STRATA_GRAPH_STRICT=1` makes a re-capture or a moved count fatal.
+6. **Before optimizing a kernel, get its stall reasons.** `vtune -collect gpu-hotspots -knob
+   gpu-profiling-mode=source-analysis -knob source-analysis=stall-sampling -knob
+   computing-tasks-of-interest="*<kernel>*"` then `-report summary -format csv` (run the report with `sudo`: the
+   result directory is root-owned). Profile a **bench**, not the engine - the engine's handshake degenerates under
+   instrumentation. `Pipe` vs `Send` is the whole question for a matvec: 23 needed one collection to stop the
+   port from optimizing a memory problem that was not there.
+
 The parity tests that still need machine-local inputs (`iq_parity`, whose fixtures `tools/iq_fixture.py` now
 generates into the build tree, and `ple_parity`, whose ggml capture is a gitignored CUDA-side artifact) and the
 XMX prompt-attention test were gated in INTEL.md; keep that list accurate as the IQ3_S model gets added.
 `ple_parity` must never be re-added to the bare parity loop - it needs its `--in`/`--out` and the tree as its
-working directory. As of 2026-10-03 `ctest` is **26 tests, 100%**.
+working directory. As of 2026-10-04 `ctest` is **27 tests, 100%**.
