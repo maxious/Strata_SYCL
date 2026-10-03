@@ -59,12 +59,6 @@ int main(int argc, char** argv) {
             (void *)sycl::malloc_device(raw.size(), dpct::get_in_order_queue());
         dq = (float *)sycl::malloc_device(ref.size() * 4,
                                           dpct::get_in_order_queue());
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dw, raw.data(), raw.size()).wait();
         double dq_err = 0.0;
         if (strata::kernels::iq_supported(type) && ((size_t) rows * cols) % 256 == 0) {
@@ -93,12 +87,6 @@ int main(int argc, char** argv) {
                                          dpct::get_in_order_queue());
         dy = (float *)sycl::malloc_device((size_t)MC * rows * 4,
                                           dpct::get_in_order_queue());
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dx, x.data(), x.size() * 4).wait();
         strata::kernels::quantize_q8_1_rows(dx, MC, cols, xq, s);
         std::vector<float> y((size_t) MC * rows), yn(y.size());

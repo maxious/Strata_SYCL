@@ -269,11 +269,6 @@ void ple_history_advance(float* hist, const float* normalized, void* stream) {
                     history_advance_kernel(hist, normalized);
                 });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     ck(0, "history advance launch");
 }
 
@@ -567,70 +562,29 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     // ---- the intermediates the oracle comparison needs.  `key` is the NORMALISED key, because the source's
     //      `cb(key, ...)` capture is after `gnorm`; `value` is the projection before the gate.  Each stage the
     //      oracle records is reproduced here so a mismatch can be attributed instead of guessed at.
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     if (out.key) ck(DPCT_CHECK_ERROR(st->memcpy(out.key, normalized_key,
                                                 hc_dim * sizeof(float))),
                     "key");
     if (out.value)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                st->memcpy(out.value, d_value, n_embd * sizeof(float))),
            "value");
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     if (out.gate)
         ck(DPCT_CHECK_ERROR(st->memcpy(out.gate, d_gate, hc * sizeof(float))),
            "gate");
     if (out.gated)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                st->memcpy(out.gated, d_gated, hc_dim * sizeof(float))),
            "gated");
     if (out.normalized)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                st->memcpy(out.normalized, d_norm, hc_dim * sizeof(float))),
            "norm");
     if (out.conv)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                st->memcpy(out.conv, d_conv, hc_dim * sizeof(float))),
            "conv");
 
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     ck(0, "launch");
     // **NO `cudaStreamSynchronize` HERE.**  It was there to make the function self-contained for the parity
     // test, and inside a capture it is an error - a caller that wants the result immediately synchronises

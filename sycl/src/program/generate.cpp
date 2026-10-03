@@ -157,12 +157,6 @@ bool resident_stage_swaps(strata::core::FileExpertSource &src,
         if (q >= src.exchange_capacity()) continue;
         const int32_t slot = host_res[(size_t) s.layer * (size_t) n_expert + (size_t) s.out];
         if (slot < 0) continue;
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         if (DPCT_CHECK_ERROR(stream->memcpy(
                 src.exchange_buffer(q), cache.device_slot(slot),
                 (size_t)strata::kernels::cpu::expert_layout().blob_bytes(
@@ -1038,12 +1032,6 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
         return -1.0;
     }
     std::memset(h, 0, kBytes);   // fault the pages in before timing
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     dpct::get_in_order_queue().memcpy(
         d, h, kBytes).wait(); // warmup: context up, copy engine primed
     float ms[kBursts] = {};
@@ -1068,12 +1056,6 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
     if (ok) {
         dpct::sync_barrier(ev[0]);
         for (int b = 0; b < kBursts; ++b) {
-            /*
-            DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-            API. While the origin API might be synchronous, it depends on the
-            type of operand memory, so you may need to call wait() on event
-            return by memcpy API to ensure synchronization behavior.
-            */
             dpct::get_in_order_queue().memcpy(d, h, kBytes).wait();
             dpct::sync_barrier(ev[b + 1]);
         }
@@ -1102,11 +1084,6 @@ double probe_pcie_h2d_gbps(std::string *samples = nullptr) try {
             *samples += buf;
         }
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     if (!ok)(void) 0;
     sycl::free(d, dpct::get_in_order_queue());
     free(h);
@@ -2119,12 +2096,7 @@ int main(int argc, char **argv) try {
             "caches: another program (or an engine that is still exiting) "
             "holds the rest - "
             "nvidia-smi / rocm-smi lists them\n",
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            (unsigned long long)pool_bytes, dpct::get_error_string_dummy(ce),
+            (unsigned long long)pool_bytes, dpct::error_string(ce),
             (unsigned long long)(free_b >> 20),
             (unsigned long long)(total_b >> 20));
         return 1;
@@ -2180,12 +2152,6 @@ int main(int argc, char **argv) try {
         if (DPCT_CHECK_ERROR(
                 d_mrope = sycl::malloc_device<int32_t>(
                     mrope_host.size(), dpct::get_in_order_queue())) != 0 ||
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
                 d_mrope, mrope_host.data(),
                 mrope_host.size() * sizeof(int32_t)).wait()) != 0) {
@@ -2535,12 +2501,6 @@ int main(int argc, char **argv) try {
             if (DPCT_CHECK_ERROR(
                     st.mrope = sycl::malloc_device<int32_t>(
                         mrope_host.size(), dpct::get_in_order_queue())) != 0 ||
-                /*
-                DPCT1114: cudaMemcpy is migrated to asynchronization
-                memcpy, assuming in the original code the source host memory is
-                pageable memory. If the memory is not pageable, call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
                     st.mrope, mrope_host.data(),
                     mrope_host.size() * sizeof(int32_t)).wait()) != 0) {
@@ -2947,11 +2907,6 @@ int main(int argc, char **argv) try {
         const bool named =
             DPCT_CHECK_ERROR(dev = dpct::get_current_device_id()) == 0 &&
             DPCT_CHECK_ERROR(dpct::get_device(dev).get_device_info(p)) == 0;
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use
-        the error codes. The cudaGetLastError function call was replaced with 0.
-        You need to rewrite this code.
-        */
         if (!named) 0;
         const char *name =
             named && p.get_name()[0] ? p.get_name() : "(an unnamed GPU)";
@@ -3744,11 +3699,6 @@ int main(int argc, char **argv) try {
             drive.d.lookahead = &lookahead;
             std::fprintf(stderr, "strata generate: routing-aware prefetch of the file tier on (the next layer's router)\n");
         } else {
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not
-            use the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             (void)0;
             std::fprintf(stderr, "strata generate: routing-aware prefetch off (%s)\n",
                          ok ? err.c_str() : "the routers are not BF16 in the arena");
@@ -3976,13 +3926,6 @@ int main(int argc, char **argv) try {
             strata::core::session_zero(ss, g, d_emb, token_stream);
         } else {
             for (int64_t c = 0; c < g.hc; ++c)
-                /*
-                DPCT1124: cudaMemcpyAsync is migrated to asynchronous
-                memcpy API. While the origin API might be synchronous, it
-                depends on the type of operand memory, so you may need to call
-                wait() on event return by memcpy API to ensure synchronization
-                behavior.
-                */
                 if (DPCT_CHECK_ERROR(strata::q_of(token_stream)->memcpy(
                         ss.R + (size_t)c * g.n_embd, d_emb,
                         (size_t)g.n_embd * 4)) != 0) {
@@ -4266,19 +4209,9 @@ int main(int argc, char **argv) try {
         }
         if (DPCT_CHECK_ERROR(
                 dpct::get_current_device().queues_wait_and_throw()) != 0) {
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not
-            use the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             std::fprintf(stderr,
                          "strata generate: session_replay faulted: %s\n",
-                         dpct::get_error_string_dummy(0));
+                         dpct::error_string(0));
             return 1;
         }
         const double ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count() / (double) reps;
@@ -4313,18 +4246,7 @@ int main(int argc, char **argv) try {
                 std::fprintf(
                     stderr,
                     "strata generate: gpu-only-full layers faulted: %s\n",
-                    /*
-                    DPCT1009: SYCL reports errors using exceptions and does
-                    not use error codes. Please replace the
-                    "get_error_string_dummy(...)" with a real error-handling
-                    function.
-                    */
-                    /*
-                    DPCT1010: SYCL uses exceptions to report errors and
-                    does not use the error codes. The cudaGetLastError function
-                    call was replaced with 0. You need to rewrite this code.
-                    */
-                    dpct::get_error_string_dummy(0));
+                    dpct::error_string(0));
                 return 1;
             }
             const Clock::time_point t1 = Clock::now();
@@ -4335,18 +4257,7 @@ int main(int argc, char **argv) try {
             if (DPCT_CHECK_ERROR(strata::q_of(main_cs)->wait()) != 0) {
                 std::fprintf(
                     stderr, "strata generate: gpu-only-full head faulted: %s\n",
-                    /*
-                    DPCT1009: SYCL reports errors using exceptions and does
-                    not use error codes. Please replace the
-                    "get_error_string_dummy(...)" with a real error-handling
-                    function.
-                    */
-                    /*
-                    DPCT1010: SYCL uses exceptions to report errors and
-                    does not use the error codes. The cudaGetLastError function
-                    call was replaced with 0. You need to rewrite this code.
-                    */
-                    dpct::get_error_string_dummy(0));
+                    dpct::error_string(0));
                 return 1;
             }
             const Clock::time_point t2 = Clock::now();
@@ -4412,12 +4323,6 @@ int main(int argc, char **argv) try {
                     host_res.size(), dpct::get_in_order_queue())) != 0 ||
             DPCT_CHECK_ERROR(d_hit_count = sycl::malloc_device<int32_t>(
                                  1, dpct::get_in_order_queue())) != 0 ||
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
                 d_res, host_res.data(), host_res.size() * sizeof(int32_t)).wait()) !=
                 0) {
@@ -4431,12 +4336,6 @@ int main(int argc, char **argv) try {
             if (DPCT_CHECK_ERROR(
                     st->d_res = sycl::malloc_device<int32_t>(
                         host_res.size(), dpct::get_in_order_queue())) != 0 ||
-                /*
-                DPCT1114: cudaMemcpy is migrated to asynchronization
-                memcpy, assuming in the original code the source host memory is
-                pageable memory. If the memory is not pageable, call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
                     st->d_res, host_res.data(),
                     host_res.size() * sizeof(int32_t)).wait()) != 0) {
@@ -4752,12 +4651,6 @@ int main(int argc, char **argv) try {
                         if (DPCT_CHECK_ERROR(
                                 dpct::get_device(dev).get_device_info(prop)) !=
                             0) {
-                            /*
-                            DPCT1010: SYCL uses exceptions to report errors
-                            and does not use the error codes. The
-                            cudaGetLastError function call was replaced with 0.
-                            You need to rewrite this code.
-                            */
                             (void)0;
                             prop.get_name()[0] = 0;
                         }
@@ -4808,12 +4701,6 @@ int main(int argc, char **argv) try {
                     for (PfPart& p : pf_parts) {
                         const strata::core::OnDevice on(p.dev);
                         size_t fb = 0, tb = 0;
-                        /*
-                        DPCT1010: SYCL uses exceptions to report errors and
-                        does not use the error codes. The cudaGetLastError
-                        function call was replaced with 0. You need to rewrite
-                        this code.
-                        */
                         /*
                         DPCT1106: 'cudaMemGetInfo' was migrated with the
                         Intel extensions for device information which may not be
@@ -4964,19 +4851,9 @@ int main(int argc, char **argv) try {
                 for (auto& stp : stages) {
                     const strata::core::OnDevice on(stp->dev);
                     stp->sp.reset();
-                    /*
-                    DPCT1010: SYCL uses exceptions to report errors and
-                    does not use the error codes. The cudaGetLastError function
-                    call was replaced with 0. You need to rewrite this code.
-                    */
                     (void)0;
                 }
                 sp.reset();
-                /*
-                DPCT1010: SYCL uses exceptions to report errors and does
-                not use the error codes. The cudaGetLastError function call was
-                replaced with 0. You need to rewrite this code.
-                */
                 (void)0;
                 o.prefill_chunk = next;
                 if (any_loan) {                  // smaller loans for the smaller chunk
@@ -5037,13 +4914,6 @@ int main(int argc, char **argv) try {
             }
             if (evicted > 0) {
                 if (d_res != nullptr)
-                    /*
-                    DPCT1114: cudaMemcpy is migrated to asynchronization
-                    memcpy, assuming in the original code the source host memory
-                    is pageable memory. If the memory is not pageable, call
-                    wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
                     dpct::get_in_order_queue().memcpy(d_res, host_res.data(),
                                                       host_res.size() *
                                                           sizeof(int32_t)).wait();
@@ -5421,12 +5291,6 @@ int main(int argc, char **argv) try {
         auto res_upload = [&]() {
             try {
         if (d_res != nullptr)
-                /*
-                DPCT1114: cudaMemcpy is migrated to asynchronization
-                memcpy, assuming in the original code the source host memory is
-                pageable memory. If the memory is not pageable, call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 dpct::get_in_order_queue().memcpy(
                     d_res, host_res.data(), host_res.size() * sizeof(int32_t)).wait();
             for (auto& st : stages) {
@@ -5508,13 +5372,6 @@ int main(int argc, char **argv) try {
                 GpuStage* gs = stn > 0 ? stages[(size_t) stn - 1].get() : nullptr;
                 const strata::core::OnDevice on(gs ? gs->dev : -1);
                 if (slot < 0 || b == nullptr ||
-                    /*
-                    DPCT1124: cudaMemcpyAsync is migrated to asynchronous
-                    memcpy API. While the origin API might be synchronous, it
-                    depends on the type of operand memory, so you may need to
-                    call wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
                     DPCT_CHECK_ERROR(
                         (gs ? gs->adapt_stream : adapt_stream)->memcpy(
                                  gs ? gs->cache.device_slot(slot)
@@ -6362,12 +6219,6 @@ int main(int argc, char **argv) try {
                         std::printf("ERR %s\n", err.c_str());
                         // #224: a CUDA fault (an illegal address) poisons the context for the whole process, and
                         // unwinding the destructors on it could hang until the 60 s watchdog: leave at once
-                        /*
-                        DPCT1010: SYCL uses exceptions to report errors and
-                        does not use the error codes. The cudaPeekAtLastError
-                        function call was replaced with 0. You need to rewrite
-                        this code.
-                        */
                         if (0 != 0) {
                             std::fflush(stdout);
                             std::fflush(stderr);
@@ -7055,18 +6906,7 @@ int main(int argc, char **argv) try {
                 stderr,
                 "strata generate: the device faulted in lm_head at position "
                 "%lld: %s\n",
-                /*
-                DPCT1009: SYCL reports errors using exceptions and does not
-                use error codes. Please replace the
-                "get_error_string_dummy(...)" with a real error-handling
-                function.
-                */
-                /*
-                DPCT1010: SYCL uses exceptions to report errors and does
-                not use the error codes. The cudaGetLastError function call was
-                replaced with 0. You need to rewrite this code.
-                */
-                (long long)pos, dpct::get_error_string_dummy(0));
+                (long long)pos, dpct::error_string(0));
             return 1;
         }
         {
@@ -7077,12 +6917,6 @@ int main(int argc, char **argv) try {
         const bool emit_logits = dump != nullptr &&
             strata::program::logits_selection::selected(pos, dump_positions, o.logits_stride);
         const bool read_logits = !o.stream_token || o.check_logits || emit_logits;
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         if (read_logits &&
             (DPCT_CHECK_ERROR(strata::q_of(token_stream)->memcpy(
                  logits.data(), d_logits, (size_t)n_vocab * 4)) != 0 ||
@@ -7126,30 +6960,13 @@ int main(int argc, char **argv) try {
         // the same text whether a token comes from this path or from the speculative loop below.
         sp.counter = (uint64_t) pos;
         strata::kernels::sample_tokens(d_logits, 1, (int) n_vocab, nullptr, 0, sp, d_next, token_stream);
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         if (DPCT_CHECK_ERROR(strata::q_of(token_stream)->memcpy(
                 &next, d_next, sizeof(int))) != 0 ||
             DPCT_CHECK_ERROR(strata::q_of(token_stream)->wait()) != 0) {
             std::fprintf(
                 stderr,
                 "strata generate: reading the sampled token back failed: %s\n",
-                /*
-                DPCT1009: SYCL reports errors using exceptions and does not
-                use error codes. Please replace the
-                "get_error_string_dummy(...)" with a real error-handling
-                function.
-                */
-                /*
-                DPCT1010: SYCL uses exceptions to report errors and does
-                not use the error codes. The cudaGetLastError function call was
-                replaced with 0. You need to rewrite this code.
-                */
-                dpct::get_error_string_dummy(0));
+                dpct::error_string(0));
             return 1;
         }
         // The sampled-token synchronization also completes every captured QSA
@@ -7300,12 +7117,6 @@ int main(int argc, char **argv) try {
             for (const auto& [i, slot] : pending) host_res[(size_t) i] = slot;
             pending.clear();
             if (d_res != nullptr)
-                /*
-                DPCT1114: cudaMemcpy is migrated to asynchronization
-                memcpy, assuming in the original code the source host memory is
-                pageable memory. If the memory is not pageable, call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 dpct::get_in_order_queue().memcpy(
                     d_res, host_res.data(), host_res.size() * sizeof(int32_t)).wait();
         }
@@ -7366,13 +7177,6 @@ int main(int argc, char **argv) try {
                 const uint8_t* b = srcp->blob(s.layer, s.in);
                 // asynchronous: the copies run while the MTP drafts; the next window waits for them
                 if (slot < 0 || b == nullptr ||
-                    /*
-                    DPCT1124: cudaMemcpyAsync is migrated to asynchronous
-                    memcpy API. While the origin API might be synchronous, it
-                    depends on the type of operand memory, so you may need to
-                    call wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
                     DPCT_CHECK_ERROR(adapt_stream->memcpy(
                         xcache.device_slot(slot), b,
                         (size_t)strata::kernels::cpu::expert_layout()

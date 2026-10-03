@@ -35,19 +35,7 @@ __dpct_inline__ void embedding_gather_kernel(const uint8_t *__restrict__ codes,
     const unsigned mask = (1u << code_bits) - 1u;
     const int code = (codes[i / per_byte] >> ((i % per_byte) * code_bits)) & mask;
     const int64_t group = i / group_elems;
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     const float product = (float)(code + code_bias) * scales[group];
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     out[i] = product + (offsets ? offsets[group] : 0.0f);
 }
 
@@ -179,11 +167,6 @@ catch (sycl::exception const &exc) {
 }
 
 bool check_launch(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     return true;

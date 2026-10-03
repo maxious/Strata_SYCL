@@ -69,12 +69,6 @@ __dpct_inline__ float dot8(const sycl::uint4 w, const float *x) {
     return acc;
 }
 
-/*
-DPCT1110: The total declared local variable size in device function
-gr_down_kernel exceeds 128 bytes and may cause high register pressure. Consult
-with your hardware vendor to find the total register size available and adjust
-the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gr_down_kernel(FusedGrArgs a) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &xn = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[D]>(
@@ -175,17 +169,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[LR]>(
         const int c = r / UP_COLS, dd = r - c * UP_COLS, i = c * N + d0 + dd;
         const sycl::uint4 *w4 =
             reinterpret_cast<const sycl::uint4 *>(a.w_up + (size_t)i * LR);
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         float acc = dot8(*(w4 + lane), lo + lane * 8);
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         if (lane < LR / 8 - 32) acc +=
             dot8(*(w4 + 32 + lane), lo + (32 + lane) * 8);
         acc = warp_sum(acc);
@@ -220,12 +204,6 @@ struct GrMulti {
 };
 
 // Step 1 of `gr_down_kernel`, one block per token, same threads and reduction order: rs[t] and xn[t] to global.
-/*
-DPCT1110: The total declared local variable size in device function
-gr_norm_multi_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gr_norm_multi_kernel(GrMulti m) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &part =
@@ -349,12 +327,6 @@ bool gr_norm_split() {   // default; STRATA_GR_NORM_SPLIT=0: one work-group per 
 // for the weight prefetch); smaller tiles raise how many blocks share an SM (the 41-block grid), e.g. three blocks
 // of four tokens instead of one on sm_75.
 template <int TILEV, int MAX_T = kFusedGrMaxT>
-/*
-DPCT1110: The total declared local variable size in device function
-gr_down_multi_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gr_down_multi_kernel(GrMulti m, uint8_t *dpct_local) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     constexpr int TQ = TILEV / 8 / 32; // uint4 weight chunks per lane per tile
@@ -375,19 +347,9 @@ __dpct_inline__ void gr_down_multi_kernel(GrMulti m, uint8_t *dpct_local) {
         sycl::uint4 wv[TQ];
         if (active) {
 #pragma unroll
-            /*
-            DPCT1098: The '*' expression is used instead of the __ldg call.
-            These two expressions do not provide the exact same functionality.
-            Check the generated code for potential precision and/or performance
-            issues.
-            */
             for (int q = 0; q < TQ; ++q)
                 wv[q] = *(w4 + base / 8 + lane + 32 * q);
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space); // the previous tile is consumed
         const sycl::float4 *src4 = reinterpret_cast<const sycl::float4 *>(m.xn);
         sycl::float4 *tile4 = reinterpret_cast<sycl::float4 *>(tile);
@@ -395,10 +357,6 @@ __dpct_inline__ void gr_down_multi_kernel(GrMulti m, uint8_t *dpct_local) {
             const int k = i / (TILEV / 4), off = i - k * (TILEV / 4);
             tile4[i] = src4[((size_t) k * D + base) / 4 + off];
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (!active) continue;
 #pragma unroll
@@ -552,12 +510,6 @@ constexpr int UPM_BLOCKS = N / UPM_COLS;          // 160
 
 // `gr_up_kernel` for T tokens: each row of w_up read once; the T dots reduced by xor so every lane holds every
 // sum, and lane k runs token k's epilogue - the T epilogues in parallel instead of one after another.
-/*
-DPCT1110: The total declared local variable size in device function
-gr_up_multi_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gr_up_multi_kernel(GrMulti m) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
@@ -585,17 +537,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
         const sycl::uint4 *w4 =
             reinterpret_cast<const sycl::uint4 *>(m.a[0].w_up + (size_t)i * LR);
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         const sycl::uint4 wa = *(w4 + lane);
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         const sycl::uint4 wb =
             lane < LR / 8 - 32 ? *(w4 + 32 + lane) : sycl::uint4(0, 0, 0, 0);
         // the epilogue inputs of this lane's token, fetched while the dots run
@@ -651,12 +593,6 @@ constexpr int PR = LR + HC;                        // partial rows per (token, s
 constexpr int TQ3 = N / 8 / 32;                    // uint4 weight chunks per lane in one stream's slice (10)
 
 template <int S>
-/*
-DPCT1110: The total declared local variable size in device function
-gr_down_v3_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gr_down_v3_kernel(GrMulti m, float *__restrict__ part,
                                        float *__restrict__ ssg,
                                        uint8_t *dpct_local) {
@@ -686,11 +622,6 @@ __dpct_inline__ void gr_down_v3_kernel(GrMulti m, float *__restrict__ part,
         const sycl::uint4 *w4 = reinterpret_cast<const sycl::uint4 *>(
             wbase + (size_t)(row0 + r) * D + (size_t)c * N + (size_t)h * SL);
 #pragma unroll
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         for (int q = 0; q < TQS; ++q) wv[r][q] = *(w4 + lane + 32 * q);
     }
     float ssp[kFusedGrMaxT];
@@ -762,12 +693,6 @@ __dpct_inline__ void gr_down_v3_kernel(GrMulti m, float *__restrict__ part,
 }
 
 template <int S>
-/*
-DPCT1110: The total declared local variable size in device function
-gr_up_v3_kernel exceeds 128 bytes and may cause high register pressure. Consult
-with your hardware vendor to find the total register size available and adjust
-the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gr_up_v3_kernel(GrMulti m, const float *__restrict__ part,
                                      const float *__restrict__ ssg) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -828,17 +753,7 @@ auto &lo = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         const int c = r / UPM_COLS, dd = r - c * UPM_COLS, i = c * N + d0 + dd;
         const sycl::uint4 *w4 =
             reinterpret_cast<const sycl::uint4 *>(m.a[0].w_up + (size_t)i * LR);
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         const sycl::uint4 wa = *(w4 + lane);
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         const sycl::uint4 wb =
             lane < LR / 8 - 32 ? *(w4 + 32 + lane) : sycl::uint4(0, 0, 0, 0);
         float rv = 0.0f, wn = 0.0f, bo = 0.0f, ip = 0.0f;
@@ -901,12 +816,6 @@ constexpr int N_HTILES = D / H_TILE;                  // 8
 static_assert(N % H_TILE == 0, "a staged tile never straddles two streams");
 static_assert(H_TILE % 256 == 0, "a staged tile holds whole rounds of 32 chunks: the plain read's lane order");
 
-/*
-DPCT1110: The total declared local variable size in device function
-gr_norm_split_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gr_norm_split_kernel(GrMulti m) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &part = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[WARPS]>(
@@ -1053,12 +962,6 @@ __dpct_inline__ void stage_htile(const GrMulti &m, int T, int h,
 }
 
 template <int MAX_T = kFusedGrMaxT>
-/*
-DPCT1110: The total declared local variable size in device function
-gr_down_staged_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gr_down_staged_kernel(GrMulti m, uint8_t *dpct_local) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     auto hbuf = (sycl::float4 *)dpct_local; // 2 buffers x [T][2][160] float4
@@ -1076,11 +979,6 @@ __dpct_inline__ void gr_down_staged_kernel(GrMulti m, uint8_t *dpct_local) {
     sycl::uint4 wv[HQ], wnext[HQ];
     if (active) {
 #pragma unroll
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         for (int q = 0; q < HQ; ++q) wv[q] = *(w4 + lane + 32 * q);
     }
     stage_htile(m, T, 0, hbuf, t);
@@ -1091,21 +989,11 @@ __dpct_inline__ void gr_down_staged_kernel(GrMulti m, uint8_t *dpct_local) {
     for (int h = 0; h < N_HTILES; ++h) {
         if (active && h + 1 < N_HTILES) {
 #pragma unroll
-            /*
-            DPCT1098: The '*' expression is used instead of the __ldg call.
-            These two expressions do not provide the exact same functionality.
-            Check the generated code for potential precision and/or performance
-            issues.
-            */
             for (int q = 0; q < HQ; ++q)
                 wnext[q] = *(w4 + (h + 1) * (H_TILE / 8) + lane + 32 * q);
         }
         if (h + 1 < N_HTILES) cp_async_wait1();         // tile h has landed (h + 1 may still be on its way)
         else cp_async_wait0();
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const sycl::float4 *cur = hbuf + (h & 1) * buf_f4;
         if (active) {
@@ -1121,10 +1009,6 @@ __dpct_inline__ void gr_down_staged_kernel(GrMulti m, uint8_t *dpct_local) {
                 }
             }
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space); // every warp is done with buffer h & 1
         if (h + 2 < N_HTILES) stage_htile(m, T, h + 2, hbuf + (h & 1) * buf_f4, t);
         cp_async_commit();                              // an empty group at the end keeps the wait counts simple
@@ -1644,11 +1528,6 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
                         gr_up_v3_kernel<1>(m, part, ssg);
                     });
         }
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaGetLastError function call was replaced with 0. You
-        need to rewrite this code.
-        */
         const dpct::err0 e3 = 0;
 
         return;
@@ -1772,11 +1651,6 @@ void fused_gr_read_multi(const FusedGrArgs* a, int n_tok, float* xn_scratch, voi
                 gr_up_multi_kernel(m);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 
@@ -1835,11 +1709,6 @@ void fused_gr_read(const FusedGrArgs& a, void* stream) {
                 gr_up_kernel(a);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 
@@ -1904,57 +1773,15 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) try {
         off <= bytes &&
         DPCT_CHECK_ERROR(st = dpct::get_current_device().create_queue(true)) ==
             0 &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(
             st->memcpy(d_down, h_down.data(), h_down.size() * 2)) == 0 &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(st->memcpy(d_up, h_up.data(), h_up.size() * 2)) == 0 &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(st->memcpy(d_inj, h_inj.data(), h_inj.size() * 2)) ==
             0 &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(
             st->memcpy(d_norm, h_norm.data(), h_norm.size() * 4)) == 0 &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(st->memcpy(d_R, h_R.data(), h_R.size() * 4)) == 0 &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(st->memcpy(d_bo, h_bo.data(), h_bo.size() * 4)) == 0 &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(st->memcpy(d_ip, h_ip.data(), h_ip.size() * 4)) == 0;
     if (!ok) why[0] = "setting up the check failed";
     std::vector<float> h1, h2;
@@ -1962,19 +1789,7 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) try {
     auto same = [&](const float* d1, const float* d2, size_t n, const char* what, int T, int apply, std::string& w) {
         h1.resize(n);
         h2.resize(n);
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         if (DPCT_CHECK_ERROR(st->memcpy(h1.data(), d1, n * 4)) != 0 ||
-            /*
-            DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-            API. While the origin API might be synchronous, it depends on the
-            type of operand memory, so you may need to call wait() on event
-            return by memcpy API to ensure synchronization behavior.
-            */
             DPCT_CHECK_ERROR(st->memcpy(h2.data(), d2, n * 4)) != 0 ||
             DPCT_CHECK_ERROR(st->wait()) != 0) {
             why[0] = "reading back the check failed";
@@ -2029,11 +1844,6 @@ bool fused_gr_selftest(bool ok_variant[4], std::string why[4]) try {
                 launch_multi(m, v + 1, st, nullptr, 0);
             }
             if (T == 1) fused_gr_read(a[3][0], st);
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not
-            use the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             if (0 != 0 || DPCT_CHECK_ERROR(st->wait()) != 0) {
                 why[0] = "a kernel of the check failed";
                 ok = false;

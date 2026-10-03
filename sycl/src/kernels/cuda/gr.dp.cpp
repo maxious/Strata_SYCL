@@ -598,11 +598,6 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
         }
     }
 
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) {

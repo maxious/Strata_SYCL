@@ -72,12 +72,6 @@ catch (sycl::exception const &exc) {
 // One block per output row.  `staged` says whether x was copied to shared, so the SAME kernel covers both
 // configurations and the bench can measure them against each other with nothing else changed.
 template <bool STAGE_X>
-/*
-DPCT1110: The total declared local variable size in device function
-s2_gemv_fast_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void s2_gemv_fast_kernel(
     const uint16_t *__restrict__ x, const uint8_t *__restrict__ codes,
     const float *__restrict__ scales, float *__restrict__ y, long long n_in,
@@ -97,10 +91,6 @@ __dpct_inline__ void s2_gemv_fast_kernel(
         const sycl::half *xh = reinterpret_cast<const sycl::half *>(x);
 #pragma unroll
         for (long long i = tid; i < n_in; i += threads_per_row) sx[i] = xh[i];
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
 
@@ -141,10 +131,6 @@ __dpct_inline__ void s2_gemv_fast_kernel(
 #pragma unroll
     for (int step = threads_per_row / 2; step > 0; step >>= 1) {
         if (tid < step) partial[tid] += partial[tid + step];
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     if (tid == 0) y[o] = partial[0];

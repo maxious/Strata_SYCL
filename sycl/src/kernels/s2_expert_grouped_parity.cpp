@@ -57,11 +57,6 @@ constexpr size_t XROW = (size_t) NCH_GU * 34;   // one token's activation row of
 int g_fail = 0;
 
 void ck(dpct::err0 e, const char *w) {
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 template <typename T> T* dalloc(size_t n) {
     T* p = nullptr;
@@ -74,12 +69,6 @@ template <typename T> T* dalloc(size_t n) {
     return p;
 }
 template <typename T> void up(T* d, const std::vector<T>& h) {
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
            d, h.data(), h.size() * sizeof(T)).wait()),
        "h2d");
@@ -187,11 +176,6 @@ bool twice(const char* name, float* d_out, size_t out_floats, const Scratch& s,
                         path == 1 ? "the new" : path == 0 ? "the previous" : "no", want ? "the new" : "the previous");
             ++g_fail;
         }
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaGetLastError function call was replaced with 0. You
-        need to rewrite this code.
-        */
         ck(0, name);
         ck(DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()),
            name);
@@ -503,12 +487,6 @@ void check_all() {
     // ---- 6. a 2-byte aligned activation row: the new path must decline and the previous kernels run
     {
         uint8_t* d_x2 = dalloc<uint8_t>(x.size() + 2);
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x2 + 2, x.data(), XROW).wait()),
            "x2");
@@ -548,12 +526,6 @@ void check_all() {
         // One allocation for both layouts: the BLOB + 4 strided copies first, then the same blobs BLOB apart from
         // `d_arena + 4` over them.
         for (int i = 0; i < nb; ++i)
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                    d_arena + (size_t)i * STRIDE, fx.hb(i), BLOB).wait()),
                "arena");
@@ -566,12 +538,6 @@ void check_all() {
             reference("moe_hit_grouped_s2 (slot stride BLOB + 4)", r, s, ent, x, &xs);
         }
         for (int i = 0; i < nb; ++i)
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                    d_arena + 4 + (size_t)i * BLOB, fx.hb(i), BLOB).wait()),
                "arena");
@@ -619,12 +585,6 @@ void bench() {
         std::vector<uint8_t> b(BLOB);
         for (int i = 0; i < nb; ++i) {
             fill_blob(b.data(), rng);
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                    fx.d + (size_t)i * BLOB, b.data(), BLOB).wait()),
                "blob");

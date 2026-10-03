@@ -280,12 +280,6 @@ try {
     if (native_gdn_enabled()) native_gdn_conv_silu(b.conv_state, b.qkv, conv_kernel, b.conv_out, b.h, C, g.ssm_d_conv, stream);
     else {
         gdn_conv_step(b.conv_state, b.qkv, conv_kernel, b.conv_out, C, g.ssm_d_conv, stream);
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         st->memcpy(b.h, b.conv_out, (size_t)C * 4);
         silu_inplace(b.h, C, stream);
     }
@@ -421,12 +415,6 @@ if (native_router_enabled() && (g.n_expert == 512 || g.n_expert == 256) && k == 
 if (db != nullptr && g_publish_kernel) {
     strata::kernels::doorbell_publish(x, b.ids, b.weights, g.n_embd, k, db->d_x_f, db->d_ids, db->d_weights, db->d_seq,
                                       stream);
-/*
-DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While the
-origin API might be synchronous, it depends on the type of operand memory, so
-you may need to call wait() on event return by memcpy API to ensure
-synchronization behavior.
-*/
 } else if (db != nullptr) {
     if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
             db->d_x_f, x, (size_t)g.n_embd * 4)) != 0 ||
@@ -1021,12 +1009,6 @@ if (!w_attnk->native_data || !w_attnv->native_data || !w_attnq->native_data) {
             strata::kernels::copy_i32_from_mapped(st.step, m_step, strata::kernels::kStepCount, stream);
             strata::kernels::copy_i32_from_mapped(st.pos_dev, m_pos, g.n_head, stream);
         } else
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(st.step, st.host_step, qsa_step_bytes())) != 0 ||            DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(st.pos_dev, st.host_pos, (size_t) g.n_head * 4)) != 0) {            err = "qsa_layer: the step-state upload failed";            return false;        }    }
 // ---- 3. the indexer's RAW key: appended before any norm, pooled later once per block
 project_bf16(x, b.x_bf16, (const uint16_t*) w_idxk->data, b.idx_raw, g.n_embd, g.idx_key_dim, false, stream);
@@ -1071,12 +1053,6 @@ if (!gemv_quantized(*w_attnq, p_q, f_q, b.x_q8_0, b.x_q8k, b.q_full, g.n_embd, g
 // `per_head[:, :head_dim]` - the FIRST half of each head's 2*head_dim block, copied out contiguously so
 // the norm and the rotation see whole rows.  A 2-D copy is a memcpy node, which captures (`pinned_capture`
 // case A) and needs no kernel.
-/*
-DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous memcpy API. While
-the origin API might be synchronous, it depends on the type of operand memory,
-so you may need to call wait() on event return by memcpy API to ensure
-synchronization behavior.
-*/
 if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
         b.qcur, (size_t)g.head_dim * 4, b.q_full, (size_t)g.head_dim * 2 * 4,
         (size_t)g.head_dim * 4, (size_t)g.n_head, dpct::device_to_device,
@@ -1121,12 +1097,6 @@ int64_t max_blocks = (st.max_cells / s.idx_block) + 2;
         native_flash_attn_short_step(b.qcur, b.k_scratch, b.v_scratch, st.step, cap,
             (int) st.max_cells, s, b.attn, st.attention_status, nullptr, stream);
     } catch (const std::exception& error) { err = v.name("native_flash_attn") + ": " + error.what(); return false; }
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
             st.host_step + kStepCount, st.attention_status, sizeof(int32_t))) !=
         0) {
@@ -1313,12 +1283,6 @@ uint64_t dump_stride_floats(const ModelGeometry& g) {
 static void dump_slot(float* dump, const ModelGeometry& g, int64_t layer, const float* src, uint64_t off,
                       uint64_t n, void* stream) {
     if (dump == nullptr || src == nullptr || n == 0) return;
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     strata::q_of(stream)->memcpy(dump + (size_t)layer * dump_stride_floats(g) + off, src,
                        n * sizeof(float));
 }
@@ -1385,11 +1349,6 @@ bool block_layer_pre(const WeightTable &tables, const ModelGeometry &g,
         // NG_HIST-1 elements per channel and an append is a strided copy of one - not a flat memmove, which
         // would be the natural reading and would scramble the channels.
         strata::kernels::ple_history_advance(ple->hist, po.normalized, stream);
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaPeekAtLastError function call was replaced with 0.
-        You need to rewrite this code.
-        */
         if (0 != 0) {
             err = "block_layer_pre: the PLE history shift failed";
             return false;
@@ -1473,12 +1432,6 @@ bool ple_issue_token(const PleRun& p, std::string& err) {
 bool ple_finish_token(const PleRun &p, void *stream, std::string &err) try {
     if (!p.ready()) { err = "ple_finish_token: the PLE run is not ready"; return false; }
     if (!p.table->collect(p.emb_host, err)) { err = "ple_finish_token: " + err; return false; }
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
             p.emb_dev, p.emb_host,
             (size_t)strata::kernels::NG_N_EMBD * sizeof(float))) != 0) {

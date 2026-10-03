@@ -76,10 +76,6 @@ __dpct_inline__ void s2_gemv_q8_kernel(const uint8_t *__restrict__ act,
 #pragma unroll
     for (int step = threads_per_row / 2; step > 0; step >>= 1) {
         if (tid < step) partial[tid] += partial[tid + step];
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     if (tid == 0) y[o] = partial[0];
@@ -128,11 +124,6 @@ void s2_gemv_q8(const uint8_t* act, const uint8_t* codes, const float* scales, f
                     });
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();

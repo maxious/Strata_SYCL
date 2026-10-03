@@ -115,13 +115,8 @@ bool transfer(void *dst, const void *src, size_t n, std::string &error) try {
     const dpct::err0 e =
         DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(dst, src, n).wait());
     if (e == 0) return true;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
     error = std::string("conversation snapshot copy: ") +
-            dpct::get_error_string_dummy(e);
+            dpct::error_string(e);
     return false;
 }
 catch (sycl::exception const &exc) {
@@ -230,20 +225,10 @@ bool conversation_kv_restore(const ConversationKv& image, const QsaState& st, co
         strata::kernels::kv_ring_restore(qsa_attn_pools(st), st.host, qsa_kv_format(st),
                                         std::max<int64_t>(0, end - st.n_slots), end, st.n_slots, shapes, nullptr);
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto status = 0;
     if (status == 0) return true;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
     error = std::string("conversation snapshot residency restore: ") +
-            dpct::get_error_string_dummy(status);
+            dpct::error_string(status);
     return false;
 }
 

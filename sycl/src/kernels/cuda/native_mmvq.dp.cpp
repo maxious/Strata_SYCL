@@ -211,12 +211,6 @@ q5_q8_dot_impl(const int *__restrict__ vl, const int *__restrict__ vh,
     return dm5f.x() * sumf_d - dm5f.y() * sumf_m;
 }
 
-/*
-DPCT1110: The total declared local variable size in device function
-q5_q8_dot exceeds 128 bytes and may cause high register pressure. Consult with
-your hardware vendor to find the total register size available and adjust the
-code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ float q5_q8_dot(const Q5KBlock *__restrict__ bq5,
                                 const Q81Block *__restrict__ bq8, int iqs) {
     int vl[2];
@@ -1149,12 +1143,6 @@ struct SmallTraits {
 bool g_multi_exact = true;   // until the upstream layout is timed on an idle GPU (plan rule: default only what is measured)
 
 template <typename F, int NCOLS, int NW, int ROWS, int SG = WARP>
-/*
-DPCT1110: The total declared local variable size in device function
-native_mmvq_multi_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 native_mmvq_multi_kernel(const typename F::Block *__restrict__ w,
                          const Q81Block *__restrict__ x, float *__restrict__ y,
@@ -1897,27 +1885,10 @@ void validate_stream(void* stream) {
     if (!stream) throw std::invalid_argument("native MMVQ requires an explicit non-null CUDA stream");
 }
 void launch_check() {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("native MMVQ launch: ") +
-                                 dpct::get_error_string_dummy(error));
+                                 dpct::error_string(error));
     }
 }
 

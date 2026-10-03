@@ -43,12 +43,6 @@ __dpct_inline__ float sigmoid(float x) {
 // ggml SCALE uses scale*x+bias, including its +0 bias. Retain this operation
 // explicitly so compile-time zero does not change signed-zero behavior.
 __dpct_inline__ float scale_zero_bias(float x, float scale) {
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     return sycl::fma(scale, x, 0.0f);
 }
 __dpct_inline__ void down_silu(float *lo, int count, float scale) {
@@ -73,27 +67,9 @@ pre_gated(const float *__restrict__ xn, float *__restrict__ gate,
     for (int c = 0; c < hc; ++c) {
         const std::size_t i = std::size_t(c) * n_embd + d;
         const float x = xn[i], w = sigmoid(gate[i]);
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         const float product = x * w;
         gate[i] = product;
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         if constexpr (Fused) sum = sycl::fma(x, w, sum);
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         else sum = c == 0 ? product : sum + product;
     }
     if constexpr (Fused) mixed[d] = scale * sum;
@@ -111,12 +87,6 @@ __dpct_inline__ void post(const float *residual,
     const int c = int(i / n_embd), d = int(i % n_embd);
     const float weight = scale_zero_bias(sigmoid(scale_zero_bias(inject[c], scale)), 2.0f);
     // Exact residual/output alias is supported; no other thread reads residual[i].
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     output[i] = sycl::fma(block_out[d], weight, residual[i]);
 }
 void check_pointer(const void* p) {
@@ -129,27 +99,10 @@ void check_shape(int n, int hc) {
 }
 unsigned blocks(std::size_t n) { return unsigned((n + THREADS - 1) / THREADS); }
 void check_launch() {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error != 0)
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("native GR postops launch: ") +
-                                 dpct::get_error_string_dummy(error));
+                                 dpct::error_string(error));
 }
 } // namespace
 

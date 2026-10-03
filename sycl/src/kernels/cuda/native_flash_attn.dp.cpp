@@ -55,12 +55,6 @@ __dpct_inline__ float warp_max(float x) {
 // D=256,ncols=1,F16/F16; 128 threads, nthreads_KQ=nthreads_V=8,
 // four values (float2) per load, four V columns per iteration. Padded length256
 // gives ntiles_KV=ceil(256/D)=1, so the pinned launcher selects grid.y=1.
-/*
-DPCT1110: The total declared local variable size in device function attend
-exceeds 128 bytes and may cause high register pressure. Consult with your
-hardware vendor to find the total register size available and adjust the code,
-or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
        const sycl::half *__restrict__ v, const int32_t *__restrict__ step,
@@ -185,41 +179,13 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
                     // Later columns use fma(V,w,acc). Explicit intrinsics retain
                     // that order despite this adapter's masked-load branches.
                     if (k0 == 0) {
-                        /*
-                        DPCT1013: The rounding mode could not be specified
-                        and the generated code may have different accuracy than
-                        the original code. Verify the correctness. SYCL math
-                        built-in function rounding mode is aligned with OpenCL
-                        C 1.2 standard.
-                        */
                         vkq[i0 / 8 + j].x() =
                             sycl::fma(rescale, vkq[i0 / 8 + j].x(), a * weight);
-                        /*
-                        DPCT1013: The rounding mode could not be specified
-                        and the generated code may have different accuracy than
-                        the original code. Verify the correctness. SYCL math
-                        built-in function rounding mode is aligned with OpenCL
-                        C 1.2 standard.
-                        */
                         vkq[i0 / 8 + j].y() =
                             sycl::fma(rescale, vkq[i0 / 8 + j].y(), b * weight);
                     } else {
-                        /*
-                        DPCT1013: The rounding mode could not be specified
-                        and the generated code may have different accuracy than
-                        the original code. Verify the correctness. SYCL math
-                        built-in function rounding mode is aligned with OpenCL
-                        C 1.2 standard.
-                        */
                         vkq[i0 / 8 + j].x() =
                             sycl::fma(a, weight, vkq[i0 / 8 + j].x());
-                        /*
-                        DPCT1013: The rounding mode could not be specified
-                        and the generated code may have different accuracy than
-                        the original code. Verify the correctness. SYCL math
-                        built-in function rounding mode is aligned with OpenCL
-                        C 1.2 standard.
-                        */
                         vkq[i0 / 8 + j].y() =
                             sycl::fma(b, weight, vkq[i0 / 8 + j].y());
                     }
@@ -235,19 +201,7 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
     const float rescale = sycl::native::exp(maximum - global_max);
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         vkq[i].x() = vkq[i].x() * rescale;
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         vkq[i].y() = vkq[i].y() * rescale;
     }
 #pragma unroll
@@ -326,26 +280,9 @@ void native_flash_attn_short_step(const float* q, const uint16_t* k, const uint1
                                reinterpret_cast<const sycl::half *>(mask));
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto result = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (result != 0)
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("native FlashAttention launch: ") +
-                                 dpct::get_error_string_dummy(result));
+                                 dpct::error_string(result));
 }
 } // namespace strata::kernels

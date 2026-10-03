@@ -37,12 +37,6 @@ T* dalloc(size_t n) {
 }
 
 template <typename T>
-/*
-DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in the
-original code the source host memory is pageable memory. If the memory is not
-pageable, call wait() on event return by memcpy API to ensure synchronization
-behavior.
-*/
 void up(T *d, const std::vector<T> &h) {
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
            d, h.data(), h.size() * sizeof(T)).wait()),

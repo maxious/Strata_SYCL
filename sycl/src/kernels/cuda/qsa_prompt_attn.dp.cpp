@@ -131,12 +131,6 @@ struct Smem {
 };
 
 template <int KV_MODE>
-/*
-DPCT1110: The total declared local variable size in device function
-prompt_attn_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                    const int32_t *__restrict__ ids,
@@ -151,11 +145,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     ids += (size_t) qi * cap;
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     const int n = *(steps + (size_t)qi * kStepCount + kStepWidth);
     const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
     const int gid = lane >> 2, tig = lane & 3;
@@ -215,10 +204,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             }
             S.row[t] = r;
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space); // rows ready; the previous chunk's p.v is done with
                             // k, v, s
         // gather the chunk's K and V rows (16-byte pieces; K8V4's V as q4_0 blocks dequantized to fp16)
@@ -295,22 +280,10 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                 sycl::uint4 kx = sycl::uint4(0, 0, 0, 0);
                 if (r >= 0) {
                     if constexpr (KV_MODE == 0)
-                        /*
-                        DPCT1098: The '*' expression is used instead of the
-                        __ldg call. These two expressions do not provide the
-                        exact same functionality. Check the generated code for
-                        potential precision and/or performance issues.
-                        */
                         kx = *(reinterpret_cast<const sycl::uint4 *>(p.k_pool +
                                                                      r * HD) +
                                pc);
                     else   // modes 1 and 3: the K side is INT8
-                        /*
-                        DPCT1098: The '*' expression is used instead of the
-                        __ldg call. These two expressions do not provide the
-                        exact same functionality. Check the generated code for
-                        potential precision and/or performance issues.
-                        */
                         kx = *(reinterpret_cast<const sycl::uint4 *>(p.k_q +
                                                                      r * HD) +
                                pc);
@@ -359,24 +332,10 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                     sycl::uint4 vx = sycl::uint4(0, 0, 0, 0);
                     if (r >= 0) {
                         if constexpr (KV_MODE == 1)
-                            /*
-                            DPCT1098: The '*' expression is used instead of
-                            the __ldg call. These two expressions do not provide
-                            the exact same functionality. Check the generated
-                            code for potential precision and/or performance
-                            issues.
-                            */
                             vx = *(reinterpret_cast<const sycl::uint4 *>(
                                        p.v_q + r * HD) +
                                    pc);
                         else
-                            /*
-                            DPCT1098: The '*' expression is used instead of
-                            the __ldg call. These two expressions do not provide
-                            the exact same functionality. Check the generated
-                            code for potential precision and/or performance
-                            issues.
-                            */
                             vx = *(reinterpret_cast<const sycl::uint4 *>(
                                        p.v_pool + r * HD) +
                                    pc);
@@ -417,10 +376,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                 S.vs[c][g] = b;
             }
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // scores: warp w takes cells 8w..8w+7 (one n-tile) over all 256 dims, per scale group (64 dims; q4_0's 32)
         constexpr int NG = Smem<KV_MODE>::NG, KPG = HD / 16 / NG;   // groups per row, 16-dim MMA steps per group
@@ -467,10 +422,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             S.s[gid + 8][c] = c < nh ? sc[2] * qdown : -INFINITY;
             S.s[gid + 8][c + 1] = c + 1 < nh ? sc[3] * qdown : -INFINITY;
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // online softmax: row t/8, 4 cells per thread, 8 threads per row (lanes 8r..8r+7 of a warp)
         {
@@ -508,10 +459,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                 S.mrow[r] = m_new;
             }
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // p.v: warp w owns dims [64w, 64w+64), which is int8 scale group w (q4_0: groups 2w and 2w+1, four n-tiles
         // each). A group's scale is folded into p relative to the chunk's largest magnitude (q4_0's scales are signed:
@@ -669,12 +616,6 @@ __dpct_inline__ void cp_async_wait1() {
 #endif
 }
 
-/*
-DPCT1110: The total declared local variable size in device function
-prompt_attn_i8_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
                       const int32_t *__restrict__ ids,
@@ -689,11 +630,6 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     ids += (size_t) qi * cap;
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     const int n = *(steps + (size_t)qi * kStepCount + kStepWidth);
     const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
     const int gid = lane >> 2, tig = lane & 3;
@@ -749,21 +685,11 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
 
     // the chunk pipeline: cells two chunks ahead, their pool rows one chunk ahead, the data (cp.async) one ahead
     const int n_chunks = (n + CH2 - 1) / CH2;
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto cell_of = [&](int c) -> int {
                                        return c < n ? *(ids + c) : -1;
     };
     auto row_of = [&](int cell) -> long long {
         if (cell < 0) return -1;
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         const long long page = (long long)*(p.page_table + cell / page_size);
         return (page * n_kv_heads + kvh) * page_size + (cell % page_size);
     };
@@ -777,21 +703,11 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             cp_async16(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16), p.k_q + off, ok);
             cp_async16(&S.kv[st][warp][1][0][0] + swz(cell, pc * 16), p.v_q + off, ok);
         }
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         ksr = r >= 0 ? sycl::vec<sycl::half, 1>(
                            sycl::bit_cast<sycl::half, unsigned short>(
                                *(p.k_scale + r * (HD / KV_Q8_GROUP) + warp)))
                            .convert<float, sycl::rounding_mode::automatic>()[0]
                      : 0.0f;
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         vsr = r >= 0 ? sycl::vec<sycl::half, 1>(
                            sycl::bit_cast<sycl::half, unsigned short>(
                                *(p.v_scale + r * (HD / KV_Q8_GROUP) + warp)))
@@ -841,10 +757,6 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             S.part[warp][gid + 8][c] = tg[2] * s0;
             S.part[warp][gid + 8][c + 1] = tg[3] * s1;
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
         {
@@ -884,10 +796,6 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
                 S.mrow[r] = m_new;
             }
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // p.v over this warp's 64 dims (as v1)
         {
@@ -1038,11 +946,6 @@ bool launch_i8(const float *q, const QsaAttnPools &pools, const int32_t *ids,
             });
         }
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     return true;
@@ -1121,11 +1024,6 @@ bool launch(const float *q, const QsaAttnPools &pools, const int32_t *ids,
             });
         }
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     return true;

@@ -79,13 +79,19 @@ template <int Arg> class dpct_kernel_scalar;
 
 namespace dpct {
 enum error_code { success = 0, default_error = 999 };
-/// A dummy function introduced to assist auto migration.
-/// The migration tool user should replace it with a real error-handling function.
-/// SYCL reports errors using exceptions and does not use error codes.
-inline const char *get_error_string_dummy(int ec) {
-  (void)ec;
-  return "<FIXME: Placeholder>"; // Return the error string for the error code
-                                 // ec.
+/// DPCT_CHECK_ERROR catches the exception a queued call raised, prints it and returns default_error, because SYCL
+/// reports errors by exception and has no error codes.  This keeps that message, so a caller can put what
+/// actually went wrong into its own error text.  It replaces the migration's `get_error_string_dummy`, which
+/// returned the literal "<FIXME: Placeholder>" at 92 call sites.
+inline std::string &last_error() {
+  static thread_local std::string message;
+  return message;
+}
+/// The message for a DPCT_CHECK_ERROR code: the exception the call raised, or the state of the code itself.
+inline const char *error_string(int ec) {
+  if (ec == success) return "no error";
+  const std::string &m = last_error();
+  return m.empty() ? "the call raised a SYCL exception (reported above)" : m.c_str();
 }
 } // namespace dpct
 
@@ -96,6 +102,7 @@ inline const char *get_error_string_dummy(int ec) {
       return dpct::success;                                                    \
     } catch (std::exception const &e) {                                        \
       std::cerr << e.what() << std::endl;                                      \
+      dpct::last_error() = e.what();                                           \
       return dpct::default_error;                                              \
     }                                                                          \
   }()

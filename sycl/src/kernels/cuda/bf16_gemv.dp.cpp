@@ -84,21 +84,12 @@ __dpct_inline__ void bf16_gemv_split_kernel(const uint16_t *__restrict__ x,
 #pragma unroll
     for (int off = tpr >> 1; off > 0; off >>= 1) {
         if (t < off) scratch[t] += scratch[t + off];
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     if (t == 0) y[o] = scratch[0];
 }
 
 inline void finish(void *stream, const char *what) try {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream != nullptr) return;

@@ -138,25 +138,8 @@ void native_gdn_step(float* state, const float* q, const float* k, const float* 
                              int(shape.h_v), scale);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+        0) throw std::runtime_error(dpct::error_string(error));
 }
 } // namespace strata::kernels

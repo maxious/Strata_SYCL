@@ -177,22 +177,9 @@ bool NativeDense::load(const std::vector<std::string> &shards,
                         dpct::get_in_order_queue()
                             .memcpy(data.get(), gguf.tensor_data(tensor), bytes)
                             .wait());
-                /*
-                DPCT1000: Error handling if-stmt was detected but could not
-                be rewritten.
-                */
                 if (status != 0) {
-                    /*
-                    DPCT1009: SYCL reports errors using exceptions and does
-                    not use error codes. Please replace the
-                    "get_error_string_dummy(...)" with a real error-handling
-                    function.
-                    */
-                    /*
-                    DPCT1001: The statement could not be removed.
-                    */
                     err = "native dense upload " + tensor.name + ": " +
-                          dpct::get_error_string_dummy(status);
+                          dpct::error_string(status);
                         return false;
                 }
                 max_in = (std::max)(max_in, (int) ref.ne0);
@@ -207,21 +194,9 @@ bool NativeDense::load(const std::vector<std::string> &shards,
                                  strata::kernels::native_q8_1_bytes(max_in),
                                  dpct::get_in_order_queue()));
         DevicePtr scratch(allocation);
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
-        /*
-        DPCT1000: Error handling if-stmt was detected but could not be
-        rewritten.
-        */
         if (status != 0) {
             err = std::string("native dense scratch: ") +
-                  dpct::get_error_string_dummy(status);
+                  dpct::error_string(status);
             return false;
         }
         // All checks and allocations finish before publishing any reference.

@@ -3,6 +3,12 @@
 // Every launcher takes `void* stream`, a cudaStream_t where null means the default stream. dpct migrates the
 // cast to `(dpct::queue_ptr) stream` and dereferences it, so a null stream is a null sycl::queue* and a crash.
 // q_of() is that cast with CUDA's null-stream meaning restored: the default in-order queue.
+//
+// IN-ORDER IS LOAD-BEARING. The migration turned ~320 cudaMemcpy/cudaMemcpyAsync sites into queue.memcpy() and
+// memcpy_async() calls that depend on the stream's ordering; DPCT flagged every one "assuming in-order queue".
+// Every queue this port runs on is in-order - q_of() below, and the second-GPU expert path's stream_
+// (remote_experts.cpp) - and nothing under sycl/src calls dpct::get_out_of_order_queue(). A queue built without
+// property::queue::in_order() breaks all of those copies silently.
 #pragma once
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>

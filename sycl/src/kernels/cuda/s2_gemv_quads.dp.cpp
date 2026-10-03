@@ -72,10 +72,6 @@ __dpct_inline__ void s2_gemv_quads_kernel(const uint16_t *__restrict__ x,
 #pragma unroll
     for (int step = threads_per_row / 2; step > 0; step >>= 1) {
         if (tid < step) partial[tid] += partial[tid + step];
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     if (tid == 0) y[o] = partial[0];

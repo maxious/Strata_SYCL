@@ -16,12 +16,6 @@ constexpr int S = 128;          // state size (rows = cols = 128)
 constexpr int RG = 4;           // row groups
 constexpr int RPG = S / RG;     // 32 rows per thread
 
-/*
-DPCT1110: The total declared local variable size in device function
-gdn_step_norm_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gdn_step_norm_kernel(
     float *__restrict__ state, const float *__restrict__ q,
     const float *__restrict__ k, const float *__restrict__ v,
@@ -115,10 +109,6 @@ auto &part =
                 sq, o);
         if ((item_ct1.get_local_id(2) & 31) == 0)
             part[item_ct1.get_local_id(2) >> 5] = sq;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float ss = part[0] + part[1] + part[2] + part[3];
         y *= sycl::rsqrt(ss + eps);
@@ -141,11 +131,6 @@ gdn_ab_kernel(const float *__restrict__ x, const uint16_t *__restrict__ wa,
         (is_beta ? wb : wa) + (size_t)r * n);
     float acc = 0.0f;
     for (int j = lane; j < n / 8; j += 32) {
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         const sycl::uint4 wv = *(w4 + j);
         const sycl::float4 xa =
             *reinterpret_cast<const sycl::float4 *>(x + j * 8);
@@ -206,17 +191,7 @@ void fused_gdn_conv_l2(float* history, const float* qkv, const float* conv_w, fl
                                            eps);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 void fused_gdn_ab(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
@@ -242,17 +217,7 @@ void fused_gdn_ab(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
                                       n_embd, h_v);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 void fused_gdn_step_norm(float* state, const float* q, const float* k, const float* v, const float* gate,
@@ -283,11 +248,6 @@ void fused_gdn_step_norm(float* state, const float* q, const float* k, const flo
                                              gamma, eps, y, h_k, h_v);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 

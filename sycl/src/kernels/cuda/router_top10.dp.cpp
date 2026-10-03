@@ -69,12 +69,6 @@ constexpr int RT_MAX_THREADS = 512;
 
 /// One BLOCK per token, so the reductions have somewhere to happen.  `n_tokens` is 1 in decode; the grid keeps
 /// the batch case working without a second code path.
-/*
-DPCT1110: The total declared local variable size in device function
-router_top10_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void router_top10_kernel(const float *__restrict__ logits,
                                          int n_tokens, int n_expert, int k,
                                          int *__restrict__ ids,
@@ -187,10 +181,6 @@ __dpct_inline__ void router_top10_kernel(const float *__restrict__ logits,
             if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
         }
         if ((tid & 31) == 0) { s_red[tid >> 5] = bv; s_rid[tid >> 5] = bi; }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (tid < 32) {
             const int nw = (nt + 31) >> 5;
@@ -208,10 +198,6 @@ __dpct_inline__ void router_top10_kernel(const float *__restrict__ logits,
                 s_taken[ix] = 1;
             }
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     item_ct1.barrier(sycl::access::fence_space::local_space);
@@ -463,11 +449,6 @@ void router_top10(const float *logits, int n_tokens, int n_expert, int k,
                     });
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) {

@@ -76,17 +76,7 @@ inline float block_sum(float v, float *sh) {
     return sh[0];
 }
 void check(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 unsigned blocks_for(int64_t n, int t = 256) { return (unsigned) ((n + t - 1) / t); }
 
@@ -367,12 +357,6 @@ __dpct_inline__ void gdn_l2_kernel(float *__restrict__ h, float eps) {
     x[item_ct1.get_local_id(2)] = v * sycl::rsqrt(ss + eps);
 }
 constexpr int RG = 4, RPG = S / RG;
-/*
-DPCT1110: The total declared local variable size in device function
-gdn_rec_kernel exceeds 128 bytes and may cause high register pressure. Consult
-with your hardware vendor to find the total register size available and adjust
-the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 gdn_rec_kernel(float *__restrict__ state, const float *__restrict__ h,
                const float *__restrict__ gate, const float *__restrict__ beta,
@@ -401,16 +385,8 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     const float g_col = gamma[col];
     for (int64_t t = 0; t < T; ++t) {
         const float* ht = h + t * C;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (tid < S) { sq[tid] = ht[qh * S + tid]; sk[tid] = ht[HK * S + qh * S + tid]; }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float g = sycl::native::exp(gate[t * HV + head]);
         float kv = 0.0f;
@@ -418,10 +394,6 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         for (int r = 0; r < RPG; ++r)
             kv = sycl::fma(s[r], sk[rg * RPG + r], kv);
         red[rg][col] = kv;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
         const float delta = (ht[2 * HK * S + head * S + col] - g * kv_col) * beta[t * HV + head];
@@ -431,16 +403,8 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
             s[r] = sycl::fma((float)g, s[r], sk[rg * RPG + r] * delta);
             o = sycl::fma(s[r], sq[rg * RPG + r], o);
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][col] = o;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         float oc = 0.0f, sp = 0.0f;
         if (rg == 0) {
@@ -450,10 +414,6 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         }
         sp = warp_sum(sp);
         if ((tid & 31) == 0) wsum[tid >> 5] = sp;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) {
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
@@ -472,12 +432,6 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
 // in its own kernel. Per column the same arithmetic in the same order (the 4 row-group partial sums added as
 // red[0] + red[1] + red[2] + red[3]; the norm's warp sums over the same 32-column warps): the same bits.
 constexpr int CB = 32, NCB = S / CB;
-/*
-DPCT1110: The total declared local variable size in device function
-gdn_rec_cols_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gdn_rec_cols_kernel(float *__restrict__ state,
                                          const float *__restrict__ h,
                                          const float *__restrict__ gate,
@@ -504,16 +458,8 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     for (int r = 0; r < RPG; ++r) s[r] = base[r * rs];
     for (int64_t t = 0; t < T; ++t) {
         const float* ht = h + t * C;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (tid < S) { sq[tid] = ht[qh * S + tid]; sk[tid] = ht[HK * S + qh * S + tid]; }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float g = sycl::native::exp(gate[t * HV + head]);
         float kv = 0.0f;
@@ -521,10 +467,6 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         for (int r = 0; r < RPG; ++r)
             kv = sycl::fma(s[r], sk[rg * RPG + r], kv);
         red[rg][c] = kv;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
         const float delta = (ht[2 * HK * S + head * S + col] - g * kv_col) * beta[t * HV + head];
@@ -534,16 +476,8 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
             s[r] = sycl::fma((float)g, s[r], sk[rg * RPG + r] * delta);
             o = sycl::fma(s[r], sq[rg * RPG + r], o);
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][c] = o;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) oc_out[t * HV * S + head * S + col] =
             (red[0][c] + red[1][c] + red[2][c] + red[3][c]) *
@@ -555,12 +489,6 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
 // gdn_rec_cols_kernel with the next token's inputs (q/k rows, v, gate, beta) loaded into registers while this token
 // computes (software pipelining).  The same arithmetic in the same order: the same bits, and the same CB-column split.
 // STRATA_GDN_PIPELINE=0: gdn_rec_cols_kernel.
-/*
-DPCT1110: The total declared local variable size in device function
-gdn_rec_cols_pipe_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
                                               const float *__restrict__ h,
                                               const float *__restrict__ gate,
@@ -602,17 +530,9 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
 #pragma unroll
         for (int u = 0; u < LPT; ++u) { cq[u] = nq[u]; ck[u] = nk[u]; }
         const float cv = nv, cg = ng, cbt = nb;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
         for (int u = 0; u < LPT; ++u) { sq[tid + u * NT] = cq[u]; sk[tid + u * NT] = ck[u]; }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t + 1 < T) fetch(t + 1);
         const float g = sycl::native::exp(cg);
@@ -621,10 +541,6 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         for (int r = 0; r < RPG; ++r)
             kv = sycl::fma(s[r], sk[rg * RPG + r], kv);
         red[rg][c] = kv;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
         const float delta = (cv - g * kv_col) * cbt;
@@ -634,16 +550,8 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
             s[r] = sycl::fma((float)g, s[r], sk[rg * RPG + r] * delta);
             o = sycl::fma(s[r], sq[rg * RPG + r], o);
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][c] = o;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) oc_out[t * HV * S + head * S + col] =
             (red[0][c] + red[1][c] + red[2][c] + red[3][c]) *
@@ -724,12 +632,6 @@ gdn_cp_wait_prev() { // every group but the newest has landed
 #endif
 }
 constexpr int GDN_TB = 8, VPK = HV / HK;   // tokens per staged block, value heads per key head
-/*
-DPCT1110: The total declared local variable size in device function
-gdn_rec_kh_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
                                        const float *__restrict__ h,
                                        const float *__restrict__ gate,
@@ -798,10 +700,6 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
         if (k + 1 < nblk) stage(k + 1);
         gdn_cp_commit();
         gdn_cp_wait_prev();
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const int bb = (int) (k & 1);
         const int n = (int) ((T - k * TB) < TB ? (T - k * TB) : TB);
@@ -823,11 +721,6 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
                     kv[j] = sycl::fma(s[j][r], kc[r], kv[j]);
 #pragma unroll
             for (int j = 0; j < VPK; ++j) rkv[j][rg][c] = kv[j];
-            /*
-            DPCT1118: SYCL group functions and algorithms must be
-            encountered in converged control flow. You may need to adjust the
-            code.
-            */
             item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
             for (int j = 0; j < VPK; ++j) {
@@ -845,11 +738,6 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
             }
 #pragma unroll
             for (int j = 0; j < VPK; ++j) ro[j][rg][c] = o[j];
-            /*
-            DPCT1118: SYCL group functions and algorithms must be
-            encountered in converged control flow. You may need to adjust the
-            code.
-            */
             item_ct1.barrier(sycl::access::fence_space::local_space);
             if (rg < VPK)   // row group j writes head j's output
                 oc_out[t * HV * S + (qh + rg * HK) * S + col] =
@@ -904,12 +792,6 @@ auto &wsum = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[4]>(
 
 // ---------------------------------------------------------------- MoE
 template <int REG>
-/*
-DPCT1110: The total declared local variable size in device function
-route_kernel exceeds 128 bytes and may cause high register pressure. Consult
-with your hardware vendor to find the total register size available and adjust
-the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void route_kernel(const float *__restrict__ logits,
                                   int32_t *__restrict__ ids,
                                   float *__restrict__ wout, int64_t T) {
@@ -960,12 +842,6 @@ __dpct_inline__ void route_kernel(const float *__restrict__ logits,
 }
 // Strata blob: gate/up codes [1280][640 B], down codes [2560][160 B], gate/up scales [1280][40] f16, down scales [2560][10] f16
 template <bool HALF>
-/*
-DPCT1110: The total declared local variable size in device function
-blob_dequant_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void blob_dequant_kernel(const uint8_t *__restrict__ blob,
                                          uint16_t *__restrict__ gu16,
                                          uint16_t *__restrict__ d16) {

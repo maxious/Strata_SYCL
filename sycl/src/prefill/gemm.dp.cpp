@@ -375,24 +375,12 @@ bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
          "cublasSetStream");
     // A fixed workspace so the handle never allocates on the way (and graphs could capture it later).
     const size_t ws = 32u << 20;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (const dpct::err0 e =
             DPCT_CHECK_ERROR(workspace_ = (void *)sycl::malloc_device(
                                  ws, dpct::get_in_order_queue()));
         e != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("prefill gemm: workspace of 32 MiB: ") +
-              dpct::get_error_string_dummy(e);
+              dpct::error_string(e);
         return false;
     }
     /*
@@ -406,26 +394,13 @@ bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
     hipblaslt_state_ = create_hipblaslt_state(workspace_, ws).release();
 #endif
     if (scratch_elems > 0) {
-        /*
-        DPCT1000: Error handling if-stmt was detected but could not be
-        rewritten.
-        */
         if (const dpct::err0 e = DPCT_CHECK_ERROR(
                 scratch_ = (uint16_t *)sycl::malloc_device(
                     (size_t)scratch_elems * 2, dpct::get_in_order_queue()));
             e != 0) {
-            /*
-            DPCT1001: The statement could not be removed.
-            */
             err = "prefill gemm: dequant scratch of " +
                   std::to_string(scratch_elems * 2 >> 20) + " MiB: " +
-                  /*
-                  DPCT1009: SYCL reports errors using exceptions and does
-                  not use error codes. Please replace the
-                  "get_error_string_dummy(...)" with a real error-handling
-                  function.
-                  */
-                  dpct::get_error_string_dummy(e);
+                  dpct::error_string(e);
             return false;
         }
     }

@@ -208,12 +208,6 @@ int history_advance_regression() {
        "history norm guard init");
     float* history = history_storage + guard;
     float* norm = norm_storage + guard;
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
            history, expected.data(), count * sizeof(float)).wait()),
        "history initial values");
@@ -243,12 +237,6 @@ int history_advance_regression() {
             for (size_t r = 0; r + 1 < rows; ++r) expected[c * rows + r] = expected[c * rows + r + 1];
             expected[c * rows + rows - 1] = normalized[c];
         }
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(stream->memcpy(norm, normalized.data(),
                                            channels * sizeof(float))),
            "history new normalized row");
@@ -763,57 +751,21 @@ int main(int argc, char** argv) {
     ck(DPCT_CHECK_ERROR(d_cr = (float *)sycl::malloc_device(
                             hcd * 4, dpct::get_in_order_queue())),
        "cr");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR(
            (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_nk, cap.w_nk.data(), hcd * 4).wait()),
        "cnk");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR(
            (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_nq, cap.w_nq.data(), hcd * 4).wait()),
        "cnq");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR(
            (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_nc, cap.w_nc.data(), hcd * 4).wait()),
        "cnc");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
            d_kc, key_codes.data(), key_codes.size()).wait()),
        "ckc");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
            d_vb, value_bf16.data(), value_bf16.size() * 2).wait()),
        "cvb");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
            d_c1, conv1d_f16.data(), conv1d_f16.size() * 2).wait()),
        "cc1");
@@ -830,12 +782,6 @@ int main(int argc, char** argv) {
     ck(DPCT_CHECK_ERROR(d_ks = (float *)sycl::malloc_device(
                             key_scales.size() * 4, dpct::get_in_order_queue())),
        "ks");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
            d_ks, key_scales.data(), key_scales.size() * 4).wait()),
        "cks");
@@ -860,30 +806,12 @@ int main(int argc, char** argv) {
     // ggml layout for the state is `ne=(hist, hc_dim)`: flat = row + NG_HIST*channel.
     std::vector<float> hist_state = cap.hist;
     for (int t = 0; t < cap.nt; ++t) {
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                d_emb, cap.emb.data() + (size_t)t * nd, nd * 4).wait()),
            "cemb");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                d_hid, cap.hidden.data() + (size_t)t * hcd, hcd * 4).wait()),
            "chid");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                d_hist, hist_state.data(), (size_t)k::NG_HIST * hcd * 4).wait()),
            "chist");
@@ -1009,12 +937,6 @@ int main(int argc, char** argv) {
                 }
                 reference_value[row] = float(sum);
             }
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                    d_emb, witness.data(), nd * sizeof(float)).wait()),
                "native PLE witness");
@@ -1088,12 +1010,6 @@ int main(int argc, char** argv) {
             ck(DPCT_CHECK_ERROR(
                    dpct::get_current_device().destroy_queue(stream)),
                "native PLE stream destroy");
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                    d_emb, cap.emb.data(), nd * sizeof(float)).wait()),
                "restore PLE embedding");
@@ -1146,12 +1062,6 @@ int main(int argc, char** argv) {
                "native PLE q8 guards");
             void* native_data = static_cast<uint8_t*>(native_storage) + guard;
             void* native_q = static_cast<uint8_t*>(q_storage) + guard;
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                    native_data, native_key.data(), native_bytes).wait()),
                "native PLE weights upload");
@@ -1202,12 +1112,6 @@ int main(int argc, char** argv) {
                 dpct::experimental::command_graph_exec_ptr executable = nullptr;
             std::vector<float> projected(hcd), normalized(hcd), actual_key(hcd), actual_result(hcd), replay(hcd);
             for (int p = 0; p < std::min(cap.nt, 2); ++p) {
-                /*
-                DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-                assuming in the original code the source host memory is pageable
-                memory. If the memory is not pageable, call wait() on event
-                return by memcpy API to ensure synchronization behavior.
-                */
                 ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                        d_emb, cap.emb.data() + (size_t)p * nd, nd * 4).wait()),
                    "native PLE key input");
@@ -1299,12 +1203,6 @@ int main(int argc, char** argv) {
             sycl::free(raw_projection, dpct::get_in_order_queue());
                 sycl::free(q_storage, dpct::get_in_order_queue());
                 sycl::free(native_storage, dpct::get_in_order_queue());
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                    d_emb, cap.emb.data(), nd * 4).wait()),
                "native PLE restore input");
@@ -1353,12 +1251,6 @@ int main(int argc, char** argv) {
                                std::memcmp(compact_result.data(), dev_res.data(), hcd * sizeof(float)) == 0;
             std::printf("  PLE separate exports and in-place hidden result: %s\n", equal ? "byte-identical" : "FAIL");
             if (!equal) ++bad;
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                    d_hid, cap.hidden.data(), hcd * sizeof(float)).wait()),
                "restore PLE hidden input");

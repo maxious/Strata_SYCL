@@ -82,19 +82,7 @@ append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
         float sum = pos == 0 ? incoming : tail[d];
 #pragma unroll
         for (int j = 1; j < R; ++j)
-            /*
-            DPCT1013: The rounding mode could not be specified and the
-            generated code may have different accuracy than the original code.
-            Verify the correctness. SYCL math built-in function rounding mode is
-            aligned with OpenCL C 1.2 standard.
-            */
             sum = sum + (pos == 0 || j == R - 1 ? incoming : tail[j * D + d]);
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         mean = sycl::fma(0.25f, sum, 0.0f); // SCALE includes a zero bias.
     }
     float square_sum = 0.0f;
@@ -195,19 +183,7 @@ append_first(const float *__restrict__ raw, const float *__restrict__ gamma,
                 .convert<float, sycl::rounding_mode::automatic>()[0];
         float sum = incoming;
 #pragma unroll
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         for (int j = 1; j < R; ++j) sum = sum + incoming;
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         mean = sycl::fma(0.25f, sum, 0.0f);
     }
     const float square_sum = norm_scale(mean, partials, d);
@@ -254,19 +230,7 @@ append_blocks(const float *__restrict__ raw, int64_t n, int64_t p0,
         };
         float sum = key(0);
 #pragma unroll
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         for (int j = 1; j < R; ++j) sum = sum + key(j);
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         mean = sycl::fma(0.25f, sum, 0.0f);
     }
     const float square_sum = norm_scale(mean, partials, d);
@@ -375,26 +339,9 @@ void native_qsa_indexer_append(const float* raw, const int32_t* relative_pos_dev
                         });
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+        0) throw std::runtime_error(dpct::error_string(error));
 }
 void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, int32_t pos_base, const float* gamma,
                                      float epsilon, const QsaIndexerBuffers& b, const QsaShapes& s, int64_t max_cells,
@@ -493,25 +440,8 @@ void native_qsa_indexer_append_batch(const float* raw, int64_t n, int64_t p0, in
                 append_tail(raw, n, p0, b.tail);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+        0) throw std::runtime_error(dpct::error_string(error));
 }
 } // namespace strata::kernels

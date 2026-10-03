@@ -26,17 +26,7 @@ namespace strata::kernels {
 namespace {
 
 void check(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 // ---------------------------------------------------------------- llama.cpp helpers (vecdotq.cuh)
@@ -1588,12 +1578,6 @@ __dpct_inline__ void swiglu_q8_1_entries_kernel(
 #if defined(__HIPCC__)
         const float h = (g / (1.0f + __expf(-g))) * up[i];
 #else
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         const float h = (g / (1.0f + sycl::native::exp(-g))) * up[i];
 #endif
         q8_1_store(h, hq, i);

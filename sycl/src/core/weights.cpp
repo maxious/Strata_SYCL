@@ -453,12 +453,6 @@ bool WeightTable::load(const std::string &pack_dir, void *arena_base,
                 }
 
                 const double u0 = now_ms();
-                /*
-                DPCT1114: cudaMemcpy is migrated to asynchronization
-                memcpy, assuming in the original code the source host memory is
-                pageable memory. If the memory is not pageable, call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 if (DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
                         dst_base + r.dst_off + out_at, host_src, out_bytes).wait()) !=
                     0) {

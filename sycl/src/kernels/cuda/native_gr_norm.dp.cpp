@@ -134,27 +134,10 @@ void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* 
                 weighted_rms_norm<1024>(input, gamma, output, n_cols, epsilon);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error != 0)
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("native GR RMSNorm launch: ") +
-                                 dpct::get_error_string_dummy(error));
+                                 dpct::error_string(error));
 }
 
 } // namespace strata::kernels

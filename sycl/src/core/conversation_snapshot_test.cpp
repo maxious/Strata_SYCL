@@ -20,11 +20,6 @@ void check(bool ok, const char* label) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", label); std::exit(1); }
 }
 void cuda_check(dpct::err0 e) {
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 struct Fixture {
     ModelGeometry g;

@@ -67,19 +67,7 @@ __dpct_inline__ void bf16_f32_mmvf_kernel(const float *__restrict__ x,
         const uint32_t weight = weights2[pair];
         const sycl::float2 input = inputs2[pair];
         // Match the two ordered multiply-adds in ggml_cuda_mad, not a pair sum followed by one add.
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         acc = sycl::fma(f32_from_bf16((uint16_t)weight), input.x(), acc);
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         acc =
             sycl::fma(f32_from_bf16((uint16_t)(weight >> 16)), input.y(), acc);
     }
@@ -125,19 +113,7 @@ __dpct_inline__ void bf16_f32_mmvf_multi_kernel(
                 const sycl::float2 input =
                     reinterpret_cast<const sycl::float2 *>(x + (size_t)k *
                                                                    ldx)[pair];
-                /*
-                DPCT1013: The rounding mode could not be specified and the
-                generated code may have different accuracy than the original
-                code. Verify the correctness. SYCL math built-in function
-                rounding mode is aligned with OpenCL C 1.2 standard.
-                */
                 acc[k] = sycl::fma(w0, input.x(), acc[k]);
-                /*
-                DPCT1013: The rounding mode could not be specified and the
-                generated code may have different accuracy than the original
-                code. Verify the correctness. SYCL math built-in function
-                rounding mode is aligned with OpenCL C 1.2 standard.
-                */
                 acc[k] = sycl::fma(w1, input.y(), acc[k]);
             }
         }
@@ -243,28 +219,11 @@ void bf16_gemv_fp32_mmvf_multi(const float* x, int64_t ldx, const uint16_t* w, f
         STRATA_MMVF_M(160); STRATA_MMVF_M(192); STRATA_MMVF_M(224); STRATA_MMVF_M(256);
     }
 #undef STRATA_MMVF_M
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 result = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (result != 0)
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(
             std::string("bf16_gemv_fp32_mmvf_multi launch: ") +
-            dpct::get_error_string_dummy(result));
+            dpct::error_string(result));
 }
 
 void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
@@ -313,27 +272,10 @@ void bf16_gemv_fp32_mmvf(const float* x, const uint16_t* w, float* y,
         STRATA_MMVF_CASE(256);
     }
 #undef STRATA_MMVF_CASE
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 result = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (result != 0)
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("bf16_gemv_fp32_mmvf launch: ") +
-                                 dpct::get_error_string_dummy(result));
+                                 dpct::error_string(result));
 }
 
 

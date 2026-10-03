@@ -95,12 +95,6 @@ __dpct_inline__ void load8(const QsaAttnPools &p, bool value, long long row,
 }
 
 template <int KV_MODE>
-/*
-DPCT1110: The total declared local variable size in device function
-attn_chunk_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
                   const int32_t *__restrict__ ids,
@@ -128,11 +122,6 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
         *sycl::ext::oneapi::group_local_memory_for_overwrite<long long[CHUNK]>(
             sycl::ext::oneapi::this_work_item::get_work_group<
                 3>()); // pool row of each cell (page, kv head, slot)
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     const int n_ids = *(step + kStepWidth);
     const int chunk = item_ct1.get_group(2), kvh = item_ct1.get_group(1);
     const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
@@ -368,11 +357,6 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                                   stride);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 
@@ -479,11 +463,6 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
                 attn_merge_kernel(part_acc, part_m, part_l, n_chunks, attn, 0);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 

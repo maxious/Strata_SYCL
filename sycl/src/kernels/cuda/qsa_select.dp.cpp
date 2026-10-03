@@ -66,12 +66,6 @@ __dpct_inline__ void block_scores_kernel(const float *__restrict__ pooled,
     }
 }
 
-/*
-DPCT1110: The total declared local variable size in device function
-block_topk_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void block_topk_kernel(const float *__restrict__ scores,
                                        const int32_t *__restrict__ steps,
                                        int64_t max_blocks, int64_t cap,
@@ -110,10 +104,6 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
     for (int shift = 24; shift >= 0; shift -= 8) {
 #pragma unroll
         for (int i = t; i < 256; i += TOPK_T) hist[i] = 0;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
         for (int64_t b = b0; b < b1; ++b) {
@@ -124,10 +114,6 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
                 sycl::access::address_space::generic_space>(
                 &hist[(k >> shift) & 255], w);
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t == 0) {
             int cum = above, d = 255;
@@ -139,17 +125,9 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
             s_digit = d;
             s_above = cum;
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         prefix |= (uint32_t) s_digit << shift;
         above = s_above;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     const uint32_t thr = prefix;
@@ -253,12 +231,6 @@ __dpct_inline__ void mma_tf32(float *c, const uint32_t *a, const uint32_t *b) {
 #endif
 }
 
-/*
-DPCT1110: The total declared local variable size in device function
-block_scores_tc_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void block_scores_tc_kernel(
     const float *__restrict__ pooled, const float *__restrict__ q_idx,
     const int32_t *__restrict__ steps, int64_t nq, int64_t max_blocks,
@@ -293,10 +265,6 @@ __dpct_inline__ void block_scores_tc_kernel(
         const int64_t b0 =
             ((int64_t)item_ct1.get_group(2) * TC_ITER + it) * TC_NB;
         if (b0 >= reach || b0 >= hi_nbid) break;      // blocks >= every query's n_bid: nothing to score
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space); // the previous tile's reads are done
         for (int i = t; i < TC_NB * IDX_DIM / 4; i += 128) {
             const int r = i / (IDX_DIM / 4), c = i % (IDX_DIM / 4);
@@ -305,10 +273,6 @@ __dpct_inline__ void block_scores_tc_kernel(
                 pooled + (b0 + r) * IDX_DIM)[c];
             *reinterpret_cast<sycl::float4 *>(sK + r * TC_KS + c * 4) = v;
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         float acc[IDX_HEADS][4];
 #pragma unroll
@@ -600,12 +564,6 @@ __dpct_inline__ int block_excl_scan(int v, int *s_warp, int &total) {
 }
 
 template <int PER>
-/*
-DPCT1110: The total declared local variable size in device function
-block_topk_reg_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void block_topk_reg_kernel(const float *__restrict__ scores,
                                            const int32_t *__restrict__ steps,
                                            int64_t max_blocks, int64_t cap,
@@ -657,10 +615,6 @@ auto &hist =
                     sycl::access::address_space::generic_space>(
                     &hist[warp][(key[j] >> shift) & 255], w);
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t < 256) {                                // fold the warps' histograms into warp 0's
             int s = 0;
@@ -668,10 +622,6 @@ auto &hist =
             for (int w2 = 0; w2 < TK_T / 32; ++w2) s += hist[w2][t];
             hist[0][t] = s;
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t == 0) {
             int cum = above, d = 255;
@@ -683,17 +633,9 @@ auto &hist =
             s_digit = d;
             s_above = cum;
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         prefix |= (uint32_t) s_digit << shift;
         above = s_above;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     const uint32_t thr = prefix;
@@ -740,13 +682,6 @@ auto &hist =
 // qsa_block_scores takes it for every call without an active-block count and at most MQ queries: the captured decode
 // window, the uncaptured decode, and prefill's pooled16 call.
 constexpr int MQ = 8;
-/*
-DPCT1110: The total declared local variable size in device function
-block_scores_multi_kernel exceeds 128 bytes and may cause high register
-pressure. Consult with your hardware vendor to find the total register size
-available and adjust the code, or use smaller sub-group size to avoid high
-register pressure.
-*/
 __dpct_inline__ void block_scores_multi_kernel(
     const float *__restrict__ pooled, const float *__restrict__ dead,
     const float *__restrict__ q_idx, const int32_t *__restrict__ steps, int nq,
@@ -1195,17 +1130,7 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
                                                       max_blocks, scores);
                         });
         }
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaGetLastError function call was replaced with 0. You
-        need to rewrite this code.
-        */
         const dpct::err0 e = 0;
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
 
         return;
     }
@@ -1227,17 +1152,7 @@ void qsa_block_scores(const float* pooled, const float* dead, const float* q_idx
                                             max_blocks, scores);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 bool qsa_block_scores_tc(const float *pooled, const float *dead,
@@ -1359,17 +1274,7 @@ bool qsa_block_scores_tc(const float *pooled, const float *dead,
                                                  scores);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 
     return true;
 #endif
@@ -1400,17 +1305,7 @@ void qsa_block_topk_ref(const float* scores, const int32_t* steps, int64_t nq, i
                     block_topk_kernel(scores, steps, max_blocks, cap, ids);
                 });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 #if !defined(__HIPCC__)
@@ -1640,17 +1535,7 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
                                                           max_blocks, cap, ids);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 }  // namespace strata::kernels

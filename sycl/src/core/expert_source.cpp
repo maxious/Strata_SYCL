@@ -1225,26 +1225,9 @@ bool FileExpertSource::pin_cache_complement(
     }
     const dpct::err0 sync =
         DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw());
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (sync != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("FileExpertSource: GPU expert cache is not ready: ") +
-              dpct::get_error_string_dummy(sync);
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaGetLastError function call was replaced with 0. You
-        need to rewrite this code.
-        */
+              dpct::error_string(sync);
         (void)0;
         return false;
     }
@@ -1428,19 +1411,8 @@ bool FileExpertSource::pin_cache_complement(
                     pinned_ok = true;
                     note = "page-locked and mapped";
                 } else {
-                    /*
-                    DPCT1009: SYCL reports errors using exceptions and does
-                    not use error codes. Please replace the
-                    "get_error_string_dummy(...)" with a real error-handling
-                    function.
-                    */
                     note = std::string("no device alias (") +
-                           dpct::get_error_string_dummy(aliased) + ")";
-                    /*
-                    DPCT1010: SYCL uses exceptions to report errors and does
-                    not use the error codes. The cudaGetLastError function call
-                    was replaced with 0. You need to rewrite this code.
-                    */
+                           dpct::error_string(aliased) + ")";
                     (void)0;
                     (void)DPCT_CHECK_ERROR(
                         sycl::free(arena, dpct::get_in_order_queue()));
@@ -1449,19 +1421,8 @@ bool FileExpertSource::pin_cache_complement(
             } else {
                 // Refused (the driver's page-locked limit): the same bytes in ordinary memory, locked in the working
                 // set instead, as the arena does - resident either way, only copied by the CPU instead of by DMA.
-                /*
-                DPCT1009: SYCL reports errors using exceptions and does not
-                use error codes. Please replace the
-                "get_error_string_dummy(...)" with a real error-handling
-                function.
-                */
                 note = std::string("page-locking refused (") +
-                       dpct::get_error_string_dummy(allocated) + ")";
-                /*
-                DPCT1010: SYCL uses exceptions to report errors and does not
-                use the error codes. The cudaGetLastError function call was
-                replaced with 0. You need to rewrite this code.
-                */
+                       dpct::error_string(allocated) + ")";
                 (void)0;
                 arena = nullptr;
             }
@@ -1516,12 +1477,6 @@ bool FileExpertSource::pin_cache_complement(
                                 device = (const uint8_t*) alias;
                                 partial_pin = w;
                             } else {
-                                /*
-                                DPCT1010: SYCL uses exceptions to report
-                                errors and does not use the error codes. The
-                                cudaGetLastError function call was replaced with
-                                0. You need to rewrite this code.
-                                */
                                 (void)0;
                                 /*
                                 DPCT1027: The call to cudaHostUnregister was
@@ -1534,12 +1489,6 @@ bool FileExpertSource::pin_cache_complement(
                             }
                             break;
                         }
-                        /*
-                        DPCT1010: SYCL uses exceptions to report errors and
-                        does not use the error codes. The cudaGetLastError
-                        function call was replaced with 0. You need to rewrite
-                        this code.
-                        */
                         (void)0;
                         if (want <= step) break;
                     }
@@ -1732,11 +1681,6 @@ bool FileExpertSource::reserve_exchanges(int64_t n, std::string &err) try {
         p != nullptr) {
         xstage_pinned_ = true;
     } else {
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaGetLastError function call was replaced with 0. You
-        need to rewrite this code.
-        */
         (void)0;
         p = std::malloc(total);
         xstage_pinned_ = false;
@@ -2278,20 +2222,8 @@ void expert_hit_run(void *user, void *stream, HitPhase phase,
         // `add_inplace` would sum it in.  Finite, plausible, wrong.
         if (DPCT_CHECK_ERROR(cs->memset(
                 d.hit_out, 0, (size_t)d.parts_elems * sizeof(float))) != 0 ||
-            /*
-            DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-            API. While the origin API might be synchronous, it depends on the
-            type of operand memory, so you may need to call wait() on event
-            return by memcpy API to ensure synchronization behavior.
-            */
             DPCT_CHECK_ERROR(
                 cs->memcpy(d.d_slot, d.h_slot.data(), list_bytes)) != 0 ||
-            /*
-            DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-            API. While the origin API might be synchronous, it depends on the
-            type of operand memory, so you may need to call wait() on event
-            return by memcpy API to ensure synchronization behavior.
-            */
             DPCT_CHECK_ERROR(cs->memcpy(d.d_dst, d.h_dst.data(), list_bytes)) !=
                 0) {
             d.hit_fail = "the hit list could not be staged";
@@ -2795,11 +2727,6 @@ bool ArenaExpertSource::open(const std::string &pack_dir, int64_t n_layers,
         for (uint64_t off : starts) {
             void* d = nullptr;
             if (DPCT_CHECK_ERROR(d = (void *)(void *)(base_ + off)) != 0) {
-                /*
-                DPCT1010: SYCL uses exceptions to report errors and does not
-                use the error codes. The cudaGetLastError function call was
-                replaced with 0. You need to rewrite this code.
-                */
                 (void)0;
                 dev_slice_.clear();
                 break;

@@ -17,11 +17,6 @@ namespace strata::kernels {
 namespace {
 
 void check(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 
@@ -145,18 +140,10 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
         const int rank = block_scan(cand ? 1 : 0, warp_sums, total);
         const int want = need - got;
         if (item_ct1.get_local_id(2) == 0) s_cut = RT;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (cand && rank == want - 1) s_cut =
             item_ct1.get_local_id(2) +
             1; // the hand stops just past the last slot taken
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const int cut = s_cut;
         if (cand && rank < want) {
@@ -167,10 +154,6 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
         }
         got += total < want ? total : want;
         hand = (int) (((long long) hand + cut) % n);
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier();
     }
     // 3. re-point the table; the copy kernel fills the slots
@@ -354,12 +337,6 @@ void kv_ring_restore(const QsaAttnPools &slots, const KvHostPools &host,
     for (int64_t b = b0; b < b1;) {
         const int64_t sl = b % n_slots, run = std::min<int64_t>(b1 - b, n_slots - sl);   // up to the ring's end
         for (int a = 0; a < r.n; ++a)
-            /*
-            DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-            API. While the origin API might be synchronous, it depends on the
-            type of operand memory, so you may need to call wait() on event
-            return by memcpy API to ensure synchronization behavior.
-            */
             if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
                     r.dst[a] + sl * r.len[a], r.src[a] + b * r.len[a],
                     (size_t)(run * r.len[a]))) != 0)
@@ -379,12 +356,6 @@ void kv_stage_from_host(const QsaAttnPools &stage, const KvHostPools &host,
     if (n_blocks <= 0) return;
     const Runs r = runs_of(stage, host, fmt, s);
     for (int a = 0; a < r.n; ++a)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         if (DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(
                 r.dst[a], r.src[a], (size_t)(n_blocks * r.len[a]))) != 0)
             check("stage");

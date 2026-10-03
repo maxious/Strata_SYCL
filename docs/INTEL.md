@@ -520,9 +520,21 @@ token, so the whole kernel is ~0.1% and that bounds any win. **DPCT1098**: every
 dereference of an already-`const __restrict__` chain, which is the whole of the read-only contract a compiler
 needs - Xe has a unified L1 and SYCL/SPIR-V exposes no `__ldg` counterpart, so nothing was lost.
 
-Still open from the sweep: the hygiene families **DPCT1010/1009** (217 placeholder error strings) and
-**DPCT1000/1001** (128), and **DPCT1013** (71 rounding-mode intrinsics - a parity audit, not a perf one). None
-is expected to move a number.
+**Round 3 - the cleanup (exp 16): 1,151 markers -> 255, and the error path fixed.** The migration's
+`dpct::get_error_string_dummy` returned the literal `"<FIXME: Placeholder>"` and ignored its argument, while
+`DPCT_CHECK_ERROR` caught the exception, printed `what()`, and then threw the text away - so **92 call sites**
+across 31 files reported a placeholder where the real message existed. `DPCT_CHECK_ERROR` now stores `what()` in
+`dpct::last_error()` and `dpct::error_string(ec)` returns it; the dummy is gone from the tree. The marker blocks
+for the audited families were then deleted (DPCT1114/1124 318, DPCT1009/1010 217, DPCT1000/1001 128, DPCT1118
+75, DPCT1013 71, DPCT1110 46, DPCT1098 42 - 897 blocks), following the DPCT1065/1108/1121 precedent, and the
+in-order-queue invariant those 318 memcpy notes repeated now lives once at the top of `sycl_queue.hpp`.
+**DPCT1013 was checked against the CUDA originals**, not guessed: `__fadd_rn` (43) / `__fmul_rn` (28) /
+`__fsub_rn` (1) / `__fdiv_rn` (3) are round-to-nearest-even, which is the C++/SYCL default, so the marker is moot
+for them; the only 3 `__fdividef` (CUDA's approximate divide, in `shared_expert.cu`'s `--use_fast_math`
+reproductions) are sites where the port's `/` is *more* accurate. 255 markers remain, all records worth keeping:
+DPCT1049 (58, work-group sizes - 1024 is the Xe limit, so they pass here but would not on a narrower device),
+DPCT1026/1027 (47, intentional removals), DPCT1048/1106/1025/1083/1024/1093/1078/1053 and the small ones.
+Verified: full build exit 0, `ctest` 25/27 unchanged.
 
 **Keeping up with upstream.** A merge of upstream `main` into `b70` leaves the copies in `sycl/` behind
 wherever upstream touched a file they mirror. They are refreshed by re-migration, not by hand (done for

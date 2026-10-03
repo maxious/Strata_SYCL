@@ -220,12 +220,6 @@ __dpct_inline__ void quantize_q8_K_kernel(const float *__restrict__ x,
         // wherever the true product sits just off a .5 boundary.  The first version of this kernel differed
         // from the reference in 1 element of 524,288 for exactly this reason, and `__fmul_rn` pins the
         // rounding step the source actually performs.
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         const int v = nearest_int_dev(iscale * xb[j]);
         qs[j] = (int8_t)sycl::min(
             127, v); // MIN only - the source has no lower clamp
@@ -283,11 +277,6 @@ void quantize_q8_0(const float* x, uint8_t* blocks, int64_t n, void* stream) {
                     quantize_q8_0_kernel(x, blocks, nb);
                 });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
@@ -323,11 +312,6 @@ void quantize_q8_0_scaled(const float* x, uint8_t* blocks, float* scales, int64_
                     quantize_q8_0_scaled_kernel(x, blocks, scales, nb);
                 });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
@@ -351,11 +335,6 @@ void dequant_q8_0(const uint8_t* blocks, float* x, int64_t n, void* stream) {
                     dequant_q8_0_kernel(blocks, x, nb);
                 });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
@@ -383,11 +362,6 @@ void quantize_q8_K(const float* x, uint8_t* blocks, int64_t n, void* stream) {
                     quantize_q8_K_kernel(x, blocks, nb);
                 });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
@@ -411,11 +385,6 @@ void dequant_q8_K(const uint8_t* blocks, float* x, int64_t n, void* stream) {
                     dequant_q8_K_kernel(blocks, x, nb);
                 });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();

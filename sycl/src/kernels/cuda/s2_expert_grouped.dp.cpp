@@ -266,17 +266,7 @@ __dpct_inline__ int load_x_chunk(const uint8_t *__restrict__ xb, int X[8]) {
     const unsigned sh = (unsigned) off * 8;
     unsigned v[9];
 #pragma unroll
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     for (int j = 0; j < 8; ++j) v[j] = *(p + j);
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     v[8] = off != 0 ? *(p + 8) : 0u;
     unsigned n[8];
     int hx = 0;
@@ -320,12 +310,6 @@ __dpct_inline__ int chunk_s(const int m[8], const int X[8]) {
 /// `gu_kernel`, new: ONE WARP PER (gate, up) PAIR - row-slots `2r` and `2r + 1`, adjacent in the blob - so each
 /// activation chunk is loaded and regrouped once for both rows.  Per row, the lane's chunks, their order, the float
 /// expression and the shuffle reduction are `row_dot_s2_q8`'s; the outputs land where `gu_kernel` puts them.
-/*
-DPCT1110: The total declared local variable size in device function
-gu_pair_kernel exceeds 128 bytes and may cause high register pressure. Consult
-with your hardware vendor to find the total register size available and adjust
-the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 gu_pair_kernel(const uint8_t *__restrict__ blob_base,
                const int32_t *__restrict__ slot_index, long long blob_bytes,
@@ -373,12 +357,6 @@ gu_pair_kernel(const uint8_t *__restrict__ blob_base,
 }
 
 /// `down_kernel`, new: ONE WARP PER PAIR OF ROWS `r, r + 1` of one hit, the intermediate's chunk loaded once for both.
-/*
-DPCT1110: The total declared local variable size in device function
-down_pair_kernel exceeds 128 bytes and may cause high register pressure. Consult
-with your hardware vendor to find the total register size available and adjust
-the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void down_pair_kernel(const uint8_t *__restrict__ blob_base,
                                       const int32_t *__restrict__ slot_index,
                                       const int32_t *__restrict__ dst_index,
@@ -437,12 +415,6 @@ __dpct_inline__ void activation_correction_kernel(const uint8_t *q8,
     int sum = 0;
 #pragma unroll
     for (int j = 0; j < 32; ++j) sum += q[j];
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     hx[c] = scales[c] * (float)sum;
 }
 
@@ -467,59 +439,17 @@ __dpct_inline__ float row_dot_cpu_order(const uint8_t *codes,
                            (const int8_t*) (xq + (size_t) (2 * b) * 34 + 2) + lane * 4);
         const int hi = dot4(codes + b * 16 + 8 + lane,
                            (const int8_t*) (xq + (size_t) (2 * b + 1) * 34 + 2) + lane * 4);
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         acc = sycl::fma(d * xs[2 * b], (float)lo, acc);
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         acc = sycl::fma(d * xs[2 * b + 1], (float)hi, acc);
         if (lane == 0)
-            /*
-            DPCT1013: The rounding mode could not be specified and the
-            generated code may have different accuracy than the original code.
-            Verify the correctness. SYCL math built-in function rounding mode is
-            aligned with OpenCL C 1.2 standard.
-            */
             corr = corr + d * hx[2 * b] + hx[2 * b + 1];
     }
     // _mm_add_ps(low128, high128), then two _mm_hadd_ps. The pair order is 4, 1, 2;
     // a standard shuffle tree in the order 4, 2, 1 is a different floating-point expression.
     constexpr unsigned mask = 0xffffffffu;
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     acc = acc + strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), acc, 4);
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     acc = acc + strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), acc, 1);
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     acc = acc + strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), acc, 2);
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     return acc - corr; // Only lane zero is consumed.
 }
 
@@ -559,12 +489,6 @@ __dpct_inline__ void cpu_order_swiglu_kernel(float *gu, int pairs) {
     // Accurate fp32 exponential; __expf's approximation would introduce an additional source of error.
     // CPU/GPU libc last-bit differences are diagnosed separately by the micro, not hidden with FP64 here.
     const float eg = sycl::native::exp(-g);
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     gu[i] = g / (1.0f + eg) * gu[pairs + i];
 }
 
@@ -580,19 +504,7 @@ __dpct_inline__ void cpu_order_quantize_kernel(const float *x, uint8_t *blocks,
     float amax = 0.0f;
 #pragma unroll
     for (int j = 0; j < 32; ++j) amax = sycl::fmax(amax, sycl::fabs(xb[j]));
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     const float s = amax > 0.0f ? amax / 127.0f : 0.0f;
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     const float inv = s > 0.0f ? 1.0f / s : 0.0f;
     scales[c] = s;
     const uint16_t bits = sycl::bit_cast<unsigned short, sycl::half>(
@@ -602,41 +514,18 @@ __dpct_inline__ void cpu_order_quantize_kernel(const float *x, uint8_t *blocks,
     out[1] = (uint8_t) (bits >> 8);
     int sum = 0;
     for (int j = 0; j < 32; ++j) {
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         const float t = xb[j] * inv;
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         int v = (int) (t + (t >= 0.0f ? 0.5f : -0.5f));   // SYCL port: dpct dropped the parentheses (it rounded every value to 0)
         v = v < -127 ? -127 : (v > 127 ? 127 : v);
         out[2 + j] = (uint8_t) (int8_t) v;
         sum += v;
     }
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     hx[c] = s * (float)sum;
 }
 
 constexpr int THREADS = 256;
 
 void check(const char* who, void* stream) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     // Deliberately NOT synchronising for a non-null stream: this is called once per layer from a captured
@@ -1108,12 +997,6 @@ __dpct_inline__ float chunk_dot(sycl::uint2 cb, const int *xw, float dw,
 // Gate/up: a block = GU_ROWS rows of ONE group.  The group's activations (each entry's token row of x_q8_0 and
 // its fp32 scales) are staged once into shared memory as aligned words; each warp then walks its rows, loading
 // each lane's code chunks once and dotting them with every entry.
-/*
-DPCT1110: The total declared local variable size in device function
-gu_grouped_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gu_grouped_kernel(
     const unsigned long long *__restrict__ grp_ptr,
     const int32_t *__restrict__ grp_start, const int32_t *__restrict__ n_groups,
@@ -1258,12 +1141,6 @@ __dpct_inline__ void stage_chunk(const uint8_t *__restrict__ xb, float dx,
     xs_dh[i] = sycl::int2(sycl::bit_cast<int>(dx), hx);
 }
 
-/*
-DPCT1110: The total declared local variable size in device function
-gu_grouped_t_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gu_grouped_t_kernel(
     const unsigned long long *__restrict__ grp_ptr,
     const int32_t *__restrict__ grp_start, const int32_t *__restrict__ n_groups,
@@ -1340,12 +1217,6 @@ __dpct_inline__ void gu_grouped_t_kernel(
     }
 }
 
-/*
-DPCT1110: The total declared local variable size in device function
-down_grouped_t_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void down_grouped_t_kernel(
     const unsigned long long *__restrict__ grp_ptr,
     const int32_t *__restrict__ grp_start, const int32_t *__restrict__ n_groups,
@@ -1684,12 +1555,6 @@ void moe_hit_grouped_s2_cpu_order(const uint8_t *blob_base,
     }
     check("cpu_order/gate_up", stream);
     if (gate_up_trace != nullptr &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(cs->memcpy(
             gate_up_trace, gu, (size_t)n_hits * 2 * FF * sizeof(float))) != 0) {
         std::fprintf(stderr, "cpu_order/gate_up_trace copy failed\n");
