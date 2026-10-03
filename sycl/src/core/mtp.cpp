@@ -2,6 +2,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/core/mtp.hpp"
+#include "strata/core/graph_audit.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/on_device.hpp"
 
@@ -702,12 +703,20 @@ bool MtpDrafter::record_forward(int T, int step_row0, dpct::queue_ptr cs,
 }
 
 namespace {
+std::string capture_key(const char *what, int idx, bool coupled) {
+    char b[64];
+    std::snprintf(b, sizeof b, "mtp.%s%d%s", what, idx, coupled ? ".coupled" : "");
+    return b;
+}
+
 bool finish_capture(dpct::queue_ptr cs, bool ok,
                     dpct::experimental::command_graph_exec_ptr &exec,
-                    const char *what, std::string &err) try {
+                    const char *what, int idx, bool coupled, std::string &err) try {
+    const std::string key = capture_key(what, idx, coupled);
     dpct::experimental::command_graph_ptr graph = nullptr;
     const dpct::err0 ce =
         DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &graph));
+    audit::graph_capture_end(key.c_str(), cs, graph, (long) ce, "mtp::finish_capture");
     if (!ok) {
         if (graph) delete (graph);
         return false;
@@ -718,9 +727,14 @@ bool finish_capture(dpct::queue_ptr cs, bool ok,
                 sycl::ext::oneapi::experimental::graph_state::executable>(
                 graph->finalize())) != 0) {
         if (graph) delete (graph);
-        err = std::string("mtp: ") + what +
+        err = std::string("mtp: ") + key +
               " capture: " + dpct::error_string(ce);
         return false;
+    }
+    {
+        size_t nn = 0;
+        dpct::experimental::get_nodes(graph, nullptr, &nn);
+        audit::graph_capture_nodes(key.c_str(), nn);
     }
     delete (graph);
     // an explicit upload: the first launch's implicit one blocked behind a device-side spin (verify.cpp)
@@ -741,14 +755,15 @@ catch (sycl::exception const &exc) {
 bool MtpDrafter::capture_prefill(int T, std::string &err) try {
     if (prefill_exec_[T]) return true;
     using namespace strata::kernels;
+    audit::graph_capture_begin(capture_key("prefill", T, false).c_str(), cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
+        err = "mtp: begin capture"; audit::graph_capture_abandon(cs_); return false;
     }
     copy_i32_from_mapped(tok_, m_tok_, T, cs_);
     copy_i32_from_mapped(step_, m_step_, (int64_t) T * 4, cs_);
     copy_i32_from_mapped(pos_, m_pos_, (int64_t) T * g_->n_head, cs_);
     const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T)
-    return finish_capture(cs_, ok, prefill_exec_[T], "prefill", err);
+    return finish_capture(cs_, ok, prefill_exec_[T], "prefill", T, false, err);
 }
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
@@ -758,11 +773,12 @@ catch (sycl::exception const &exc) {
 
 bool MtpDrafter::capture_prefill_dev(int T, std::string &err) try {
     if (prefill_dev_exec_[T]) return true;
+    audit::graph_capture_begin(capture_key("prefill_dev", T, false).c_str(), cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
+        err = "mtp: begin capture"; audit::graph_capture_abandon(cs_); return false;
     }
     const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T); tok_/step_/pos_ filled before launch
-    return finish_capture(cs_, ok, prefill_dev_exec_[T], "prefill (device inputs)", err);
+    return finish_capture(cs_, ok, prefill_dev_exec_[T], "prefill_dev", T, false, err);
 }
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
@@ -775,8 +791,9 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string &err) try {
     if (exec) return true;
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
+    audit::graph_capture_begin(capture_key("round", T, coupled).c_str(), cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
+        err = "mtp: begin capture"; audit::graph_capture_abandon(cs_); return false;
     }
     bool ok = true;
     // coupled: the request's chain and the penalty history's base, for this round's drafts
@@ -801,7 +818,7 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string &err) try {
         coupled_rec_ = false;
     }
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
-    return finish_capture(cs_, ok, exec, coupled ? "round (coupled)" : "round", err);
+    return finish_capture(cs_, ok, exec, "round", T, coupled, err);
 }
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
@@ -817,8 +834,9 @@ bool MtpDrafter::capture_step(int j, bool coupled, std::string &err) try {
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
     const int row = max_t_ + j - 1;
+    audit::graph_capture_begin(capture_key("step", j, coupled).c_str(), cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
+        err = "mtp: begin capture"; audit::graph_capture_abandon(cs_); return false;
     }
     copy_i32_from_mapped(step_ + row * 4, m_step_ + row * 4, 4, cs_);
     copy_i32_from_mapped(pos_ + row * g_->n_head, m_pos_ + row * g_->n_head, g_->n_head, cs_);
@@ -827,7 +845,7 @@ bool MtpDrafter::capture_step(int j, bool coupled, std::string &err) try {
     bool ok = record_forward(1, row, cs_, err);
     coupled_rec_ = false;
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
-    return finish_capture(cs_, ok, exec, coupled ? "step (coupled)" : "step", err);
+    return finish_capture(cs_, ok, exec, "step", j, coupled, err);
 }
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__

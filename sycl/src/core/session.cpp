@@ -4,6 +4,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/session.hpp"
+#include "strata/core/graph_audit.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/core/progress.hpp"
 
@@ -238,9 +239,13 @@ bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionS
                 err = std::string("session_capture: stream create failed");
                 return false;
             }
+            const std::string key =
+                "session.layer" + std::to_string(l) + "." + what + std::to_string(stage_prefix);
+            audit::graph_capture_begin(key.c_str(), cs);
             if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs)) !=
                 0) {
                 err = "session_capture: begin failed at layer " + std::to_string(l);
+                audit::graph_capture_abandon(cs);
                 return false;
             }
             err.clear();
@@ -253,11 +258,13 @@ bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionS
                                                   half, stage_prefix);
             if (!ok) {
                 err = "session_capture: " + std::string(what) + " layer " + std::to_string(l) + ": " + err;
+                audit::graph_capture_abandon(cs);
                 return false;
             }
             dpct::experimental::command_graph_ptr graph = nullptr;
             const dpct::err0 ce =
                 DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &graph));
+            audit::graph_capture_end(key.c_str(), cs, graph, (long) ce, "session_capture");
             dpct::get_current_device().destroy_queue(cs);
             if (ce != 0) {
                 err = "session_capture: " + std::string(what) + " layer " +
@@ -273,6 +280,11 @@ bool session_capture(const WeightTable& tables, const ModelGeometry& g, SessionS
                                     executable>(graph->finalize())) != 0) {
                 err = "session_capture: instantiate failed at layer " + std::to_string(l);
                 return false;
+            }
+            {
+                size_t nn = 0;
+                dpct::experimental::get_nodes(graph, nullptr, &nn);
+                audit::graph_capture_nodes(key.c_str(), nn);
             }
             delete (graph);
             return true;

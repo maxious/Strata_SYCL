@@ -1,0 +1,24 @@
+# strata graph node golden: one `key nodes` line per captured graph
+mtp.prefill1 21
+mtp.prefill2 24
+mtp.prefill3 29
+mtp.prefill4 32
+mtp.prefill5 37
+mtp.prefill6 40
+mtp.round1 87
+mtp.round2 90
+mtp.round3 95
+mtp.round4 98
+mtp.round5 103
+mtp.round6 106
+mtp.step1 63
+mtp.step2 63
+mtp.step3 63
+mtp.step4 63
+verify.commit 158
+verify.window1 2415
+verify.window2 2457
+verify.window3 2499
+verify.window4 2541
+verify.window5 2583
+verify.window6 2625

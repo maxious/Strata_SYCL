@@ -265,6 +265,12 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
   add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
   set_tests_properties(conversation_snapshot_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  # the capture audit (src/core/graph_audit.hpp): each of its assertions must be SHOWN to fire (forked children,
+  # abort on a null graph / an overlapping begin / a re-capture / a moved node count).
+  strata_resolve(_src src/core/graph_audit_test.cpp)
+  add_executable(graph_audit_test ${_src})
+  target_link_libraries(graph_audit_test PRIVATE strata_engine)
+  add_test(NAME graph_audit_test COMMAND graph_audit_test)
   # the prompt-attention parity takes a context length, not --selftest, and needs the tensor-core kernel (not
   # ported yet: it reports "refused the pools" here). Built, not registered.
   strata_resolve(_src src/kernels/qsa_prompt_attn_parity.cpp)
