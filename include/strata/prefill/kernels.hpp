@@ -94,4 +94,12 @@ void round_f16(const float* x, float* y, int64_t n, void* stream);
 /// Expert blob -> FP16 (Q2_0 values are exact in FP16).
 void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream);
 
+// ---- INT8 prompt GEMM helpers (README.sycl.md P0 "GEMM-shaped INT8 prompt path"; docs/INTEL.md planned item 6).
+/// x (FP16 bits, `rows` x `cols`) -> int8 and one scale per row (= max|x| / 127), for the oneMKL int8 expert
+/// GEMM: the GEMM's integer output rescaled by (this scale * the weight row's scale) is the product.
+void quantize_act_i8(const uint16_t* x, int8_t* q, float* scale, int64_t rows, int64_t cols, void* stream);
+/// The int8 GEMM's dequantizing epilogue: y[r, c] *= scale_x[r] * scale_w[c] (row stride ldy; ldy <= 0: cols).
+void scale_rows_i8(float* y, const float* scale_x, const float* scale_w, int64_t rows, int64_t cols, int64_t ldy,
+                   void* stream);
+
 }  // namespace strata::prefill

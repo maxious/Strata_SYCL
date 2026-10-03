@@ -1715,6 +1715,60 @@ void blob_dequant_f16(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, voi
     }
     check("blob_dequant_f16");
 }
+
+// ---- INT8 prompt GEMM helpers (README.sycl.md P0 "GEMM-shaped INT8 prompt path"; docs/INTEL.md item 6).
+// One 32-lane work-group per activation row: a group reduce finds max|x|, then every lane writes its int8.
+__dpct_inline__ void quantize_act_i8_kernel(const uint16_t *__restrict__ x, int8_t *__restrict__ q,
+                                            float *__restrict__ scale, int64_t cols, sycl::nd_item<3> item) {
+    const int64_t r = (int64_t) item.get_group(2);
+    const int lane = (int) item.get_local_id(2);
+    const uint16_t* row = x + r * cols;
+    float mx = 0.0f;
+    for (int64_t c = lane; c < cols; c += 32) {
+        const float v = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(row[c]))
+                            .convert<float, sycl::rounding_mode::automatic>()[0];
+        mx = sycl::fmax(mx, sycl::fabs(v));
+    }
+    mx = sycl::reduce_over_group(item.get_sub_group(), mx, sycl::maximum<float>());
+    const float inv = mx > 0.0f ? 127.0f / mx : 0.0f;
+    int8_t* o = q + r * cols;
+    for (int64_t c = lane; c < cols; c += 32) {
+        const float v = sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(row[c]))
+                            .convert<float, sycl::rounding_mode::automatic>()[0];
+        int iv = (int) sycl::rint(v * inv);   // nearest-even, as the weight quantizer
+        iv = sycl::min(127, sycl::max(-127, iv));
+        o[c] = (int8_t) iv;
+    }
+    if (lane == 0) scale[r] = mx / 127.0f;
+}
+__dpct_inline__ void scale_rows_i8_kernel(float *__restrict__ y, const float *__restrict__ sx,
+                                          const float *__restrict__ sw, int64_t cols, int64_t ldy, int64_t n) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int64_t i =
+        (int64_t) item_ct1.get_group(2) * item_ct1.get_local_range(2) + item_ct1.get_local_id(2);
+    if (i >= n) return;
+    const int64_t r = i / cols, c = i % cols;
+    y[r * ldy + c] *= sx[r] * sw[c];
+}
+void quantize_act_i8(const uint16_t* x, int8_t* q, float* scale, int64_t rows, int64_t cols, void* stream) {
+    if (rows <= 0 || cols <= 0) return;
+    strata::q_of(stream)
+        ->parallel_for<dpct_kernel_name<class quantize_act_i8_kernel_a91f>>(
+            sycl::nd_range<3>(sycl::range(1, 1, (size_t) rows) * sycl::range(1, 1, 32), sycl::range(1, 1, 32)),
+            [=](sycl::nd_item<3> item_ct1) { quantize_act_i8_kernel(x, q, scale, cols, item_ct1); });
+    check("quantize_act_i8");
+}
+void scale_rows_i8(float* y, const float* scale_x, const float* scale_w, int64_t rows, int64_t cols, int64_t ldy,
+                   void* stream) {
+    if (rows <= 0 || cols <= 0) return;
+    if (ldy <= 0) ldy = cols;
+    const int64_t n = rows * cols;
+    strata::q_of(stream)
+        ->parallel_for<dpct_kernel_name<class scale_rows_i8_kernel_b72c>>(
+            sycl::nd_range<3>(sycl::range(1, 1, blocks_for(n)) * sycl::range(1, 1, 256), sycl::range(1, 1, 256)),
+            [=](sycl::nd_item<3> item_ct1) { scale_rows_i8_kernel(y, scale_x, scale_w, cols, ldy, n); });
+    check("scale_rows_i8");
+}
 void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream) {
     if (n <= 0) return;
     {

@@ -2456,6 +2456,91 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
     check("iq_dequant_gu_f16");
 }
 
+// ---- Q2_0 -> INT8 (README.sycl.md P0 "GEMM-shaped INT8 prompt path"; docs/INTEL.md planned item 6).
+// block_q2_0 = { f16 d; uint8_t qs[16] } per QK2_0 = 64 values, w = d*(code-1) with code-1 in {-1,0,1,2}.
+// One 32-lane work-group per row: lane L walks the row's 64-value blocks b = L, L+32, ..., a group reduce
+// gives the row's max|w|, then every lane writes q = round(w * 127 / max|w|) clamped to [-127, 127] - the row's
+// own int8 grid.  The scale is what the oneMKL int8 GEMM's result is rescaled by afterwards.
+__dpct_inline__ void q2_0_row_i8_kernel(const uint8_t *__restrict__ row, int64_t n_cols, int64_t out_row,
+                                        int8_t *__restrict__ out, float *__restrict__ scale,
+                                        sycl::nd_item<3> item) {
+    const block_q2_0 *blk = (const block_q2_0 *) row;   // this row's blocks, 18 bytes apart
+    const int lane = (int) item.get_local_id(2);
+    const int nblk = (int) (n_cols / QK2_0);
+    float mx = 0.0f;
+    for (int b = lane; b < nblk; b += 32) {
+        const float d = (float) blk[b].d;
+#pragma unroll
+        for (int i = 0; i < QK2_0; ++i) {
+            const int code = (blk[b].qs[i >> 2] >> ((i & 3) * 2)) & 3;
+            mx = sycl::fmax(mx, sycl::fabs(d * (float) (code - 1)));
+        }
+    }
+    mx = sycl::reduce_over_group(item.get_sub_group(), mx, sycl::maximum<float>());
+    const float inv = mx > 0.0f ? 127.0f / mx : 0.0f;
+    for (int b = lane; b < nblk; b += 32) {
+        const float d = (float) blk[b].d;
+        int8_t *o = out + out_row * n_cols + (int64_t) b * QK2_0;
+#pragma unroll
+        for (int i = 0; i < QK2_0; ++i) {
+            const int code = (blk[b].qs[i >> 2] >> ((i & 3) * 2)) & 3;
+            int v = (int) sycl::rint(d * (float) (code - 1) * inv);   // nearest-even, as ggml's quantizers
+            v = sycl::min(127, sycl::max(-127, v));
+            o[i] = (int8_t) v;
+        }
+    }
+    if (lane == 0) scale[out_row] = mx / 127.0f;
+}
+
+bool iq_int8_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
+    return gu_type == 42 && d_type == 42 && n_embd > 0 && n_embd % QK2_0 == 0 && n_ff > 0 && n_ff % QK2_0 == 0;
+}
+
+void iq_quant_gu_i8(int ggml_type, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, int8_t* dst,
+                    float* scale, void* stream) {
+    if (ggml_type != 42 || n_embd % QK2_0 != 0) {
+        std::fprintf(stderr, "iq_quant_gu_i8: type %d / %lld\n", ggml_type, (long long) n_embd);
+        std::exit(1);
+    }
+    const size_t row_bytes = (size_t) (n_embd / QK2_0) * sizeof(block_q2_0);
+    const uint8_t* g = (const uint8_t*) gate;
+    const uint8_t* u = (const uint8_t*) up;
+    strata::q_of(stream)
+        ->submit([&](sycl::handler &cgh) {
+            cgh.parallel_for<dpct_kernel_name<class q2_0_gu_i8_kernel>>(
+                sycl::nd_range<3>(sycl::range(1, 2, (size_t) n_ff) * sycl::range(1, 1, 32),
+                                  sycl::range(1, 1, 32)),
+                [=](sycl::nd_item<3> item_ct1) {
+                    const int parity = (int) item_ct1.get_group(1);
+                    const int64_t r = (int64_t) item_ct1.get_group(2);
+                    const uint8_t* src = (parity ? u : g) + (size_t) r * row_bytes;
+                    q2_0_row_i8_kernel(src, n_embd, 2 * r + parity, dst, scale, item_ct1);
+                });
+        });
+    check("iq_quant_gu_i8");
+}
+
+void iq_quant_i8(int ggml_type, const void* src, int64_t n_rows, int64_t n_cols, int8_t* dst, float* scale,
+                 void* stream) {
+    if (ggml_type != 42 || n_cols % QK2_0 != 0) {
+        std::fprintf(stderr, "iq_quant_i8: type %d / %lld\n", ggml_type, (long long) n_cols);
+        std::exit(1);
+    }
+    const size_t row_bytes = (size_t) (n_cols / QK2_0) * sizeof(block_q2_0);
+    const uint8_t* s = (const uint8_t*) src;
+    strata::q_of(stream)
+        ->submit([&](sycl::handler &cgh) {
+            cgh.parallel_for<dpct_kernel_name<class q2_0_flat_i8_kernel>>(
+                sycl::nd_range<3>(sycl::range(1, 1, (size_t) n_rows) * sycl::range(1, 1, 32),
+                                  sycl::range(1, 1, 32)),
+                [=](sycl::nd_item<3> item_ct1) {
+                    const int64_t row = (int64_t) item_ct1.get_group(2);
+                    q2_0_row_i8_kernel(s + (size_t) row * row_bytes, n_cols, row, dst, scale, item_ct1);
+                });
+        });
+    check("iq_quant_i8");
+}
+
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
     const int qg = gu_qk(gu_type), qd = d_qk(d_type);
     return qg > 0 && qd > 0 && is_iq(gu_type) && is_iq(d_type) && n_embd % qg == 0 && n_ff % qd == 0 &&

@@ -37,6 +37,21 @@ void iq_embed_rows(int ggml_type, const void* table, size_t row_bytes, const int
 void iq_dequant_gu_f16(int ggml_type, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, uint16_t* dst,
                        void* stream);
 
+/// Q2_0 only (ggml type 42): the same two layouts quantized to INT8 for the INT8 prompt GEMM (README.sycl.md
+/// P0, docs/INTEL.md planned item 6), instead of dequantized to FP16.  One int8 per weight and one `float`
+/// scale per OUTPUT ROW (`scale[2*n_ff]` / `scale[n_rows]`, = max|w| / 127), so the oneMKL int8 GEMM's integer
+/// output rescaled by (weight scale * the activation's row scale) is the product to int8 precision.  A Q2_0 row
+/// takes only the values d*(code-1) (code-1 in {-1,0,1,2}, one d per 64 values), so the int8 grid is the row's
+/// own: q = round(w / scale) clamped to [-127, 127].  `n_embd` (resp. `n_cols`) must be a multiple of 64.
+/// Unlike the FP16 entry points these are NOT lossless: they cost ~1% (median) of the output vs FP16.
+void iq_quant_gu_i8(int ggml_type, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, int8_t* dst,
+                    float* scale, void* stream);
+void iq_quant_i8(int ggml_type, const void* src, int64_t n_rows, int64_t n_cols, int8_t* dst, float* scale,
+                 void* stream);
+
+/// Whether iq_quant_gu_i8 / iq_quant_i8 handle this gate/up and down pair at these dimensions (Q2_0 both).
+bool iq_int8_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept;
+
 /// The layout of one native expert blob: [gate rows | up rows | down rows], raw GGUF blocks.
 struct NativeExpertLayout {
     int gu_type = -1, d_type = -1;

@@ -33,6 +33,12 @@ public:
     void f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
              float beta = 0.0f);
 
+    /// Y = X . W^T with both in INT8 (the prefill expert path's INT8 GEMM, README.sycl.md P0; docs/INTEL.md
+    /// planned item 6).  oneMKL's integer product lands in FP32 (exact: K <= 2560 of |v| <= 127 is 41e6 < 2^31),
+    /// which the caller rescales by the operands' row scales (`strata::prefill::scale_rows_i8`).
+    void int8(const int8_t* X, const int8_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy = 0,
+              float beta = 0.0f);
+
     /// W given as native GGUF blocks of `ggml_type`, dequantized to FP16 in the scratch, X in FP16.
     void native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
                 int64_t ldy = 0, float beta = 0.0f);

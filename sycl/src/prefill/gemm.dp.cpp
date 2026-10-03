@@ -485,6 +485,24 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
 }
 
+void Gemm::int8(const int8_t* X, const int8_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                float beta) {
+    if (T <= 0 || N <= 0) return;
+    if (ldy <= 0) ldy = N;
+    const float alpha = 1.0f;
+    // The same column-major view as f16: Y^T[N, T] = W[N, K] (K x N col-major) . X^T[K, T], INT8 operands and
+    // an FP32 result (the exact integer sums, for the caller's rescale).
+    ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
+           (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
+           oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
+           dpct::library_data_t::real_int8, (int)K, X,
+           dpct::library_data_t::real_int8, (int)K, &beta, Y,
+           dpct::library_data_t::real_float, (int)ldy,
+           dpct::compute_type::f32)),
+       "cublasGemmEx int8");
+    STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx int8");
+}
+
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
                   int64_t ldy, float beta) {
     if (N * K > scratch_elems_) {

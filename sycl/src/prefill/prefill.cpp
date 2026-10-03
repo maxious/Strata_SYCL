@@ -491,6 +491,17 @@ struct PeerPrefill {
     }
 };
 
+// The INT8 expert GEMM: dequantize the expert to INT8 instead of FP16 and run oneMKL's INT8 GEMM, rescaling by
+// the operands' row scales (iq_quant_gu_i8 / iq_quant_i8 + quantize_act_i8 + Gemm::int8 + scale_rows_i8).
+// Opt-in, because int8_path_bench measures it NEITHER faster NOR lossless than the FP16 path: on a B60 it runs
+// 0.42-0.64x as fast as the FP16 expert GEMM (the int8 GEMM itself is 1.9-2.1x, but the per-expert requantization
+// and the extra small kernels cost more than that saves), and the output carries 1.0% (gate/up) / 2.4% (down)
+// median relative error the FP16 path - exact for Q2_0 - does not have.  README.sycl.md P0, docs/INTEL.md item 6.
+bool int8_env() {
+    const char* e = std::getenv("STRATA_PREFILL_INT8");
+    return e != nullptr && std::atoi(e) != 0;
+}
+
 struct Prefill::Impl {
     const core::WeightTable* wt = nullptr;
     const core::ModelGeometry* g = nullptr;
@@ -548,6 +559,13 @@ struct Prefill::Impl {
     size_t grp_n = 0, grp_tk = 0;        // int32s allocated; T_max * K (the offset of slot, and of src past it)
     uint16_t* dq_gu[DQ] = {};
     uint16_t* dq_d[DQ] = {};
+    // STRATA_PREFILL_INT8: the INT8 expert GEMM's activations and per-row scales, and the weights' scales (the
+    // int8 weights themselves go into the FP16 slots above, half their bytes)
+    bool int8 = int8_env();
+    int8_t *Xq8 = nullptr, *Hq8 = nullptr;
+    float *sx = nullptr, *sh = nullptr;
+    float* sgu[DQ] = {};
+    float* sd[DQ] = {};
     uint8_t* stage_dev[RING_MAX] = {};
     int ring = STAGE;                        // the slots of this layout's ring (ring_slots)
     std::unique_ptr<Stager> stager;          // the unpinned experts' host copies (step 4)
@@ -996,9 +1014,9 @@ bool Prefill::carve(size_t T, void* alloc) {
         m.logits = c.take<float>(T * m.g->n_expert, ok); m.w = c.take<float>(T * K, ok); m.ids = c.take<int32_t>(T * K, ok);
         m.slot_dev = c.take<int32_t>(T * K, ok); m.src_dev = c.take<int32_t>(T * K, ok);
         const MmqPlan& mp = mmq_plan();
-        m.Xs = mp.fallback ? c.take<uint16_t>(T * K * N, ok) : nullptr;
+        m.Xs = (mp.fallback || m.int8) ? c.take<uint16_t>(T * K * N, ok) : nullptr;
         m.GU = c.take<float>(mb.gu, ok);
-        m.Hh = mp.fallback ? c.take<uint16_t>(T * K * 640, ok) : nullptr;
+        m.Hh = (mp.fallback || m.int8) ? c.take<uint16_t>(T * K * 640, ok) : nullptr;
         m.Dm = c.take<float>(T * K * N, ok);
         m.sgate = c.take<float>(T * 640, ok); m.sup = c.take<float>(T * 640, ok); m.sh_h = c.take<uint16_t>(T * 640, ok);
         m.shared = c.take<float>(T * N, ok); m.sg = c.take<float>(T, ok);
@@ -1007,9 +1025,18 @@ bool Prefill::carve(size_t T, void* alloc) {
             m.H = c.take<float>(mb.h, ok);
             m.Hq = c.take<uint8_t>(mb.hq, ok);
         }
+        if (m.int8) {
+            m.Xq8 = c.take<int8_t>(T * K * N, ok);
+            m.Hq8 = c.take<int8_t>(T * K * 640, ok);
+            m.sx = c.take<float>(T * K, ok);
+            m.sh = c.take<float>(T * K, ok);
+        }
         if (base == nullptr) ok = false;
     }
-    for (int i = 0; i < DQ; ++i) { m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok); }
+    for (int i = 0; i < DQ; ++i) {
+        m.dq_gu[i] = o.take<uint16_t>(1280 * 2560, ok); m.dq_d[i] = o.take<uint16_t>(2560 * 640, ok);
+        if (m.int8) { m.sgu[i] = o.take<float>(1280, ok); m.sd[i] = o.take<float>(2560, ok); }
+    }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         m.ids_identity = o.take<int32_t>(T * K, ok);
@@ -3199,7 +3226,18 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                                 return true;
                             }
                             const int q = (int) (j % DQ);
-                            if (lay.native) {
+                            const bool i8 = m.int8 && lay.native && (size_t) l < lay.fmt.size() &&
+                                            strata::kernels::iq_int8_supported(lay.fmt[(size_t) l].gu_type,
+                                                                               lay.fmt[(size_t) l].d_type,
+                                                                               lay.fmt[(size_t) l].n_embd,
+                                                                               lay.fmt[(size_t) l].n_ff);
+                            if (i8) {
+                                const auto& f = lay.fmt[(size_t) l];
+                                strata::kernels::iq_quant_gu_i8(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
+                                                                (int8_t*) m.dq_gu[q], m.sgu[q], m.cs);
+                                strata::kernels::iq_quant_i8(f.d_type, blob_dev + f.down_off, f.n_embd, f.n_ff,
+                                                             (int8_t*) m.dq_d[q], m.sd[q], m.cs);
+                            } else if (lay.native) {
                                 // plan v0.3 P6: a native pack's layer, dequantized by llama.cpp's own formulas
                                 const auto& f = lay.fmt[(size_t) l];
                                 strata::kernels::iq_dequant_gu_f16(f.gu_type, blob_dev, blob_dev + f.up_off, f.n_ff, f.n_embd,
@@ -3214,6 +3252,17 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                             }
                             const int64_t o0 = m.off[(size_t) e], ne = m.cnt[(size_t) e];
                             pt.mark(kPfGemmGU, cs);
+                            if (i8) {
+                                quantize_act_i8(m.Xs + o0 * N, m.Xq8 + o0 * N, m.sx + o0, ne, N, m.cs);
+                                m.gemm.int8(m.Xq8 + o0 * N, (const int8_t*) m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
+                                scale_rows_i8(m.GU + o0 * 1280, m.sx + o0, m.sgu[q], ne, 1280, 1280, m.cs);
+                                swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
+                                pt.mark(kPfGemmD, cs);
+                                quantize_act_i8(m.Hh + o0 * 640, m.Hq8 + o0 * 640, m.sh + o0, ne, 640, m.cs);
+                                m.gemm.int8(m.Hq8 + o0 * 640, (const int8_t*) m.dq_d[q], m.Dm + o0 * N, ne, N, 640);
+                                scale_rows_i8(m.Dm + o0 * N, m.sh + o0, m.sd[q], ne, N, N, m.cs);
+                                return true;
+                            }
                             m.gemm.f16(m.Xs + o0 * N, m.dq_gu[q], m.GU + o0 * 1280, ne, 1280, N);
                             swiglu_interleaved(m.GU + o0 * 1280, m.Hh + o0 * 640, ne, m.cs);
                             pt.mark(kPfGemmD, cs);
@@ -3343,7 +3392,7 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                         };
                         double mxs = 0, mxq = 0;
                         const int64_t bxs = (!use_mmq && m.Xs) ? bad16(m.Xs, T * K * N, mxs) : -1;
-                        const int64_t bdq = (!use_mmq && m.dq_gu[0]) ? bad16(m.dq_gu[0], (int64_t) 1280 * N, mxq) : -1;
+                        const int64_t bdq = (!use_mmq && m.dq_gu[0] && !m.int8) ? bad16(m.dq_gu[0], (int64_t) 1280 * N, mxq) : -1;
                         static int64_t reported = -1;
                         if ((bgu || bdm || bbo || bh > 0) && reported != stats_.chunks)
                             std::fprintf(stderr, "strata dbg: layer %lld fp16 inputs: activations %lld non-finite (max %.3g), "

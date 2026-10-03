@@ -283,6 +283,11 @@ if(STRATA_SYCL_PARITY)
   # dequant+gemm prompt path is worth building (prefill/gemm.dp.cpp f16 vs a hypothetical dequant-to-int8)
   add_executable(int8_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/int8_gemm_bench.cpp)
   target_link_libraries(int8_gemm_bench PRIVATE strata_includes strata_prefill)   # -qmkl for the oneMKL GEMM
+  # the whole INT8 expert path on real Q2_0 rows (dequant-to-int8 + oneMKL INT8 vs the FP16 path), fidelity included:
+  #   int8_path_bench <shard1.gguf> [layer] [T] [reps]
+  add_executable(int8_path_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/int8_path_bench.cpp)
+  target_include_directories(int8_path_bench PRIVATE ${STRATA_ROOT}/third_party/ggml)
+  target_link_libraries(int8_path_bench PRIVATE strata_kernels strata_prefill)
   # device-to-device (P2P) transfer between two Intel cards, the handoff Strata's layer split uses
   add_executable(p2p_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/p2p_bench.cpp)
   target_link_libraries(p2p_bench PRIVATE strata_includes)
