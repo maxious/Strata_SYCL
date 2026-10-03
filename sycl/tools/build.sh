@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Configure + build the SYCL port inside strata-sycl-dev.  sycl/build.sh [target...]
 set -uo pipefail
+# oneAPI env init (named setenv.sh on some installs): puts icpx/oneMKL on PATH + LD_LIBRARY_PATH and registers
+# OCL_ICD_FILENAMES, without which the build misses the MKL includes and every run fails with 'No device of
+# requested type available'. Failing non-fatally so a source-only checkout still configures what it can.
 source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
 repo=${REPO:-/work/Strata_B70}
 b=${BUILD_DIR:-$repo/build-sycl}

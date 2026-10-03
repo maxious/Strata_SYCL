@@ -1,5 +1,12 @@
 # Strata on SYCL: how we compare to llama.cpp and what to do next
 
+**Environment first.** Anything that builds or runs the SYCL port needs the oneAPI environment initialized:
+`source /opt/intel/oneapi/setvars.sh` (older installs: `setenv.sh`). `sycl/tools/build.sh` does this itself, but a
+handwritten build or run must too - without it `icpx`/oneMKL are not on `PATH`/`LD_LIBRARY_PATH` and no ICD is
+registered, so the build misses the MKL headers and a built binary fails with `No device of requested type
+available`. (This is the first thing that bit us rebuilding `int8_gemm_bench`; see docs/INTEL.md "The engine
+itself on Intel".)
+
 This page is the working list for the **SYCL port** of Strata's engine (`sycl/`). Its goal is one thing: make
 the port's engine as fast as the CUDA original on Intel cards, using the SYCL backend of
 [llama.cpp](https://github.com/ggml-org/llama.cpp) - especially its XMX work - as the reference point. It states

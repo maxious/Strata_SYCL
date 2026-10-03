@@ -140,11 +140,18 @@ no backend seam to slot into.
      - helper headers renamed since dpct 2025.3 (`entangle`, `chunked_partition`);
      - graph introspection and `cudaGraphUpload`, which have no SYCL equivalents;
      - `%globaltimer` (the stage profiler reads zeros).
-4. **`sycl/tools/build.sh`:** configure and build with icpx inside the image. Two compiler flags are load-bearing:
+4. `sycl/tools/build.sh` - configure + build with icpx inside the image. It does `source /opt/intel/oneapi/setvars.sh`
+   itself (the oneAPI environment init; some installs name it `setenv.sh`). That step is load-bearing for both the
+   build **and every run**: it puts the oneAPI tools and the MKL / Level-Zero / OpenCL libraries on `PATH` and
+   `LD_LIBRARY_PATH` and registers `OCL_ICD_FILENAMES`, so without it `icpx` and oneMKL are not visible and a built
+   `*_parity` binary fails with `No device of requested type available` (or the `libsycl.so`/MKL include errors in
+   the build). A handwritten build must `source /opt/intel/oneapi/setvars.sh` first; `int8_gemm_bench`, `xmx_gemm_bench`
+   and the parity suite all assume it (oneMKL headers resolve only with it sourced).
+   Two compiler flags are load-bearing:
    - `-fp-model=precise`: icpx defaults to a fast FP model.
    - `-cl-fp32-correctly-rounded-divide-sqrt` for the device compiler. The Arc's fp32 divide is not correctly
      rounded by default (OpenCL allows 2.5 ulp), and Strata's quantizers are byte-exact against ggml through
-     `amax / 127`. Without the flag `quantize_act_parity` has 303k mismatches; with it, none.
+     `amax / 127`. Measured: without it `quantize_act_parity` has 303k mismatches, with it none.
 
 **Parity tests.** The whole tree builds and links: the `strata` binary plus the kernel parity tests.
 
@@ -519,6 +526,45 @@ What each merge needed:
     and the callers take the plain kernels.
 
 ## Bugs worth remembering
+
+**How each failing test gets its data** (so a checkout can make them go green):
+- `iq_parity`: its ten i-quants run against deterministically generated fixtures. CMake now auto-generates them
+  into `<build>/--selftest/` (via `tools/iq_fixture.py`, which locates the vendored gguf-py in the repo or the
+  llama.cpp FetchContent checkout), so on a built tree the test passes with no manual step. Generate by hand with
+  `python tools/iq_fixture.py --out <dir>` and run `iq_parity <dir>`.
+- `ple_parity`: needs a real Q2_0 GGUF shard (default `../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf`,
+  or `STRATA_PLE_GGUF`), the packed `pack/full/dense.bin`, and `bench/micro/ple_{in,out}.bin` captures. This model
+  is ~13 GB and not committed to the repo (gitignored `logs/`); point the env var at a downloaded shard.
+- `s2_expert_grouped_parity`: NOT a data issue - a real kernel bug in the grouped (host-built `/`resident) path; the
+  old vs new grouped kernels disagree deterministically in the gate/up scratch (fp32 out/141734 B, fp16 intermediate
+  0 B). Per-hit cases pass; grouped cases fail with both `STRATA_OLD_GROUPED=0/1`. Open under the "expert kernels" work.
+- `conversation_snapshot_test`: was a dpct-migrated double-free (host-USM pointers freed with C `free`); fixed with
+  `sycl::free` in `~Fixture()`. Passes.
+
+**The 0.1.32 merge (2026-10-01).** Upstream 0.1.31 -> 0.1.32 (89 commits) by the same steps; the hash-only
+differences are now canonicalized before `git merge-file` (the port's kernel-name hashes are kept), which left 10
+files with real conflicts. What it needed:
+
+- **Upstream's async commit** (`set_commit_async` / `wait_commit`) maps onto the port's own deferred commit
+  (`commit(n, err, false)` + `commit_finish`); `wait_commit` is `commit_finish`.
+- **Upstream's new hyper-connection read variants** (split / staged, chosen per card by a bit-for-bit self-test at
+  start) are not used by the port, which keeps its sliced down / split norm read; the self-test segfaulted on the
+  B70, so on SYCL it runs only with `STRATA_HC_CHECK=1` (open). The port's split-norm kernel was renamed
+  (`gr_norm_split_port_kernel`): upstream now has one of the same name.
+- Two kernel names collided after hash canonicalization (renamed), and fused_gr's per-block shared-memory query is
+  a fixup now.
+- **Result:** every output identical to 0.1.31 (Coder 19 / 2,184-token prompts and IQ2_XS, 256 greedy tokens),
+  same speeds (Coder 77.7-78.1 / 75.7 tok/s, IQ2_XS 58.5), 40K prompt 1,201 tok/s then 65.1 tok/s decode.
+  `kv_hybrid_parity` and `qsa_prompt_attn_parity` pass (the tests now turn on the XMX prompt attention they
+  check); `iq_multi_parity` (IQ2_XS) and `s2_expert_grouped_parity` as before.
+
+**The 0.1.33 merge (2026-10-01).** Upstream 0.1.32 -> 0.1.33 (17 commits): no shared file conflicted (the Intel
+code is all in `sycl/`); six engine files changed upstream and were merged by the same re-migration (only those six:
+the other files dpct produced differently were left alone). Two conflicts: `--resident-cpu-experts` (upstream's new
+`resident_cpu_explicit` beside the port's `--stream-experts`) and the prompt attention's compute-capability check
+(the port keeps its XMX dispatch). `sycl/setup_intel.py` and `sycl/serve/server_intel.py` ran unchanged against the
+new setup.py and server.py. Every output identical (Coder, IQ2_XS, the 40K prompt with borrowing); `gr_parity` and
+`qsa_prompt_attn_parity` pass.
 
 **Prompt-slot borrowing: the hang (fixed 2026-10-01).** From 0.1.31 on, a prompt that borrowed cache slots stopped
 in its first full chunk, with the GPU at 100% and the host waiting on the compute queue.
