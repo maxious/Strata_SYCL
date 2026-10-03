@@ -107,8 +107,47 @@ decode target.
 Priority order based on payoff on the B70. Ranked for *headroom* (where we already measured ourselves below the
 card's capability) and *adoptability* (how directly llama.cpp's code maps onto ours).
 
+### P0 - PRIMARY GOAL: native-SYCL MMQ prompt path (next we build)
+
+The single highest-payoff open item, decided by experiments 07 + 08 on the B60: the prompt path is
+**dequant + oneMKL-GEMM bound at 58.6%** (exp 07: dequant 30.1% + gemm down 20.0% + gemm gate/up 8.5%), and
+llama.cpp already ships a **native-SYCL** fused int8-tensor-core matmul (`ggml/src/ggml-sycl/mmq.cpp`: q8_1
+activations x quantized weights, dp4a products, `sycl::half2`/warp shuffles, no CUDA headers). Strata's
+`sycl/src/prefill/moe_mmq.dp.cpp` is a **CUDA** port that cannot compile on Intel (`cuda_runtime.h`; exp 08)
+and stays out of the build. Approach: wrap the native-SYCL mmq behind Strata's existing
+`strata::prefill::mmq` API (header `include/strata/prefill/moe_mmq.hpp`: built/supported/fits/quantize/Product),
+gated by `STRATA_PREFILL_MMQ=0` (default ON once real), measured against the 571 tok/s prompt baseline.
+
+MMQ implementation, broken down (staged - parity first, then bottom-up so each step is testable):
+
+1. **Kernel transplant (one type first).** Lift llama.cpp's native-SYCL `mul_mat_q`/`vec_dot_*_q8_1` kernel
+   bodies out of `ggml-sycl/mmq.cpp` (take the kernels, NOT ggml's `ggml_tensor`/`ggml_backend_sycl_context`
+   op plumbing) into a Strata-owned translation unit. Start with the Coder's gate/up type (IQ2_S or IQ4_NL per
+   the pack) - prove the interface against the existing dequant+oneMKL reference. Drops the CUDA `mmq.cuh` and
+   `ggml_cuda_host` include entirely.
+2. **Quantize:** the q8_1 activation quantizer behind `mmq::quantize` (rounds fp32 rows to q8_1, row padded to
+   512) - reuse llama.cpp's `quantize_row_q8_1` SYCL form; the int8-Q8_1 activation layout transfers as-is.
+3. **Product dispatch:** map Strata's `Product` (per-expert bounds + ids + dst rows on device) onto the mmq
+   launch; one launch per product with the expert weights read once, not per-expert oneMKL call. This is the
+   win over the FP16 path (reads ~1.4-2 MB / expert vs ~10 MB written).
+4. **Type coverage:** the Coder / IQ3_S supported set - q8_0, and the i-quants (IQ2_S / IQ4_NL / IQ3_S-style);
+   keep `mmq::supported` honest (IQ1_M stays uncovered). The `fits`/`J_best=0` guard must be respected (a
+   matrix that does not fit SM aborts `J_best=0`, so `mmq::fits` gates it before launch).
+5. **Runtime gate + parity gate.** `STRATA_PREFILL_MMQ` default ON; `xy 08`'s `# 5. How to verify` chain:
+   prompt output identical at tolerance, prompt tok/s vs the 571 baseline at 2,184 and 8,000 tokens, INTEL.md
+   row in the speed tables. Keep the FP16 oneMKL path as the fallback and log the A/B.
+
+Acceptance for the whole MMQ goal: prompt reading up with output identical (or near-tie documented) at both
+prompt sizes, gated behind `STRATA_PREFILL_MMQ=0` to revert, and the `xmx_gemm_bench`/parity suite still green.
+
 ### P0 - adopt llama.cpp's proven patterns
 
+- [x] **Runtime XMX probe and dispatch** - DONE in experiment 01 (committed): `gpu_has_xmx()` in
+  `sycl_queue.hpp` gates the XMX prompt-attention and fused-GEMM kernels behind `ext_intel_matrix`; parity
+  green, `xmx_probe_test` added.
+- [ ] **INT8 prompt expert dequant** (re-scoped from the INT8 oneMKL-GEMM item below). The prompt's 760 ms
+  dequant is the single largest phase; the native-SYCL MMQ (primary goal) subsumes this by dequantizing in
+  registers inside the matmul. Revisit only if MMQ stalls.
 - [ ] **L1 decode matvec: weight reorder + ESIMD, ported from `dmmv.cpp`/`esimd.hpp`.** The single biggest open
   gap. INTEL.md already lists the misaligned IQ4_XS / IQ4_NL / Q8_0 loads as stuck around ~100-280 GB/s while the
   aligned types hit 400+. llama.cpp's `reorder_qw_*` + ESIMD `mac_pair` is exactly the layout move that wins
@@ -125,40 +164,40 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
 
 ### P1 - close the measured headroom
 
-- [ ] **oneMKL-GEMM flash attention (XMX prompt attention via GEMM), the #25025/#25222 pattern.** llama.cpp's
-  fattn-mkl.cpp (#25025 2026) runs prompt attention as oneMKL XMX GEMM (K/V converted to F16 first so every cache
-  type benefits); our port's FP32 prompt attention is currently the fast path and our joint_matrix attention is
-  ~2-3x slower. An A/B against L2 (below) is the way to claim the XMX prefill win the branch note "~350+ tok/s".
-  Acceptance: prompt tok/s up at 8K/40K/128K with outputs identical at the documented tolerance (kv_hybrid_parity,
-  qsa_prompt_attn_parity).
+- [ ] **prompt-attention GEMM A/B (the #25025/#25222 lever, re-scoped).** llama.cpp runs prompt attention as
+  oneMKL XMX GEMM; Strata's prompt attention is sparse/gather-bound QSA (each query selects its own cells), so a
+  direct oneMKL-GEMM flash-attention copy does not map (NOTE: the "~350+ tok/s prefill" branch note is llama.cpp's
+  number; Strata's own prompt already reads ~570-1,100 tok/s on the dequant+oneMKL FP16 path). The GEMM part of
+  the prompt IS the MMQ target (primary goal); revisit attention only after MMQ lands.
 
 - [ ] **oneDNN fused-XMX SDPA A/B for prompt attention.** llama.cpp has it (`fattn-onednn.hpp`); we have FP32 and
   our own XMX kernel, and our XMX is ~2-3x slower than FP32. One experiment: route prompt attention through
   oneDNN's fused SDPA and compare against the FP32 fallback at 8K/40K/128K. If it wins, keep it behind the same
   probe-and-verify gate.
-- [ ] **Fix the remaining misaligned decode loads (IQ4_XS 136 B/8-aligned, IQ4_NL 18 B, Q8_0 34 B).** INTEL.md's
-  `load16_a2` fix worked for Q6_K (150 -> 407 GB/s); extend the same two-aligned-loads-and-shift idea to the
-  three types still listed as open. Acceptance: each type's bench (e.g. `mmvq_sg_bench`) crosses the aligned
-  band, outputs identical.
-- [ ] **Re-test SIMD16 (native Xe2 width) decode kernels now that llama.cpp uses them as the default.**
-  INTEL.md measured SIMD16 as a no-net-gain (`STRATA_MMVQ_SG`), but llama.cpp ships native-16 kernels on BMG.
-  Re-bench at the current engine state; if it stays flat, close the item with the measurement as INTEL.md already
-  did.
+- [x] **Misaligned decode loads (IQ4_XS, Q8_0, IQ4_NL) - MEASURED + parked (experiment 04).** `load16_a2`
+  for IQ4_XS measured 2-9% slower at every shape with identical checksums (LUT/ALU-bound, not
+  load-alignment-bound); Q8_0/IQ4_NL already use `load16_a2`. Do not implement.
+- [x] **Graph-node fusion (norm+rope, scores+topk, gate+quantize) - MEASURED + parked (experiment 05).** Decode
+  is kernel-bound: 52 ms/4-token round over 2,541 nodes = ~20 us/node of real work; fusing <1% of the round.
+  Do not implement.
+- [x] **Fused-GR-read gated variants - MEASURED + confirmed (experiment 06).** The default (split-norm + sliced
+  + direct) is 14-84% faster than every alternative gate at 4/6-token windows. No change.
 - [ ] **MKL-FA softmax load coalescing (#28918) and large-register-file FA vec kernels (#29062).** llama.cpp's
   fattn-mkl.cpp coalesced the softmax loads (one work-item per row was the bottleneck) and fattn-vec.hpp grew a
-  large-register path for D=512 heads. Our prompt attention completes its softmax the same way; port the
-  coalesced-read softmax and check reg-file sizing on the B60's 512-head caps.
+  large-register path for D=512 heads. Strata's prompt attention is sparse QSA (not dense FA), so this applies
+  only to whatever GEMM attention MMQ enables; revisit after the primary goal.
 - [ ] **Q8_0/Q8_1 wide-load + DMMV ESIMD (#29186), Q2_K/Q5_K reordered ESIMD (#27490/#26376).** llama.cpp's newest
-  decode work adds wide-load MMVQ and ESIMD DMMV for Q8_0, and completes reordered-ESIMD for the K-quants. Map
-  onto our still-misaligned decode kernels: Q8_0 (`s_gemv_q8k`, `text` mmvq) is the MTP/dense-projections type.
-  Acceptance: by-type bench steps off the misaligned list, outputs identical.
+  decode work adds wide-load MMVQ and ESIMD DMMV for Q8_0, and completes reordered-ESIMD for the K-quants. The
+  B60's dense decode kernels already run at INTEL.md's documented values (exp 06); this is a decode-tuning
+  follow-on, lower priority than MMQ.
 - [ ] **Fuse mul_mat(gate)+mul_mat(up)+GLU for the dense FFN (#26779), rms_norm+mul+add residual chains
   (#27610), fused UNARY(silu/...)+MUL (#26411).** llama.cpp keeps shaving cross-kernel round-trips; each matches a
   stride in our dense projections (GR down/up, norms). INTEL.md's graph-node item already prices ~5 us/node.
+  Low priority (exp 05: kernel-bound).
 - [ ] **Host-pinned memory for host-to-device (#26789) and dev2dev memcpy by SYCL API (#24476/#26234/#27550
   P2P).** llama.cpp moved host access to pinned buffers and added a device-to-device (P2P) copy path - the exact
-  transfer Experiment 03 measured on both B60s at 7.7-8.6 GB/s. Pipe the layer-split window hand-off through the
-  native dev2dev path instead of host staging and measure against the host round trip.
+  transfer Experiment 03 measured on both B60s at 7.7-8.6 GB/s. The layer split already works (exp 03); pipe
+  the window hand-off through the native dev2dev path instead of host staging and measure. Secondary to MMQ.
 
 ### P2 - structural / hygiene
 
@@ -171,6 +210,23 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
 - [ ] **Match llama.cpp's automated XMX CI gate.** llama.cpp gates XMX paths behind tests (e.g. `topk-moe.cpp`,
   flash-attn self-tests). Add a `xmx_gemm_bench` + parity step to `sycl/tools/build.sh` so an XMX change that
   regresses the quantized GEMM fails the build like any other kernel.
+
+### Experiment log (2026-10-03, B60) - what each measured and decided
+
+Reports live in `docs/sycl-experiments/`; these are the read-outs that set the priorities above.
+
+| # | experiment | result | decision |
+|---|---|---|---|
+| 00 | baseline build + 22/23 parity + benches | dual-B60 (G21) toolchain works | reference set |
+| 01 | XMX runtime probe (`gpu_has_xmx`) | ported, parity green | IMPLEMENTED (commit) |
+| 02 | INT8 vs FP16 oneMKL GEMM | 1.5-2.2x at full batch, bit-exact, dequant-bound | GEMM-only parked; dequant is the real prize |
+| 03 | P2P + layer split | 7.7-8.6 GB/s D2D, `stage_room` fix, split 35.5 vs 25.4 tok/s | IMPLEMENTED (commit like `stage_room` fix) |
+| 04 | misaligned decode loads | IQ4_XS aligned-load 2-9% slower | parked (LUT-bound) |
+| 05 | decode-round node fusion | 52 ms/2,541 nodes, kernel-bound | parked |
+| 06 | fused-GR gated variants | default 14-84% faster | confirmed; no change |
+| 07 | prompt bottleneck | dequant+GEMM = 58.6%; 571 tok/s @1,280 tok | **MMQ = the target** |
+| 08 | CUDA MMQ wiring | fails on `cuda_runtime.h` | wrong path; adopt native-SYCL mmq |
+
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)
 
