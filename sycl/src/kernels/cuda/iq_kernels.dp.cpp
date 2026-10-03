@@ -666,9 +666,7 @@ __dpct_inline__ float warp_sum(float v) {
     runtimes. You may need to adjust the code.
     */
     for (int o = 16; o > 0; o >>= 1) v +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            o);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
 
@@ -684,7 +682,7 @@ template <int LANES>
 __dpct_inline__ float lanes_sum(float v) {
 #pragma unroll
     for (int o = LANES / 2; o > 0; o >>= 1)
-        v += dpct::experimental::permute_sub_group_by_xor(0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
+        v += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
 template <int TY, int LANES>
@@ -1552,17 +1550,13 @@ __dpct_inline__ void q8_1_store(const float xi, block_q8_1 *__restrict__ y,
         */
         amax = sycl::fmax(
             amax,
-            dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                amax, o));
+            strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), amax, o));
         /*
         DPCT1108: '__shfl_xor_sync' was migrated with the experimental
         feature masked sub_group function which may not be supported by all
         compilers or runtimes. You may need to adjust the code.
         */
-        sum += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            sum, o);
+        sum += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
     }
     const float d = amax / 127.0f;
     const int8_t q = amax == 0.0f ? 0 : sycl::round(xi / d);

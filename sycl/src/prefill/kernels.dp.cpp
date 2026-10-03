@@ -2,10 +2,11 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/prefill/kernels.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/router_top10.hpp"
+#include "strata/prefill/kernels.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cfloat>
 #include <cmath>
@@ -26,8 +27,7 @@ __dpct_inline__ float warp_sum(float v) {
     runtimes. You may need to adjust the code.
     */
     for (int o = 16; o > 0; o >>= 1) v +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             o);
     return v;
 }
@@ -39,8 +39,7 @@ __dpct_inline__ float warp_max(float v) {
     runtimes. You may need to adjust the code.
     */
     for (int o = 16; o > 0; o >>= 1) v = sycl::fmax(
-        v, dpct::experimental::permute_sub_group_by_xor(
-               0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        v, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                v, o));
     return v;
 }
@@ -80,14 +79,14 @@ inline float block_sum(float v, float *sh) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (lane == 0) sh[w] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = (item_ct1.get_local_range(2) + 31) >> 5;
     float t =
         (item_ct1.get_local_id(2) < nw) ? sh[item_ct1.get_local_id(2)] : 0.0f;
@@ -98,7 +97,7 @@ inline float block_sum(float v, float *sh) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return sh[0];
 }
 void check(const char* what) {
@@ -393,7 +392,7 @@ __dpct_inline__ void gdn_l2_kernel(float *__restrict__ h, float eps) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float ss = part[0] + part[1] + part[2] + part[3];
     x[item_ct1.get_local_id(2)] = v * sycl::rsqrt(ss + eps);
 }
@@ -441,7 +440,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (tid < S) { sq[tid] = ht[qh * S + tid]; sk[tid] = ht[HK * S + qh * S + tid]; }
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
@@ -452,7 +451,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const float g = sycl::native::exp(gate[t * HV + head]);
         float kv = 0.0f;
 #pragma unroll
@@ -468,7 +467,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
         const float delta = (ht[2 * HK * S + head * S + col] - g * kv_col) * beta[t * HV + head];
         float o = 0.0f;
@@ -486,7 +485,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][col] = o;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
@@ -497,7 +496,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         float oc = 0.0f, sp = 0.0f;
         if (rg == 0) {
             oc = (red[0][col] + red[1][col] + red[2][col] + red[3][col]) *
@@ -515,7 +514,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) {
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
             const float v = oc * sycl::rsqrt(ss / (float)S + eps) * g_col *
@@ -574,7 +573,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (tid < S) { sq[tid] = ht[qh * S + tid]; sk[tid] = ht[HK * S + qh * S + tid]; }
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
@@ -585,7 +584,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const float g = sycl::native::exp(gate[t * HV + head]);
         float kv = 0.0f;
 #pragma unroll
@@ -601,7 +600,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
         const float delta = (ht[2 * HK * S + head * S + col] - g * kv_col) * beta[t * HV + head];
         float o = 0.0f;
@@ -619,7 +618,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][c] = o;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
@@ -630,7 +629,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) oc_out[t * HV * S + head * S + col] =
             (red[0][c] + red[1][c] + red[2][c] + red[3][c]) *
             sycl::rsqrt((float)S);
@@ -697,7 +696,7 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
         for (int u = 0; u < LPT; ++u) { sq[tid + u * NT] = cq[u]; sk[tid + u * NT] = ck[u]; }
         /*
@@ -709,7 +708,7 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t + 1 < T) fetch(t + 1);
         const float g = sycl::native::exp(cg);
         float kv = 0.0f;
@@ -726,7 +725,7 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
         const float delta = (cv - g * kv_col) * cbt;
         float o = 0.0f;
@@ -744,7 +743,7 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][c] = o;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
@@ -755,7 +754,7 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) oc_out[t * HV * S + head * S + col] =
             (red[0][c] + red[1][c] + red[2][c] + red[3][c]) *
             sycl::rsqrt((float)S);
@@ -918,7 +917,7 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const int bb = (int) (k & 1);
         const int n = (int) ((T - k * TB) < TB ? (T - k * TB) : TB);
         for (int i = 0; i < n; ++i) {
@@ -949,7 +948,7 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
             sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
             better performance if there is no access to global memory.
             */
-            item_ct1.barrier();
+            item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
             for (int j = 0; j < VPK; ++j) {
                 const float kv_col = rkv[j][0][c] + rkv[j][1][c] + rkv[j][2][c] + rkv[j][3][c];
@@ -976,7 +975,7 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
             sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
             better performance if there is no access to global memory.
             */
-            item_ct1.barrier();
+            item_ct1.barrier(sycl::access::fence_space::local_space);
             if (rg < VPK)   // row group j writes head j's output
                 oc_out[t * HV * S + (qh + rg * HK) * S + col] =
                     (ro[rg][0][c] + ro[rg][1][c] + ro[rg][2][c] +
@@ -1076,16 +1075,14 @@ __dpct_inline__ void route_kernel(const float *__restrict__ logits,
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            const float ob = dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const float ob = strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 best, m);
             /*
             DPCT1108: '__shfl_xor_sync' was migrated with the experimental
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            const int oi = dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const int oi = strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 ex, m);
             if (ob > best || (ob == best && oi < ex)) { best = ob; ex = oi; }
         }
@@ -1213,7 +1210,7 @@ auto &sh = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
     for (int64_t c = item_ct1.get_local_id(2); c < cols;
          c += item_ct1.get_local_range(2)) r[c] = s * r[c] * w[c];
@@ -1303,8 +1300,7 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) a = sycl::fmax(
-        a, dpct::experimental::permute_sub_group_by_xor(
-               0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        a, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                a, o));
     auto &wm = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[2]>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
@@ -1315,7 +1311,7 @@ runtimes. You may need to adjust the code.
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float amax = sycl::fmax(wm[0], wm[1]);
     const uint16_t sb = hf(amax / 127.0f);
     const float sf =

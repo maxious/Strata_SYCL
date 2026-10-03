@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/core/emulate.hpp"
 #include <cstdlib>
@@ -172,16 +173,14 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
     runtimes. You may need to adjust the code.
     */
     for (int o = 16; o > 0; o >>= 1) qm = sycl::fmax(
-        qm, dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                qm, o));
+        qm, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), qm, o));
     if (lane == 0) S.qmax[warp] = qm;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     qm = sycl::fmax(sycl::fmax(S.qmax[0], S.qmax[1]),
                     sycl::fmax(S.qmax[2], S.qmax[3]));
     int qe = 0;
@@ -235,7 +234,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier(); // rows ready; the previous chunk's p.v is done with
+        item_ct1.barrier(sycl::access::fence_space::local_space); // rows ready; the previous chunk's p.v is done with
                             // k, v, s
         // gather the chunk's K and V rows (16-byte pieces; K8V4's V as q4_0 blocks dequantized to fp16)
         // and their scales
@@ -442,7 +441,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         // scores: warp w takes cells 8w..8w+7 (one n-tile) over all 256 dims, per scale group (64 dims; q4_0's 32)
         constexpr int NG = Smem<KV_MODE>::NG, KPG = HD / 16 / NG;   // groups per row, 16-dim MMA steps per group
 #pragma unroll
@@ -497,7 +496,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         // online softmax: row t/8, 4 cells per thread, 8 threads per row (lanes 8r..8r+7 of a warp)
         {
             constexpr int PER = CH / 8;
@@ -515,9 +514,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             */
             for (int o = 1; o < 8; o <<= 1) mx = sycl::fmax(
                 mx,
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
+                strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
             const float m_old = S.mrow[r];
             const float m_new = sycl::fmax(m_old, mx);
             float sum = 0.0f;
@@ -535,9 +532,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             compilers or runtimes. You may need to adjust the code.
             */
             for (int o = 1; o < 8; o <<= 1) sum +=
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
+                strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
             sycl::group_barrier(
                 sycl::ext::oneapi::this_work_item::get_sub_group());
             if (sub == 0) {
@@ -557,7 +552,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         // p.v: warp w owns dims [64w, 64w+64), which is int8 scale group w (q4_0: groups 2w and 2w+1, four n-tiles
         // each). A group's scale is folded into p relative to the chunk's largest magnitude (q4_0's scales are signed:
         // ggml's d = max / -8), times 2^14 (|p'| <= 2^14: inside FP16's range, its lo half out of the subnormals); the
@@ -582,10 +577,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             compilers or runtimes. You may need to adjust the code.
             */
             for (int o = 16; o > 0; o >>= 1) vmax = sycl::fmax(
-                vmax, dpct::experimental::permute_sub_group_by_xor(
-                          0xffffffffu,
-                          sycl::ext::oneapi::this_work_item::get_sub_group(),
-                          vmax, o));
+                vmax, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f;
             vdown_g[gi] = vmax * (1.0f / 16384.0f);
 #pragma unroll
@@ -660,7 +652,7 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float l0 = S.lsum[gid], l1 = S.lsum[gid + 8];
     const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
 #pragma unroll
@@ -769,9 +761,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
     runtimes. You may need to adjust the code.
     */
     for (int o = 16; o > 0; o >>= 1) qm = sycl::fmax(
-        qm, dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                qm, o));
+        qm, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), qm, o));
     if (lane == 0) S.qmax[warp] = qm;
     if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
     /*
@@ -779,7 +769,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     qm = sycl::fmax(sycl::fmax(S.qmax[0], S.qmax[1]),
                     sycl::fmax(S.qmax[2], S.qmax[3]));
     int qe = 0;
@@ -850,9 +840,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             DPCT1121: Make sure that the "r" which is used in the SYCL group
             function/algorithm is initialized.
             */
-            const long long rr = dpct::experimental::select_from_sub_group(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                r, cell);
+            const long long rr = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), r, cell);
             const bool ok = rr >= 0;
             const size_t off = ok ? (size_t) rr * HD + dim0 + pc * 16 : 0;
             cp_async16(&S.kv[st][warp][0][0][0] + swz(cell, pc * 16), p.k_q + off, ok);
@@ -931,7 +919,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
         {
             const int r = t >> 3, sub = t & 7;
@@ -951,9 +939,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             */
             for (int o = 1; o < 8; o <<= 1) mx = sycl::fmax(
                 mx,
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
+                strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
             const float m_old = S.mrow[r];
             const float m_new = sycl::fmax(m_old, mx);
             float sum = 0.0f;
@@ -971,9 +957,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             compilers or runtimes. You may need to adjust the code.
             */
             for (int o = 1; o < 8; o <<= 1) sum +=
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
+                strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
             sycl::group_barrier(
                 sycl::ext::oneapi::this_work_item::get_sub_group());
             if (sub == 0) {
@@ -993,7 +977,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         // p.v over this warp's 64 dims (as v1)
         {
             float vmax = S.sc[st][warp][1][lane];
@@ -1004,10 +988,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
             compilers or runtimes. You may need to adjust the code.
             */
             for (int o = 16; o > 0; o >>= 1) vmax = sycl::fmax(
-                vmax, dpct::experimental::permute_sub_group_by_xor(
-                          0xffffffffu,
-                          sycl::ext::oneapi::this_work_item::get_sub_group(),
-                          vmax, o));
+                vmax, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f, vdown = vmax * (1.0f / 16384.0f);
             float tmp[8][4];
 #pragma unroll
@@ -1075,7 +1056,7 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float l0 = S.lsum[gid], l1 = S.lsum[gid + 8];
     const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
 #pragma unroll

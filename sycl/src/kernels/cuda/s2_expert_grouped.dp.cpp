@@ -119,9 +119,7 @@ __dpct_inline__ float warp_sum(float v) {
     function/algorithm is initialized.
     */
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            off);
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
     return v;
 }
 
@@ -515,9 +513,7 @@ __dpct_inline__ float row_dot_cpu_order(const uint8_t *codes,
     correctness. SYCL math built-in function rounding mode is aligned with
     OpenCL C 1.2 standard.
     */
-    acc = acc + dpct::experimental::shift_sub_group_left(
-                    mask, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                    acc, 4, 8);
+    acc = acc + strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), acc, 4);
     /*
     DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
     masked sub_group function which may not be supported by all compilers or
@@ -529,9 +525,7 @@ __dpct_inline__ float row_dot_cpu_order(const uint8_t *codes,
     correctness. SYCL math built-in function rounding mode is aligned with
     OpenCL C 1.2 standard.
     */
-    acc = acc + dpct::experimental::shift_sub_group_left(
-                    mask, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                    acc, 1, 8);
+    acc = acc + strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), acc, 1);
     /*
     DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
     masked sub_group function which may not be supported by all compilers or
@@ -543,9 +537,7 @@ __dpct_inline__ float row_dot_cpu_order(const uint8_t *codes,
     correctness. SYCL math built-in function rounding mode is aligned with
     OpenCL C 1.2 standard.
     */
-    acc = acc + dpct::experimental::shift_sub_group_left(
-                    mask, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                    acc, 2, 8);
+    acc = acc + strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), acc, 2);
     /*
     DPCT1013: The rounding mode could not be specified and the generated
     code may have different accuracy than the original code. Verify the

@@ -2,13 +2,14 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/sycl_doorbell.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/dp4a.hpp"
 
 #include "strata/kernels/bf16_bits.hpp"
+#include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/sycl_doorbell.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -157,8 +158,7 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, off);
     // The MEAN, not the sum: `ref/qsa.py::rms_norm` divides by `np.mean(np.square(x))`.  Broadcasting the
     // reciprocal from lane 0 keeps all 32 lanes on the same value - computing `rsqrt` per lane would be the
@@ -170,8 +170,7 @@ runtimes. You may need to adjust the code.
     masked sub_group function which may not be supported by all compilers or
     runtimes. You may need to adjust the code.
     */
-    inv = dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), inv,
+    inv = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), inv,
         0);
 #pragma unroll
     for (int64_t c = lane; c < cols; c += 32)

@@ -23,6 +23,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_router.hpp"
 #include <atomic>
@@ -42,8 +43,8 @@ __dpct_inline__ float warp_sum(float value) {
     runtimes. You may need to adjust the code.
     */
     for (int mask = 16; mask; mask >>= 1) value +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             value, mask);
     return value;
 }
@@ -56,8 +57,8 @@ __dpct_inline__ float warp_max(float value) {
     */
     for (int mask = 16; mask; mask >>= 1) value = sycl::fmax(
         value,
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             value, mask));
     return value;
 }
@@ -114,16 +115,16 @@ __dpct_inline__ void route(const float *__restrict__ logits,
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            const float other = dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const float other = strata::sub_group_permute_xor(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 best, mask);
             /*
             DPCT1108: '__shfl_xor_sync' was migrated with the experimental
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            const int other_id = dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const int other_id = strata::sub_group_permute_xor(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 expert, mask);
             if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
         }

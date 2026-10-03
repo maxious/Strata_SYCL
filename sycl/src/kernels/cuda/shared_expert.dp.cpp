@@ -21,6 +21,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -123,8 +124,8 @@ function/algorithm is initialized.
 */
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+        strata::sub_group_shift_left(
+            sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             off);
     /*
     DPCT1108: '__shfl_sync' was migrated with the experimental feature
@@ -135,8 +136,8 @@ function/algorithm is initialized.
     DPCT1121: Make sure that the "v" which is used in the SYCL group
     function/algorithm is initialized.
     */
-    return dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
+    return strata::sub_group_select(
+        sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
 }
 
 __dpct_inline__ void scalar_gate_kernel(const uint16_t *__restrict__ x_bf16,

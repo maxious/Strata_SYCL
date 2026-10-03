@@ -25,8 +25,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_gr_norm.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -45,8 +46,7 @@ __dpct_inline__ float norm_warp_sum(float value) {
         feature masked sub_group function which may not be supported by all
         compilers or runtimes. You may need to adjust the code.
         */
-        value += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        value += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             value, offset);
     }
     return value;

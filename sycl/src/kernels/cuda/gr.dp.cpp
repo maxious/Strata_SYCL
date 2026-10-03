@@ -24,12 +24,13 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/gr.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
+#include "strata/kernels/gr.hpp"
 #include "strata/kernels/native_gr_norm.hpp"
 #include "strata/kernels/native_gr_postops.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -86,8 +87,7 @@ function/algorithm is initialized.
 */
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             off);
     /*
     DPCT1108: '__shfl_sync' was migrated with the experimental feature masked
@@ -98,8 +98,7 @@ function/algorithm is initialized.
     DPCT1121: Make sure that the "v" which is used in the SYCL group
     function/algorithm is initialized.
     */
-    return dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
+    return strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
 }
 
 __dpct_inline__ float warp_sumf(float v) {
@@ -114,8 +113,7 @@ function/algorithm is initialized.
 */
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             off);
     /*
     DPCT1108: '__shfl_sync' was migrated with the experimental feature masked
@@ -126,8 +124,7 @@ function/algorithm is initialized.
     DPCT1121: Make sure that the "v" which is used in the SYCL group
     function/algorithm is initialized.
     */
-    return dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
+    return strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
 }
 
 /// The FP32 block-wide sum, for the reason the review's G5 states: this is a GeForce part and FP64 runs at a
@@ -147,7 +144,7 @@ inline float block_sumf(float v, double *scratch_raw) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int lane = item_ct1.get_local_id(2) & 31,
               warp = item_ct1.get_local_id(2) >> 5;
     v = warp_sumf(v);
@@ -157,7 +154,7 @@ inline float block_sumf(float v, double *scratch_raw) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
     v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
                                         : 0.0f;
@@ -168,7 +165,7 @@ inline float block_sumf(float v, double *scratch_raw) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return scratch[0];
 }
 
@@ -188,7 +185,7 @@ double block_sum(double v, double* scratch) {
     performance if there is no access to global memory.
     */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int lane = item_ct1.get_local_id(2) & 31,
               warp = item_ct1.get_local_id(2) >> 5;
     v = warp_sum(v);
@@ -198,7 +195,7 @@ double block_sum(double v, double* scratch) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
     v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
                                         : 0.0;
@@ -209,7 +206,7 @@ double block_sum(double v, double* scratch) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return scratch[0];
 }
 

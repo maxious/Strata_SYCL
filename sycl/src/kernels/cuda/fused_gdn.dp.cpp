@@ -2,8 +2,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
 #include "strata/kernels/fused_gdn.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -54,7 +55,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float g = sycl::native::exp(gate[head]);
     float kv = 0.0f;
 #pragma unroll
@@ -65,7 +66,7 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
     const float delta = (v[head * S + col] - g * kv_col) * beta[head];
     float o = 0.0f;
@@ -80,14 +81,14 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier(); // every thread has read red[] for kv_col
+    item_ct1.barrier(sycl::access::fence_space::local_space); // every thread has read red[] for kv_col
     red[rg][col] = o;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     float oc = 0.0f, sq_part = 0.0f;
     if (rg == 0) {
         oc = (red[0][col] + red[1][col] + red[2][col] + red[3][col]) *
@@ -102,8 +103,7 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int o2 = 16; o2 > 0; o2 >>= 1) sq_part +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             sq_part, o2);
     if ((tid & 31) == 0) wsum[tid >> 5] = sq_part;
     /*
@@ -111,7 +111,7 @@ runtimes. You may need to adjust the code.
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (rg == 0) {
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
         const float scale = sycl::rsqrt(ss / (float)S + eps);
@@ -146,8 +146,7 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) sq +=
-            dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 sq, o);
         if ((item_ct1.get_local_id(2) & 31) == 0)
             part[item_ct1.get_local_id(2) >> 5] = sq;
@@ -160,7 +159,7 @@ runtimes. You may need to adjust the code.
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const float ss = part[0] + part[1] + part[2] + part[3];
         y *= sycl::rsqrt(ss + eps);
     }
@@ -216,8 +215,7 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) acc +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, o);
     if (lane != 0) return;
     if (is_beta) {

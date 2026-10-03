@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/core/emulate.hpp"
 #include <cstdlib>
@@ -59,8 +60,8 @@ __dpct_inline__ void block_scores_kernel(const float *__restrict__ pooled,
         compilers or runtimes. You may need to adjust the code.
         */
         for (int o = 16; o > 0; o >>= 1) d +=
-            dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            strata::sub_group_permute_xor(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 d, o);
         score += d > 0.0f ? d : 0.0f;
     }
@@ -123,7 +124,7 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const uint32_t hi_mask = shift == 24 ? 0u : (0xffffffffu << (shift + 8));
         for (int64_t b = b0; b < b1; ++b) {
             const int w = weight(b);
@@ -142,7 +143,7 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t == 0) {
             int cum = above, d = 255;
 #pragma unroll
@@ -162,7 +163,7 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         prefix |= (uint32_t) s_digit << shift;
         above = s_above;
         /*
@@ -174,7 +175,7 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     const uint32_t thr = prefix;
     const int64_t eq_budget = width - above;          // cells equal to thr that fit, lowest index first
@@ -194,7 +195,7 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (t == 0) {
         int ag = 0, ae = 0;
         for (int i = 0; i < TOPK_T; ++i) {
@@ -208,7 +209,7 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int64_t eq_before = s_b[t];
     int64_t my_eq = eq_budget - eq_before;
     if (my_eq < 0) my_eq = 0;
@@ -219,14 +220,14 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     s_a[t] = sel;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (t == 0) {
         int a = 0;
         for (int i = 0; i < TOPK_T; ++i) { const int c = s_a[i]; s_a[i] = a; a += c; }
@@ -236,7 +237,7 @@ auto &hist = *sycl::ext::oneapi::group_local_memory_for_overwrite<int[256]>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     int64_t wpos = s_a[t];
     int64_t eq_left = my_eq;
     for (int64_t b = b0; b < b1; ++b) {
@@ -351,7 +352,7 @@ __dpct_inline__ void block_scores_tc_kernel(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier(); // the previous tile's reads are done
+        item_ct1.barrier(sycl::access::fence_space::local_space); // the previous tile's reads are done
         for (int i = t; i < TC_NB * IDX_DIM / 4; i += 128) {
             const int r = i / (IDX_DIM / 4), c = i % (IDX_DIM / 4);
             sycl::float4 v = sycl::float4(0.f, 0.f, 0.f, 0.f);
@@ -368,7 +369,7 @@ __dpct_inline__ void block_scores_tc_kernel(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         float acc[IDX_HEADS][4];
 #pragma unroll
         for (int h = 0; h < IDX_HEADS; ++h) acc[h][0] = acc[h][1] = acc[h][2] = acc[h][3] = 0.f;
@@ -604,8 +605,8 @@ __dpct_inline__ void block_scores_tail_kernel(const float *__restrict__ dead,
         compilers or runtimes. You may need to adjust the code.
         */
         for (int o = 16; o > 0; o >>= 1) d +=
-            dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            strata::sub_group_permute_xor(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 d, o);
         score += d > 0.0f ? d : 0.0f;
     }
@@ -641,8 +642,8 @@ __dpct_inline__ int block_excl_scan(int v, int *s_warp, int &total) {
         masked sub_group function which may not be supported by all compilers or
         runtimes. You may need to adjust the code.
         */
-        const int y = dpct::experimental::shift_sub_group_right(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
+        const int y = strata::sub_group_shift_right(
+            sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             o);
         if (lane >= o) x += y;
     }
@@ -652,7 +653,7 @@ __dpct_inline__ int block_excl_scan(int v, int *s_warp, int &total) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (warp == 0) {
         int w = s_warp[lane];
         int z = w;
@@ -663,8 +664,8 @@ __dpct_inline__ int block_excl_scan(int v, int *s_warp, int &total) {
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            const int y = dpct::experimental::shift_sub_group_right(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const int y = strata::sub_group_shift_right(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 z, o);
             if (lane >= o) z += y;
         }
@@ -676,7 +677,7 @@ __dpct_inline__ int block_excl_scan(int v, int *s_warp, int &total) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int r = s_warp[warp] + x - v;
     total = s_warp[32];
     /*
@@ -684,7 +685,7 @@ __dpct_inline__ int block_excl_scan(int v, int *s_warp, int &total) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return r;
 }
 
@@ -755,7 +756,7 @@ auto &hist =
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t < 256) {                                // fold the warps' histograms into warp 0's
             int s = 0;
 #pragma unroll
@@ -771,7 +772,7 @@ auto &hist =
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t == 0) {
             int cum = above, d = 255;
 #pragma unroll
@@ -791,7 +792,7 @@ auto &hist =
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         prefix |= (uint32_t) s_digit << shift;
         above = s_above;
         /*
@@ -803,7 +804,7 @@ auto &hist =
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     const uint32_t thr = prefix;
     const int64_t eq_budget = width - above;
@@ -912,8 +913,7 @@ auto &qs = *sycl::ext::oneapi::group_local_memory_for_overwrite<
                 the code.
                 */
                 for (int o = 16; o > 0; o >>= 1) d +=
-                    dpct::experimental::permute_sub_group_by_xor(
-                        0xffffffffu,
+                    strata::sub_group_permute_xor(
                         sycl::ext::oneapi::this_work_item::get_sub_group(), d,
                         o);
                 score += d > 0.0f ? d : 0.0f;

@@ -5,6 +5,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/gdn.hpp"
 
@@ -88,7 +89,7 @@ auto &ks =
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (j >= S) return;
 
     for (int hi = 0; hi < nh; ++hi) {
@@ -161,8 +162,8 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_shift_left(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, off);
     auto &ssum = *sycl::ext::oneapi::group_local_memory_for_overwrite<double>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
@@ -172,7 +173,7 @@ runtimes. You may need to adjust the code.
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float inv = (float)(1.0 / sycl::sqrt(ssum + (double)eps));
 #pragma unroll
     for (int i = item_ct1.get_local_id(2); i < cols;
@@ -201,8 +202,8 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_shift_left(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, off);
     auto &ssum = *sycl::ext::oneapi::group_local_memory_for_overwrite<double>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());

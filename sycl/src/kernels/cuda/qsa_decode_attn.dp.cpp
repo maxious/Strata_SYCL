@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
@@ -29,9 +30,7 @@ __dpct_inline__ float warp_sum(float v) {
     runtimes. You may need to adjust the code.
     */
     for (int o = 16; o > 0; o >>= 1) v +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            o);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
 __dpct_inline__ float warp_max(float v) {
@@ -42,9 +41,7 @@ __dpct_inline__ float warp_max(float v) {
     runtimes. You may need to adjust the code.
     */
     for (int o = 16; o > 0; o >>= 1) v = sycl::fmax(
-        v, dpct::experimental::permute_sub_group_by_xor(
-               0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-               v, o));
+        v, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o));
     return v;
 }
 
@@ -175,7 +172,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.
     for (int c = warp; c < CHUNK; c += WARPS) {
         if (c >= n_here || srow[c] < 0) {
@@ -202,7 +199,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // per-head chunk max and exp-sum: warp w handles heads w and w+8.
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
@@ -223,7 +220,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // values: thread t owns dimension t for all 12 heads.
     float acc[G];
 #pragma unroll

@@ -7,6 +7,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/s_gemv.hpp"
 
@@ -341,8 +342,8 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int step = 16; step > 0; step >>= 1) acc +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_shift_left(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, step);
     if (lane == 0) y[o] = acc;
 }

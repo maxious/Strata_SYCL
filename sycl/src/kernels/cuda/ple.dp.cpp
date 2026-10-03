@@ -16,6 +16,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -87,7 +88,7 @@ inline double block_sum(double v, double *scratch) {
     performance if there is no access to global memory.
     */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int lane = item_ct1.get_local_id(2) & 31,
               warp = item_ct1.get_local_id(2) >> 5;
     /*
@@ -101,16 +102,14 @@ function/algorithm is initialized.
 */
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            off);
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
     if (lane == 0) scratch[warp] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
     v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
                                         : 0.0;
@@ -126,16 +125,14 @@ function/algorithm is initialized.
 */
 #pragma unroll
         for (int off = 16; off > 0; off >>= 1) v +=
-            dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                v, off);
+            strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
     if (item_ct1.get_local_id(2) == 0) scratch[0] = v;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return scratch[0];
 }
 

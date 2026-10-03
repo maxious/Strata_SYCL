@@ -21,9 +21,10 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/native_qsa_indexer.hpp"
 #include "strata/kernels/mrope.hpp"
+#include "strata/kernels/native_qsa_indexer.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -43,8 +44,7 @@ inline float warp_sum(float x) {
         feature masked sub_group function which may not be supported by all
         compilers or runtimes. You may need to adjust the code.
         */
-        x += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
+        x += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             offset);
     return x;
 }
@@ -112,7 +112,7 @@ append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     square_sum = lane < THREADS / 32 ? partials[lane] : 0.0f;
     square_sum = warp_sum(square_sum);
     const float scale = sycl::rsqrt(square_sum / D + epsilon);
@@ -122,7 +122,7 @@ append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (d >= D) return;
     const int b = pos / R;
     const int rope_pos = pos == 0 ? 0 : pos_base + R * b;
@@ -238,7 +238,7 @@ append_first(const float *__restrict__ raw, const float *__restrict__ gamma,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (d >= D) return;
     const float y = pooled_value<TAB>(values, d, 0, theta_scale, freq_scale, corr_low, corr_high, ext_factor, mscale,
                                  mtab, true, rt);
@@ -302,7 +302,7 @@ append_blocks(const float *__restrict__ raw, int64_t n, int64_t p0,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (d >= D) return;
     const int rope_pos = pos_base + R * (int) b;
     pooled[std::size_t(b) * D + d] = pooled_value<TAB>(values, d, rope_pos, theta_scale, freq_scale, corr_low, corr_high,

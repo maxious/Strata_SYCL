@@ -21,6 +21,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/native_gr_norm.hpp"
@@ -43,9 +44,7 @@ may need to adjust the code.
 */
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1) x +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
-            offset);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), x, offset);
     return x;
 }
 __dpct_inline__ void gate_kernel(const float *key, const float *query,
@@ -165,9 +164,7 @@ inline float norm_warp_sum(float value) {
     runtimes. You may need to adjust the code.
     */
     for (int offset = 16; offset > 0; offset >>= 1) value +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            value, offset);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), value, offset);
     return value;
 }
 __dpct_inline__ void rms_rep_kernel(const float *__restrict__ input,

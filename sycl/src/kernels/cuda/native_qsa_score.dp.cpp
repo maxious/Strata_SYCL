@@ -148,7 +148,7 @@ __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
     for(int ia=0;ia<2;++ia){
 #pragma unroll
@@ -163,7 +163,7 @@ __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // In the reference: +0 then warp0 partial then warp1 partial, followed
     // by materialized ReLU, CONT(head0), ADD(head1), ADD(head2), ADD(head3).
     if(warp==0){

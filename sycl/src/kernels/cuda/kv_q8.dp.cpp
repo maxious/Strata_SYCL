@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -57,8 +58,8 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) a = sycl::fmax(
-        a, dpct::experimental::permute_sub_group_by_xor(
-               0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        a, strata::sub_group_permute_xor(
+               sycl::ext::oneapi::this_work_item::get_sub_group(),
                a, o));
     auto &warp_max =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[2]>(
@@ -69,7 +70,7 @@ runtimes. You may need to adjust the code.
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float amax = sycl::fmax(warp_max[0], warp_max[1]);
     const uint16_t sbits = f16_from_f32(amax / 127.0f);
     const float sf = f32_from_f16(sbits);                          // quantize against the STORED scale

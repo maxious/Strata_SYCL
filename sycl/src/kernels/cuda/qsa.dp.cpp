@@ -43,6 +43,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -268,7 +269,7 @@ math built-in function rounding mode is aligned with OpenCL C 1.2 standard.
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 
     double ss = 0.0;
     /*
@@ -379,9 +380,7 @@ math built-in function rounding mode is aligned with OpenCL C 1.2 standard.
 */
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) acc =
-        acc + dpct::experimental::permute_sub_group_by_xor(
-                  0xffffffffu,
-                  sycl::ext::oneapi::this_work_item::get_sub_group(), acc, o);
+        acc + strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), acc, o);
     if (lane == 0) s_dot[wid] = acc;
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
@@ -602,9 +601,7 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v = sycl::fmax(
-        v, dpct::experimental::permute_sub_group_by_xor(
-               0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-               v, o));
+        v, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o));
     return v;
 }
 
@@ -616,9 +613,7 @@ runtimes. You may need to adjust the code.
 */
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            o);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
 
@@ -676,7 +671,7 @@ __dpct_inline__ void qsa_attend_kernel(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float mx = -FLT_MAX;    // not -inf, whose double -> float conversion nvcc warns about
 #pragma unroll
@@ -689,7 +684,7 @@ __dpct_inline__ void qsa_attend_kernel(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (wid == 0) {
         mx = (lane < nwarp) ? red[lane] : -FLT_MAX;
         mx = warp_max(mx);
@@ -700,14 +695,14 @@ __dpct_inline__ void qsa_attend_kernel(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     mx = red[0];
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float sum = 0.0f;
     for (long long j = d; j < n_ids; j += item_ct1.get_local_range(2)) {
@@ -722,7 +717,7 @@ __dpct_inline__ void qsa_attend_kernel(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (wid == 0) {
         sum = (lane < nwarp) ? red[lane] : 0.0f;
         sum = warp_sum(sum);
@@ -733,14 +728,14 @@ __dpct_inline__ void qsa_attend_kernel(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float inv = red[0];
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float acc = 0.0f;
 #pragma unroll

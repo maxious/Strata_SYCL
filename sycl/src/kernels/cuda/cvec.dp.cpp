@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/cvec.hpp"
 
@@ -126,9 +127,7 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
         compilers or runtimes. You may need to adjust the code.
         */
         for (int o = 16; o > 0; o >>= 1) dot +=
-            dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                dot, o);
+            strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), dot, o);
         if ((item_ct1.get_local_id(2) & 31) == 0)
             part[item_ct1.get_local_id(2) >> 5] = dot;
         /*
@@ -140,7 +139,7 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (item_ct1.get_local_id(2) < 32) {
             float p = item_ct1.get_local_id(2) < THREADS / 32
                           ? part[item_ct1.get_local_id(2)]
@@ -152,9 +151,7 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
             compilers or runtimes. You may need to adjust the code.
             */
             for (int o = 16; o > 0; o >>= 1) p +=
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), p, o);
+                strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), p, o);
             if (item_ct1.get_local_id(2) == 0) part[0] = p;
         }
         /*
@@ -166,7 +163,7 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         dot = part[0] * s;   // s (h . v)
     }
 #pragma unroll

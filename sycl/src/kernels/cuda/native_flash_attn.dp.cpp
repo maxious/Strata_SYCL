@@ -21,6 +21,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_flash_attn.hpp"
 #include <cfloat>
@@ -55,8 +56,7 @@ __dpct_inline__ float warp_max(float x) {
         compilers or runtimes. You may need to adjust the code.
         */
         x = sycl::fmax(x,
-                       dpct::experimental::permute_sub_group_by_xor(
-                           0xffffffffu,
+                       strata::sub_group_permute_xor(
                            sycl::ext::oneapi::this_work_item::get_sub_group(),
                            x, offset));
     return x;
@@ -162,8 +162,7 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
             */
             next_max = sycl::fmax(
                 next_max,
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
+                strata::sub_group_permute_xor(
                     sycl::ext::oneapi::this_work_item::get_sub_group(),
                     next_max, offset));
         const float rescale = sycl::native::exp(maximum - next_max);
@@ -249,14 +248,14 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (lane == 0) max_shared[warp] = maximum;
     /*
     DPCT1065: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float global_max = warp_max(max_shared[lane]);
     const float rescale = sycl::native::exp(maximum - global_max);
 #pragma unroll
@@ -293,7 +292,7 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     sum = warp_sum<32>(sum_shared[lane]);
 #pragma unroll
     for (int i0 = 0; i0 < 256; i0 += 128) {

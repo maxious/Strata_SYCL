@@ -3,6 +3,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -58,8 +59,8 @@ __dpct_inline__ void fwht256_kernel(const float *__restrict__ src,
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            const float val2 = dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const float val2 = strata::sub_group_permute_xor(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 val, h);
             reg[j] = (lane & h) == 0 ? val + val2 : val2 - val;
         }
@@ -96,16 +97,16 @@ __dpct_inline__ uint16_t q4_group(float x, int lane, uint8_t &byte) {
         feature masked sub_group function which may not be supported by all
         compilers or runtimes. You may need to adjust the code.
         */
-        const float a = dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        const float a = strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             amax, o);
         /*
         DPCT1108: '__shfl_xor_sync' was migrated with the experimental
         feature masked sub_group function which may not be supported by all
         compilers or runtimes. You may need to adjust the code.
         */
-        const float v = dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        const float v = strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             mval, o);
         if (a > amax || (a == amax && v > mval)) { amax = a; mval = v; }
     }
@@ -119,8 +120,8 @@ __dpct_inline__ uint16_t q4_group(float x, int lane, uint8_t &byte) {
     masked sub_group function which may not be supported by all compilers or
     runtimes. You may need to adjust the code.
     */
-    const uint8_t qhi = dpct::experimental::shift_sub_group_left(
-        0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), qc,
+    const uint8_t qhi = strata::sub_group_shift_left(
+        sycl::ext::oneapi::this_work_item::get_sub_group(), qc,
         16);
     byte = (uint8_t) (qc | (qhi << 4));
     (void) lane;

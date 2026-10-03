@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/kv_q4.hpp"
@@ -70,8 +71,8 @@ inline int block_scan(int v, int *warp_sums, int &total) {
         masked sub_group function which may not be supported by all compilers or
         runtimes. You may need to adjust the code.
         */
-        const int y = dpct::experimental::shift_sub_group_right(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
+        const int y = strata::sub_group_shift_right(
+            sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             o);
         if (lane >= o) x += y;
     }
@@ -81,7 +82,7 @@ inline int block_scan(int v, int *warp_sums, int &total) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (w == 0) {
         int t = warp_sums[lane];
         for (int o = 1; o < 32; o <<= 1) {
@@ -90,8 +91,8 @@ inline int block_scan(int v, int *warp_sums, int &total) {
             feature masked sub_group function which may not be supported by all
             compilers or runtimes. You may need to adjust the code.
             */
-            const int y = dpct::experimental::shift_sub_group_right(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const int y = strata::sub_group_shift_right(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 t, o);
             if (lane >= o) t += y;
         }
@@ -102,7 +103,7 @@ inline int block_scan(int v, int *warp_sums, int &total) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     total = warp_sums[31];
     const int excl = x - v + (w > 0 ? warp_sums[w - 1] : 0);
     /*
@@ -110,7 +111,7 @@ inline int block_scan(int v, int *warp_sums, int &total) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return excl;
 }
 
@@ -135,7 +136,7 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // 1. hits take this epoch and their reference bit; a missing block is claimed exactly once (-1 -> -2)
     int lookups = 0;
     for (int q = 0; q < n_q; ++q) {
@@ -188,7 +189,7 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (cand && rank == want - 1) s_cut =
             item_ct1.get_local_id(2) +
             1; // the hand stops just past the last slot taken
@@ -201,7 +202,7 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const int cut = s_cut;
         if (cand && rank < want) {
             m.miss_slot[got + rank] = j;
