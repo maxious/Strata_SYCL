@@ -484,6 +484,38 @@ not an artifact of the SDPA node escaping capture.
    coherent, correct answers on both. Q2_0 and Swift 1.5 (similar size) should behave the same; IQ3_XXS/IQ3_S
    (43-50 GB of experts) would need 19-26 GB mirrored, more than 23 GB of RAM allows.
 
+**A DPCT migration-marker sweep (2026-10-03, B60): the GDN cp.async lead refuted, the barrier family audited
+clean (exp 14).** The port carries 1,151 DPCT markers across 33 codes. The largest cluster (DPCT1114/1124, 318:
+"cudaMemcpy migrated to asynchronous memcpy, assuming an in-order queue") is risk-free by construction -
+`strata::q_of` falls back to `dpct::get_in_order_queue()`, so does the second-GPU expert path
+(`remote_experts.cpp:148`), and nothing in `sycl/src` ever calls `get_out_of_order_queue`. Two leads were worked:
+
+- **DPCT1053, the GDN key-head kernel's `cp.async` pipeline: parked, no code.** `prefill/kernels.dp.cpp` forces
+  `STRATA_GDN_CP_ASYNC 0` ("plain copies"), so the staging CUDA measured at 1.41x on a 4080 Super is absent from
+  the SYCL port - but the kernel itself is **6.0-7.3x SLOWER** than the default column kernel here (new
+  `gdn_rec_bench`, B60: T=2048 26.48 vs 3.65 ms; its CUDA win was wave-quantization-specific, 64 work-groups
+  against an SM count, which does not transfer to 160 EUs). And the phase it targets is tiny: the engine's own
+  phase timer on a 2047-token prompt (GPU timeline 22,271 ms) puts `gdn recurrence` at **127 ms (0.6%)** against
+  `gemm down` 11,187 (50.2%), `dequant` 2,910 (13.1%), `host grouping` 2,304 (10.3%). A perfect 1.4x would be
+  0.16% end to end. The A/B also confirms the port's existing choice: the default `cols_pipe` beats plain `cols`
+  (1.08-1.30x) and `rec_heads` (1.4-1.6x).
+- **DPCT1118 (75 markers, "group functions in non-converged control flow"): audited, 0 of 187 divergent.** A
+  brace-stack parser over every file carrying the marker finds no group call under a thread-dependent guard.
+  Three shapes explain the markers: the barrier is a sibling of the `if` (reduction ladders;
+  `if (lane == 0) { ... }` before the barrier), the early return tests a work-group id (`o = get_group(2)`, so
+  the whole group leaves together), and `continue` precedes the *next* iteration's barrier (`fused_gr`) or a
+  compile-time `if (STAGE_X)`. Corroborated by `ctest` **25/27** - both failures are the documented ones
+  (`ple_parity`'s missing fixture, `s2_expert_grouped_parity`'s grouped-path kernel bug).
+
+Still open from the sweep, in the order I would take them: **DPCT1110** (46 sites, register pressure in the hot
+decode kernels: `fused_gr` 8, `prefill/kernels` 6, `s2_expert_grouped` 5, `qsa_select`'s top-k kernels), then
+**DPCT1098** (42, `__ldg` dropped, incl. `s_gemv` and the KV paths), then the **DPCT1010/1009** placeholder error
+strings (217) as hygiene.
+
+**Keeping up with upstream.** A merge of upstream `main` into `b70` leaves the copies in `sycl/` behind
+wherever upstream touched a file they mirror. They are refreshed by re-migration, not by hand (done for
+0.1.25-0.1.27, 2026-09-30):
+
 What each merge needed:
 
 - **0.1.25-0.1.27 (2026-09-30):** the first re-migration. The draft layer's prompt pass became upstream's batched

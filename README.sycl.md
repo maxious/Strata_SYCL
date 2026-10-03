@@ -218,6 +218,7 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | 10 | GEMM-shaped INT8 path research | llama.cpp has NO SYCL i-quant GEMM (MMQ off; reorder-MMVQ = Q1_0..Q6_K only); the GEMM path is CUDA-only (mmq-load-tiles.cuh), tensor-core-tuned; B60 dp4a = 0.24-0.37x oneMKL FP16 | frontier accepted: dequant+oneMKL FP16 (571.7 tok/s) is it; no code |
 | 11 | dequant-phase A/B | Strata iq_dequant_f16 = 12-60% of card bw (ALU/LUT-bound, headroom exists) but llama.cpp's SYCL dequant is NOT on any prompt path (zero callers) | moot for llama.cpp port; faster dequant is a Strata-side kernel project |
 | [13](sycl-experiments/13-int8-expert-path.md) | INT8 prompt expert GEMM, built and measured (`int8_path_bench`, B60, one real Q2_0 expert) | the int8 GEMM itself is 1.9-2.1x (gate/up) / 1.0-1.7x (down), but the whole expert path is **0.42-0.64x**: requantizing Q2_0 to int8 costs 0.065 ms against the FP16 dequant's 0.014, and act-quant + epilogue add 4 kernels; output error 1.0% gate/up, 2.4% down (FP16 is exact).  In the engine (5-token prompt, warm, `strata --prefill 128`, two runs each) the int8 path takes 501.7 / 523.3 ms against FP16's 397.0 / 395.8 | PARKED: opt-in `STRATA_PREFILL_INT8=1`, default off, FP16 dequant+oneMKL stays |
+| [14](sycl-experiments/14-dpct-sweep.md) | DPCT migration-marker sweep (1,151 markers, 33 codes): the GDN cp.async lead (DPCT1053) and the barrier audit (DPCT1118) | GDN: **`gdn_rec_kh_kernel` is 6.0-7.3x SLOWER than the default** on the B60 (`gdn_rec_bench`), and the phase it targets is 0.6% of prompt time (`gdn recurrence` 127 of 22,271 ms; `gemm down` alone is 50.2%) - a perfect 1.4x would be 0.16% end to end.  Barriers: **0 of 187 group calls sit under a thread-dependent guard**, so all 75 DPCT1118 markers are conservative false positives (barriers are siblings of the `if`s; early returns test `get_group`, not the local id; `continue` precedes the *next* iteration's barrier).  ctest 25/27 with both failures documented pre-existing | PARKED (no code): do not port cp.async to the GDN key-head kernel; DPCT1118 retired as an audit. Next from the sweep: DPCT1110 (register pressure), DPCT1098 (`__ldg`) |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)
@@ -254,6 +255,10 @@ backend), bf16/fp16 op type widening, clean-dup/revert churn, CI/build fixes.
   XMX only for fat GEMM/SDPA) agrees; only revisit if a weight reorder gives decode a big enough target.
 - **Grouped (batch-gather) prompt attention on XMX**: measured the union of 8 positions is 3-5x one position's
   cells with only 12% shared; arithmetic cost exceeds the gather saved. INTEL.md: not built.
+- **The GDN key-head kernel / its `cp.async` pipeline** (`gdn_rec_kh_kernel`, DPCT1053, exp 14): the `cp.async`
+  staging is disabled on SYCL, but the kernel itself is 6.0-7.3x slower than the default column kernel on the
+  B60 (26.5 vs 3.6 ms at T=2048, `gdn_rec_bench`), and the phase it would speed up is 0.6% of prompt time. Do
+  not port the staging to this kernel; a different GDN kernel would be a new measurement, not a reopen.
 
 ---
 
