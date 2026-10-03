@@ -249,6 +249,8 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(mmvq_sg_bench PRIVATE strata_kernels)
   add_executable(q6k_align_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_align_bench.cpp)   # Q6_K block alignment
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
+  add_executable(reorder_esimd_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/reorder_esimd_bench.cpp)   # P0-L1 Q8_0 reorder+ESIMD slice
+  target_link_libraries(reorder_esimd_bench PRIVATE strata_kernels)
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL
