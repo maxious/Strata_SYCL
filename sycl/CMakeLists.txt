@@ -251,6 +251,7 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
   add_executable(reorder_esimd_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/reorder_esimd_bench.cpp)   # P0-L1 Q8_0 reorder+ESIMD slice
   target_link_libraries(reorder_esimd_bench PRIVATE strata_kernels)
+  add_test(NAME reorder_esimd_bench COMMAND reorder_esimd_bench --selftest)   # the reorder+ESIMD decode correctness gate
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL

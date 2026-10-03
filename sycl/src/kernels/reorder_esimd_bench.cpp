@@ -131,11 +131,13 @@ static void esimd_launch(const void* soa, const float* y, float* dst,
     else { dequantize_mul_mat_vec_q8_0_reorder_esimd<1>(soa, y, dst, ncols, nrows, s); }
 }
 
-int main() {
+int main(int argc, char** argv) {
     sycl::queue* s = &dpct::get_in_order_queue();
+    const bool selftest = argc > 1 && std::string(argv[1]) == "--selftest";
     const bool do_esimd = std::getenv("STRATA_REORDER_ESIMD") == nullptr ||
                           std::atoi(std::getenv("STRATA_REORDER_ESIMD")) != 0;
     const int shapes[][2] = {{2560, 10240}, {2560, 12288}, {6144, 2560}, {2560, 2560}, {2560, 640}};
+    int worst_failures = 0;
     for (auto& sh : shapes) {
         const int n_in = sh[0], n_out = sh[1];
         const int blocks_per_row = n_in / 32;
@@ -192,6 +194,8 @@ int main() {
             }
             double num = 0, den = 0;
             for (size_t i = 0; i < y_aos.size(); ++i) { num += std::fabs((double) y_aos[i] - y_soa[i]); den += std::fabs((double) y_aos[i]); }
+            const double rel = num / (den > 0 ? den : 1);
+            if (selftest && do_esimd && !(rel < 1e-5)) { ++worst_failures; std::fprintf(stderr, "esimd_kq_parity FAIL %dx%d cols%d rel %.2e\n", n_in, n_out, nc, rel); }
             const double eff_blocks = (double) nb;
             const double gb = eff_blocks * 34.0 / 1e3;
             if (do_esimd) {
@@ -205,5 +209,6 @@ int main() {
         }
         sycl::free(w, *s); sycl::free(soa, *s);
     }
+    if (selftest) { std::fprintf(stderr, "esimd_kq_parity: %d failures\n", worst_failures); return worst_failures == 0 ? 0 : 1; }
     return 0;
 }
