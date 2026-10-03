@@ -1,0 +1,8 @@
+# Intent-diff — expected truths vs observed reality
+
+| intent_id | expected truth | observed reality | diff | violated invariant | intent source | supporting obs | status |
+|---|---|---|---|---|---|---|---|
+| IT1 | llama.cpp decode matvec speedup = weight reorder + ESIMD, not XMX | CONFIRMED — dispatch ladder (ggml-sycl.cpp:4876-4925) uses reorder+ESIMD on decode; XMX gated elsewhere | none | — | README §1/§2 | wave-0-skeptic-dispatch; reorder-decode lane (pending) | true |
+| IT2 | llama.cpp SYCL has no prompt-path i-quant GEMM/dequant that beats Strata | CONFIRMED — supports_mmq() false (ggml-sycl.cpp:4084); no i-quant reorder | none | — | README P0-2; exp 09/10/11 | wave-0-skeptic-dispatch; int8-dequant lane (pending) | true (pending lane) |
+| IT3 | llama.cpp dev2dev/pinned memcpy is portable, real, and maps to Strata exp-03 hand-off | PARTIALLY REFUTED — mechanisms real (malloc_host + ext_oneapi P2P + comm_exchange) BUT Strata's separate-context architecture makes direct P2P a silent no-op; host-staged is forced AND not the bottleneck (34us) | direct P2P not applicable; hand-off not bottleneck | readme's "pipe through native dev2dev" premise | README P0-3 | wave-0-p2p-memory | contested — see debate |
+| IT4 | llama.cpp Q8_0/Q2_K/Q5_K wide-load/reorder is distinct from L1 and portable | PENDING — supports_reorder_esimd covers Q2_K..Q6_K+Q8_0; wide-load lane pending | — | — | README P0-4 | wide-load lane (pending) | pending |
