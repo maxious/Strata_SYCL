@@ -188,7 +188,12 @@ int main(int argc, char** argv) {
             const double a = time([&] { strata::kernels::native_q8_0_mmvq(w, xq, y, n_in, n_out, nc, s); }, y_aos);
             double b = a;
             if (do_esimd) {
-                b = time([&] { esimd_launch((const void*) soa, xq_f, y, n_in, n_out, s); }, y_soa);
+                // The ESIMD DMMV decode is single-column; the multi-column op runs it once per column (the
+                // real cost of serving nc token positions with this decode). Column c reads xq_f[c*n_in ..].
+                b = time([&] {
+                    for (int c = 0; c < nc; ++c)
+                        esimd_launch((const void*) soa, xq_f + (size_t) c * n_in, y + (size_t) c * n_out, n_in, n_out, s);
+                }, y_soa);
             } else {
                 y_soa = y_aos;
             }

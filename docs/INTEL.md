@@ -374,11 +374,12 @@ destructor ran after the runtime's teardown began.
 **P0-L1 slice: SoA reorder + ESIMD decode for Q8_0 (2026-10-03, B60).** llama.cpp's decode layout move, ported
    as a standalone A/B (`reorder_esimd_bench`, docs/sycl-experiments/12); produces the SoA layout llama.cpp uses
    and runs its `q8_0_mac_stripe` ESIMD kernel. Output matches the AOS Wide32Q8 path within float rounding (rel
-   6.5e-8..4.2e-7). The reorder+ESIMD path wins the multi-column decode shapes (the spec/MTP verify window):
-   cols 2/4/6 are 1.03-2.13x on the 2560x10240/12288 and 6144x2560 projections (6144x2560 cols6 370 -> 788 GB/s),
-   holding ~400-420 GB/s flat where the AOS path degrades with columns. cols 1 is a wash (0.89-0.99x). Gated by
-   `reorder_esimd_bench --selftest` (esimd_kq_parity, ctest). Production dispatch wiring (per-tensor SoA cache +
-   `STRATA_*` opt-in) is the next step; this slice is the proof it is worth it.
+   ~4e-7). CORRECTED VERDICT (the first measurement had a bench bug - it ran the single-column ESIMD kernel once
+   against AOS's nc columns, over-reporting a 2.1x win): single column is a wash (0.88-1.14x, faster only on the
+   tall 6144x2560 projection), and multi-column (cols 2/4/6, the spec/MTP verify window) is 0.25-0.63x SLOWER
+   because the ESIMD DMMV is single-column and must be re-launched per column, losing AOS's column-vectorization.
+   The port is correct (`reorder_esimd_bench --selftest` green) but is NOT wired into production - it would
+   regress the multi-column decode. Parked as not-a-win on B60; do not reopen without new measurements.
 
    - Some of these change the summation order. A long greedy continuation can then flip at a near-tie.
 6. **INT8 prompt GEMMs:** experts dequantized to INT8, run as oneMKL/oneDNN INT8 on XMX. Open. A fused int8 kernel

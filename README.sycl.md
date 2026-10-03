@@ -109,16 +109,14 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
 
 ### P0 - the biggest measured perf levers (decode first, then prompt)
 
-- [x] **L1 decode matvec: weight reorder + ESIMD, ported from `dmmv.cpp`/`esimd.hpp`.** The single biggest open
-  gap, on the user-facing decode path. INTEL.md listed the misaligned IQ4_XS / IQ4_NL / Q8_0 loads as stuck
-  around ~100-280 GB/s while the aligned types hit 400+. The SoA reorder + ESIMD `q8_0_mac_stripe` port now
-  exists and is Q8_0-proven on the B60 (`reorder_esimd_bench`, exp 12, committed): output matches the AOS
-  path within float rounding, and it wins the multi-column decode shapes up to 2.13x (6144x2560 cols6
-  370 -> 788 GB/s; the misaligned cols4/6 row moved 229-415 -> 397-424 GB/s, aligned-class). Cols1 is a wash.
-  Gated by `reorder_esimd_bench --selftest` (esimd_kq_parity, ctest). Q8_0 is off the "still misaligned"
-  list: see exp 12 + INTEL.md. Acceptance parity: `s2_gemv_q8k_parity`, `native_expert_parity` green;
-  `iq_parity` remains fixture-gated (needs the gguf-py fixtures). Production dispatch wiring (per-tensor SoA
-  cache into `NativeSharedWeights`) is the tracked follow-on.
+- [~] **L1 decode matvec: weight reorder + ESIMD, ported from `dmmv.cpp`/`esimd.hpp`.** Ported and correct on
+  the B60 (`reorder_esimd_bench`, exp 12, committed): the SoA reorder + `q8_0_mac_stripe` ESIMD decode matches
+  the AOS path within float rounding (`--selftest`/esimd_kq_parity green). But the honest measurement is NOT
+  a win: single column is a wash (0.88-1.14x), and multi-column (the spec/MTP verify window) is 0.25-0.63x
+  SLOWER because the ESIMD DMMV is single-column and must be re-launched per column, losing the AOS wide
+  kernels' column-vectorization. NOT wired into production (it would regress). Parked as not-a-win; do not
+  reopen without new measurements. (The earlier "2.13x" note was a bench bug - it ran the single-column
+  kernel once against nc columns.)
 - [ ] **GEMM-shaped INT8 prompt dequant path** (the open prompt lever; re-scoped from the parked MMQ item, exp
   07 / 09 / 10 / 11). llama.cpp disables SYCL i-quant MMQ and has no SYCL i-quant prompt GEMM, and its SYCL
   dequant kernels are not on any prompt path (exp 10/11). Strata's `iq_dequant_f16` reads only 12-30% of card
