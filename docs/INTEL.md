@@ -343,7 +343,8 @@ destructor ran after the runtime's teardown began.
 ### Status of the planned work
 
 1. **Expert dot products on XMX in integer mode** for decode: parked (see XMX above). Today it is scalar dp4a,
-   ALU-bound.
+   ALU-bound. A decode window (up to 6 tokens) fits one INT8 DPAS (1-8 rows); three `joint_matrix` versions
+   (opt-in `STRATA_EXPERT_XMX=1`, do not enable) were 1.4x and 2-3x slower than dp4a, the third hung the GPU.
 2. **Experts missing from VRAM read from pinned host memory over PCIe instead of the SSD:** done (the host mirror).
 3. **KV streaming from 64K up:** done.
 4. **QSA block selection on XMX:** every query against every pooled block, a dense product that grows with the
@@ -358,6 +359,8 @@ destructor ran after the runtime's teardown began.
    - The same treatment followed for Q4_K, Q5_K, IQ4_XS, Q8_0 and IQ4_NL ("Decode round 2" in
      INTEL_PERFORMANCE.md). The aligned-load helper only loads its second chunk when the address is unaligned, so it
      never reads a 16-byte chunk without a needed byte and cannot cross a page at the end of an allocation.
+   - **IQ4_XS is not load-alignment-bound**: a `load16_a2` variant measured 2-9% slower (identical checksums) - it
+     is LUT/ALU-bound at ~150-190 GB/s. See docs/sycl-experiments/04-decode-loads-alignment.md.
    - Switches back to the old paths:
 
      | switch | restores |
