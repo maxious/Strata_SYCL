@@ -2730,6 +2730,7 @@ bool xmx_gemm_iq(int ty, const void* gate, const void* up, int64_t K, int n_out,
                          (size_t) xmx::NSG * 256 * 4;
     if (bytes > 96 * 1024) return false;
     dpct::queue_ptr q = strata::q_of(stream);
+    if (!strata::gpu_has_xmx(q)) return false;   // no matrix units: the joint_matrix kernel cannot run
     xmx::Src src{(const uint8_t*) gate, (const uint8_t*) up, ty, by_block ? K / 256 : 0};
     const int groups = n_out / xmx::NT;
     q->submit([&](sycl::handler& cgh) {

@@ -233,6 +233,18 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
   add_executable(xmx_int8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_int8_bench.cpp)   # int8 XMX IQ4_NL GEMM prototype
   target_link_libraries(xmx_int8_bench PRIVATE strata_kernels strata_prefill)
+  # the XMX capability probe (llama.cpp's gpu_has_xmx / ext_intel_matrix) over every visible GPU; needs only the
+  # matrix header, so it links nothing else
+  add_executable(xmx_probe_test ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_probe_test.cpp)
+  target_link_libraries(xmx_probe_test PRIVATE strata_includes)
+  add_test(NAME xmx_probe_test COMMAND xmx_probe_test)
+  # FP16-vs-INT8 oneMKL XMX GEMM at the prompt expert shapes; the measurement that decides whether an INT8
+  # dequant+gemm prompt path is worth building (prefill/gemm.dp.cpp f16 vs a hypothetical dequant-to-int8)
+  add_executable(int8_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/int8_gemm_bench.cpp)
+  target_link_libraries(int8_gemm_bench PRIVATE strata_includes strata_prefill)   # -qmkl for the oneMKL GEMM
+  # device-to-device (P2P) transfer between two Intel cards, the handoff Strata's layer split uses
+  add_executable(p2p_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/p2p_bench.cpp)
+  target_link_libraries(p2p_bench PRIVATE strata_includes)
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):
   #   native_expert_parity <shard1.gguf> [layer ...]
   if(STRATA_NATIVE_EXPERTS)

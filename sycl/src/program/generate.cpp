@@ -2678,10 +2678,13 @@ int main(int argc, char **argv) try {
         runtimes. You may need to adjust the code.
         */
         dpct::get_current_device().get_memory_info(fb, tb);   // SYCL port: dpct dropped this (see tools/fixups.py)
-
         const int64_t pf = search && split_own_auto && !place_with_reserve ? 0 : split_pf_mib;
         const int64_t reserve = ((int64_t) o.vram_reserve_mib + pf + (later ? kWindowMib : 0) +
                                  (drafter ? kDrafterMib : 0)) << 20;
+        if (std::getenv("STRATA_TRACE_SPLIT"))
+            std::fprintf(stderr, "strata trace: stage_room dev %d: fb %.2f GiB reserve %lld MiB -> room %.2f GiB\n",
+                         dev, (double) fb / 1073741824.0, (long long) (reserve >> 20),
+                         (double) std::max<int64_t>((int64_t) fb - reserve, 0) / 1073741824.0);
         return std::max<int64_t>((int64_t) fb - reserve, 0);
     }
     catch (sycl::exception const &exc) {
