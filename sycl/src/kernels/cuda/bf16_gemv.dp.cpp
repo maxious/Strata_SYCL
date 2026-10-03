@@ -53,11 +53,6 @@ __dpct_inline__ void bf16_gemv_warp_kernel(const uint16_t *__restrict__ x,
 #pragma unroll
     for (long long i = lane; i < n_in; i += 32)
         acc += f32_from_bf16(x[i]) * f32_from_bf16(row[i]);
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
         strata::sub_group_shift_left(

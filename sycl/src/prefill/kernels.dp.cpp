@@ -21,11 +21,6 @@ constexpr int S = 128, HK = 16, HV = 48, C = 10240;
 
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int o = 16; o > 0; o >>= 1) v +=
         strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             o);
@@ -33,11 +28,6 @@ __dpct_inline__ float warp_sum(float v) {
 }
 __dpct_inline__ float warp_max(float v) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int o = 16; o > 0; o >>= 1) v = sycl::fmax(
         v, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                v, o));
@@ -74,29 +64,14 @@ inline float block_sum(float v, float *sh) {
     const int lane = item_ct1.get_local_id(2) & 31,
               w = item_ct1.get_local_id(2) >> 5;
     v = warp_sum(v);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (lane == 0) sh[w] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = (item_ct1.get_local_range(2) + 31) >> 5;
     float t =
         (item_ct1.get_local_id(2) < nw) ? sh[item_ct1.get_local_id(2)] : 0.0f;
     if (w == 0) t = warp_sum(t);
     if (item_ct1.get_local_id(2) == 0) sh[0] = t;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     return sh[0];
 }
@@ -387,11 +362,6 @@ __dpct_inline__ void gdn_l2_kernel(float *__restrict__ h, float eps) {
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
     if ((item_ct1.get_local_id(2) & 31) == 0)
         part[item_ct1.get_local_id(2) >> 5] = sq;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float ss = part[0] + part[1] + part[2] + part[3];
     x[item_ct1.get_local_id(2)] = v * sycl::rsqrt(ss + eps);
@@ -435,21 +405,11 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (tid < S) { sq[tid] = ht[qh * S + tid]; sk[tid] = ht[HK * S + qh * S + tid]; }
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float g = sycl::native::exp(gate[t * HV + head]);
@@ -461,11 +421,6 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
@@ -480,21 +435,11 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][col] = o;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         float oc = 0.0f, sp = 0.0f;
@@ -508,11 +453,6 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) {
@@ -568,21 +508,11 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (tid < S) { sq[tid] = ht[qh * S + tid]; sk[tid] = ht[HK * S + qh * S + tid]; }
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float g = sycl::native::exp(gate[t * HV + head]);
@@ -594,11 +524,6 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
@@ -613,21 +538,11 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][c] = o;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) oc_out[t * HV * S + head * S + col] =
@@ -691,22 +606,12 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
         for (int u = 0; u < LPT; ++u) { sq[tid + u * NT] = cq[u]; sk[tid + u * NT] = ck[u]; }
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (t + 1 < T) fetch(t + 1);
@@ -719,11 +624,6 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float kv_col = red[0][c] + red[1][c] + red[2][c] + red[3][c];
@@ -738,21 +638,11 @@ __dpct_inline__ void gdn_rec_cols_pipe_kernel(float *__restrict__ state,
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         red[rg][c] = o;
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (rg == 0) oc_out[t * HV * S + head * S + col] =
@@ -912,11 +802,6 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const int bb = (int) (k & 1);
         const int n = (int) ((T - k * TB) < TB ? (T - k * TB) : TB);
@@ -943,11 +828,6 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
             encountered in converged control flow. You may need to adjust the
             code.
             */
-            /*
-            DPCT1065: Consider replacing sycl::nd_item::barrier() with
-            sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-            better performance if there is no access to global memory.
-            */
             item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
             for (int j = 0; j < VPK; ++j) {
@@ -969,11 +849,6 @@ __dpct_inline__ void gdn_rec_kh_kernel(float *__restrict__ state,
             DPCT1118: SYCL group functions and algorithms must be
             encountered in converged control flow. You may need to adjust the
             code.
-            */
-            /*
-            DPCT1065: Consider replacing sycl::nd_item::barrier() with
-            sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-            better performance if there is no access to global memory.
             */
             item_ct1.barrier(sycl::access::fence_space::local_space);
             if (rg < VPK)   // row group j writes head j's output
@@ -1070,18 +945,8 @@ __dpct_inline__ void route_kernel(const float *__restrict__ logits,
         for (int i = 1; i < REG; ++i) if (v[i] > best) { best = v[i]; ex = lane + i * 32; }
 #pragma unroll
         for (int m = 16; m; m >>= 1) {
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const float ob = strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 best, m);
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const int oi = strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 ex, m);
             if (ob > best || (ob == best && oi < ex)) { best = ob; ex = oi; }
@@ -1205,11 +1070,6 @@ auto &sh = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
     for (int64_t c = item_ct1.get_local_id(2); c < cols;
          c += item_ct1.get_local_range(2)) ss += r[c] * r[c];
     const float s = sycl::rsqrt(block_sum(ss, sh) / (float)cols + eps);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
     for (int64_t c = item_ct1.get_local_id(2); c < cols;
@@ -1293,11 +1153,6 @@ kv_append_kernel(const float *__restrict__ K, const float *__restrict__ V,
         return;
     }
     float a = sycl::fabs(x);
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) a = sycl::fmax(
         a, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
@@ -1306,11 +1161,6 @@ runtimes. You may need to adjust the code.
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
     if ((item_ct1.get_local_id(2) & 31) == 0)
         wm[item_ct1.get_local_id(2) >> 5] = a;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float amax = sycl::fmax(wm[0], wm[1]);
     const uint16_t sb = hf(amax / 127.0f);

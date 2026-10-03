@@ -37,11 +37,6 @@ namespace {
 std::atomic<bool> enabled{false};
 __dpct_inline__ float warp_sum(float value) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int mask = 16; mask; mask >>= 1) value +=
         strata::sub_group_permute_xor(
             sycl::ext::oneapi::this_work_item::get_sub_group(),
@@ -50,11 +45,6 @@ __dpct_inline__ float warp_sum(float value) {
 }
 __dpct_inline__ float warp_max(float value) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int mask = 16; mask; mask >>= 1) value = sycl::fmax(
         value,
         strata::sub_group_permute_xor(
@@ -110,19 +100,9 @@ __dpct_inline__ void route(const float *__restrict__ logits,
         }
 #pragma unroll
         for (int mask = 16; mask; mask >>= 1) {
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const float other = strata::sub_group_permute_xor(
                 sycl::ext::oneapi::this_work_item::get_sub_group(),
                 best, mask);
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const int other_id = strata::sub_group_permute_xor(
                 sycl::ext::oneapi::this_work_item::get_sub_group(),
                 expert, mask);

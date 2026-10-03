@@ -54,11 +54,6 @@ __dpct_inline__ void fwht256_kernel(const float *__restrict__ src,
 #pragma unroll
         for (int j = 0; j < el_w; ++j) {
             const float val = reg[j];
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const float val2 = strata::sub_group_permute_xor(
                 sycl::ext::oneapi::this_work_item::get_sub_group(),
                 val, h);
@@ -92,19 +87,9 @@ __dpct_inline__ uint16_t q4_group(float x, int lane, uint8_t &byte) {
     float amax = sycl::fabs(x), mval = x;
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         const float a = strata::sub_group_permute_xor(
             sycl::ext::oneapi::this_work_item::get_sub_group(),
             amax, o);
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         const float v = strata::sub_group_permute_xor(
             sycl::ext::oneapi::this_work_item::get_sub_group(),
             mval, o);
@@ -115,11 +100,6 @@ __dpct_inline__ uint16_t q4_group(float x, int lane, uint8_t &byte) {
     int q = sycl::vec<float, 1>{(x * id + 8.5f)}
                 .convert<int, sycl::rounding_mode::rtz>()[0];
     const uint8_t qc = (uint8_t) (q < 0 ? 0 : (q > 15 ? 15 : q));
-    /*
-    DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     const uint8_t qhi = strata::sub_group_shift_left(
         sycl::ext::oneapi::this_work_item::get_sub_group(), qc,
         16);

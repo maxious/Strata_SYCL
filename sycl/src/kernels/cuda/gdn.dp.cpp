@@ -84,11 +84,6 @@ auto &ks =
             beta_s[hi] = beta[h];
         }
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (j >= S) return;
 
@@ -155,11 +150,6 @@ __dpct_inline__ void gdn_l2_kernel(float *__restrict__ x, int cols, float eps) {
     for (int i = item_ct1.get_local_id(2); i < cols;
          i += item_ct1.get_local_range(2)) acc += (double)p[i] * (double)p[i];
     // warp reduction
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
         strata::sub_group_shift_left(
@@ -168,11 +158,6 @@ runtimes. You may need to adjust the code.
     auto &ssum = *sycl::ext::oneapi::group_local_memory_for_overwrite<double>(
         sycl::ext::oneapi::this_work_item::get_work_group<3>());
     if (item_ct1.get_local_id(2) == 0) ssum = acc;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float inv = (float)(1.0 / sycl::sqrt(ssum + (double)eps));
 #pragma unroll
@@ -195,11 +180,6 @@ __dpct_inline__ void gdn_out_norm_kernel(const float *__restrict__ o,
 #pragma unroll
     for (int i = item_ct1.get_local_id(2); i < S;
          i += item_ct1.get_local_range(2)) acc += (double)po[i] * (double)po[i];
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
         strata::sub_group_shift_left(

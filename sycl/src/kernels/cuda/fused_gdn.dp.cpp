@@ -50,22 +50,12 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     const size_t row_stride = (size_t) h_v * S;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) s[r] = base[r * row_stride];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float g = sycl::native::exp(gate[head]);
     float kv = 0.0f;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) kv = sycl::fma(s[r], sk[rg * RPG + r], kv);
     red[rg][col] = kv;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
     const float delta = (v[head * S + col] - g * kv_col) * beta[head];
@@ -76,18 +66,8 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         o = sycl::fma(s[r], sq[rg * RPG + r], o);
         base[r * row_stride] = s[r];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space); // every thread has read red[] for kv_col
     red[rg][col] = o;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     float oc = 0.0f, sq_part = 0.0f;
     if (rg == 0) {
@@ -96,21 +76,11 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sq_part = oc * oc;
     }
     // RMS over the head's 128 outputs: warps of row group 0 are threads 0..127.
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o2 = 16; o2 > 0; o2 >>= 1) sq_part +=
         strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             sq_part, o2);
     if ((tid & 31) == 0) wsum[tid >> 5] = sq_part;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (rg == 0) {
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
@@ -139,11 +109,6 @@ auto &part =
     float y = sum / (1.0f + sycl::native::exp(-sum));
     if ((int)item_ct1.get_group(2) < qk_heads) {
         float sq = y * y;
-        /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) sq +=
             strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
@@ -153,11 +118,6 @@ runtimes. You may need to adjust the code.
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const float ss = part[0] + part[1] + part[2] + part[3];
@@ -208,11 +168,6 @@ gdn_ab_kernel(const float *__restrict__ x, const uint16_t *__restrict__ wa,
             acc = sycl::fma(sycl::bit_cast<float>(wv.w() & 0xffff0000u),
                             (float)(xb.w()), acc);
     }
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) acc +=
         strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),

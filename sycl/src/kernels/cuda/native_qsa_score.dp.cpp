@@ -143,11 +143,6 @@ __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
             for(int ia=0;ia<2;++ia)mma(c[ia],a[ia][k],b);
         }
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
     for(int ia=0;ia<2;++ia){
@@ -158,11 +153,6 @@ __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
             shared[h*COMBINE+i]=c[ia].x[l];
         }
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     // In the reference: +0 then warp0 partial then warp1 partial, followed
     // by materialized ReLU, CONT(head0), ADD(head1), ADD(head2), ADD(head3).

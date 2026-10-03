@@ -167,19 +167,9 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
     for (int i = t; i < G * HD; i += THREADS)
         qm = sycl::fmax(qm, sycl::fabs(q[i]));
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int o = 16; o > 0; o >>= 1) qm = sycl::fmax(
         qm, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), qm, o));
     if (lane == 0) S.qmax[warp] = qm;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     qm = sycl::fmax(sycl::fmax(S.qmax[0], S.qmax[1]),
                     sycl::fmax(S.qmax[2], S.qmax[3]));
@@ -228,11 +218,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space); // rows ready; the previous chunk's p.v is done with
                             // k, v, s
@@ -436,11 +421,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // scores: warp w takes cells 8w..8w+7 (one n-tile) over all 256 dims, per scale group (64 dims; q4_0's 32)
         constexpr int NG = Smem<KV_MODE>::NG, KPG = HD / 16 / NG;   // groups per row, 16-dim MMA steps per group
@@ -491,11 +471,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // online softmax: row t/8, 4 cells per thread, 8 threads per row (lanes 8r..8r+7 of a warp)
         {
@@ -507,11 +482,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                 x[j] = S.s[r][sub * PER + j]; mx = sycl::fmax(mx, x[j]);
             }
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             for (int o = 1; o < 8; o <<= 1) mx = sycl::fmax(
                 mx,
                 strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
@@ -526,11 +496,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
                 sum += e;
             }
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             for (int o = 1; o < 8; o <<= 1) sum +=
                 strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
             sycl::group_barrier(
@@ -546,11 +511,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // p.v: warp w owns dims [64w, 64w+64), which is int8 scale group w (q4_0: groups 2w and 2w+1, four n-tiles
@@ -571,11 +531,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             for (int c = lane; c < CH; c += 32)
                 vmax = sycl::fmax(vmax, sycl::fabs(S.vs[c][vg]));
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             for (int o = 16; o > 0; o >>= 1) vmax = sycl::fmax(
                 vmax, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f;
@@ -647,11 +602,6 @@ prompt_attn_kernel(const float *__restrict__ q, QsaAttnPools p,
             }
         }
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float l0 = S.lsum[gid], l1 = S.lsum[gid + 8];
     const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;
@@ -755,20 +705,10 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
     for (int i = t; i < G * HD; i += THREADS)
         qm = sycl::fmax(qm, sycl::fabs(q[i]));
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int o = 16; o > 0; o >>= 1) qm = sycl::fmax(
         qm, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), qm, o));
     if (lane == 0) S.qmax[warp] = qm;
     if (t < 16) { S.mrow[t] = -INFINITY; S.lsum[t] = 0.0f; }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     qm = sycl::fmax(sycl::fmax(S.qmax[0], S.qmax[1]),
                     sycl::fmax(S.qmax[2], S.qmax[3]));
@@ -831,15 +771,6 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
             const int idx = lane + 32 * j, cell = idx >> 2, pc = idx & 3;
-            /*
-            DPCT1108: '__shfl_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            /*
-            DPCT1121: Make sure that the "r" which is used in the SYCL group
-            function/algorithm is initialized.
-            */
             const long long rr = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), r, cell);
             const bool ok = rr >= 0;
             const size_t off = ok ? (size_t) rr * HD + dim0 + pc * 16 : 0;
@@ -914,11 +845,6 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // online softmax over the four groups' sum (fixed order): row t/8, 4 cells per thread
         {
@@ -932,11 +858,6 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
                 mx = sycl::fmax(mx, x[j]);
             }
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             for (int o = 1; o < 8; o <<= 1) mx = sycl::fmax(
                 mx,
                 strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), mx, o));
@@ -951,11 +872,6 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
                 sum += e;
             }
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             for (int o = 1; o < 8; o <<= 1) sum +=
                 strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
             sycl::group_barrier(
@@ -972,21 +888,11 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // p.v over this warp's 64 dims (as v1)
         {
             float vmax = S.sc[st][warp][1][lane];
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             for (int o = 16; o > 0; o >>= 1) vmax = sycl::fmax(
                 vmax, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), vmax, o));
             const float vup = vmax > 0.0f ? 16384.0f / vmax : 0.0f, vdown = vmax * (1.0f / 16384.0f);
@@ -1051,11 +957,6 @@ prompt_attn_i8_kernel(const float *__restrict__ q, QsaAttnPools p,
         }
         sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float l0 = S.lsum[gid], l1 = S.lsum[gid + 8];
     const float i0 = l0 > 0.0f ? 1.0f / l0 : 0.0f, i1 = l1 > 0.0f ? 1.0f / l1 : 0.0f;

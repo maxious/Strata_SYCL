@@ -51,11 +51,6 @@ __dpct_inline__ void kv_append_q8_kernel(
     const float x = (is_v ? vcur : kcur)[h * head_dim + g * KV_Q8_GROUP + t];
     // max |x| over the 64 values: two warps, then combine through shared memory in a fixed order
     float a = sycl::fabs(x);
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) a = sycl::fmax(
         a, strata::sub_group_permute_xor(
@@ -65,11 +60,6 @@ runtimes. You may need to adjust the code.
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[2]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     if ((t & 31) == 0) warp_max[t >> 5] = a;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float amax = sycl::fmax(warp_max[0], warp_max[1]);
     const uint16_t sbits = f16_from_f32(amax / 127.0f);

@@ -132,11 +132,6 @@ static_assert(sizeof(IQ4NLBlock) == 18 && alignof(IQ4NLBlock) == 2 && offsetof(I
 __dpct_inline__ float warp_sum(float x) {
 #pragma unroll
     for (int offset = WARP / 2; offset > 0; offset >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         x += strata::sub_group_permute_xor(
             sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             offset);
@@ -166,11 +161,6 @@ inline bool mmvq_sg16(bool iq4xs, int n_out) {
 __dpct_inline__ float warp_max(float x) {
 #pragma unroll
     for (int offset = WARP / 2; offset > 0; offset >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         x = sycl::fmax(x,
                        strata::sub_group_permute_xor(
                            sycl::ext::oneapi::this_work_item::get_sub_group(),
@@ -303,11 +293,6 @@ __dpct_inline__ void native_q5_k_mmvq_kernel(const Q5KBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
@@ -382,11 +367,6 @@ __dpct_inline__ void native_q2_0_mmvq_kernel(const Q20Block *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
@@ -484,11 +464,6 @@ __dpct_inline__ void native_q3_k_mmvq_kernel(const Q3KBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
@@ -585,11 +560,6 @@ native_iq4_xs_mmvq_kernel(const IQ4XSBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
@@ -696,11 +666,6 @@ __dpct_inline__ void native_q4_k_mmvq_kernel(const Q4KBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
@@ -783,11 +748,6 @@ __dpct_inline__ void native_q6_k_mmvq_kernel(const Q6KBlock *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
@@ -916,11 +876,6 @@ __dpct_inline__ void native_small_mmvq_kernel(const Weight *__restrict__ w,
             partial[item_ct1.get_local_id(1) - 1][i][item_ct1.get_local_id(2)] =
                 tmp[i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll
@@ -1252,11 +1207,6 @@ native_mmvq_multi_kernel(const typename F::Block *__restrict__ w,
                 partial[item_ct1.get_local_id(1) - 1][j][i]
                        [item_ct1.get_local_id(2)] = tmp[j][i];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (item_ct1.get_local_id(1) > 0) return;
 #pragma unroll

@@ -82,56 +82,23 @@ __dpct_inline__ float silu_f(float x) {
 /// overwrite it before a slow one has read it - invisible in most runs and a slightly different norm when it
 /// fires.
 inline double block_sum(double v, double *scratch) {
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const int lane = item_ct1.get_local_id(2) & 31,
               warp = item_ct1.get_local_id(2) >> 5;
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-    /*
-DPCT1121: Make sure that the "v" which is used in the SYCL group
-function/algorithm is initialized.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
         strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
     if (lane == 0) scratch[warp] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
     v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
                                         : 0.0;
     if (warp == 0)
-        /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-        /*
-DPCT1121: Make sure that the "v" which is used in the SYCL group
-function/algorithm is initialized.
-*/
 #pragma unroll
         for (int off = 16; off > 0; off >>= 1) v +=
             strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
     if (item_ct1.get_local_id(2) == 0) scratch[0] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     return scratch[0];
 }

@@ -41,11 +41,6 @@ namespace {
 __dpct_inline__ float norm_warp_sum(float value) {
 #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         value += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             value, offset);
     }

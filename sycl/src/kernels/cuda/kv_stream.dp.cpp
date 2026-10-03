@@ -66,31 +66,16 @@ inline int block_scan(int v, int *warp_sums, int &total) {
               w = item_ct1.get_local_id(2) >> 5;
     int x = v;
     for (int o = 1; o < 32; o <<= 1) {
-        /*
-        DPCT1108: '__shfl_up_sync' was migrated with the experimental feature
-        masked sub_group function which may not be supported by all compilers or
-        runtimes. You may need to adjust the code.
-        */
         const int y = strata::sub_group_shift_right(
             sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             o);
         if (lane >= o) x += y;
     }
     if (lane == 31) warp_sums[w] = x;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (w == 0) {
         int t = warp_sums[lane];
         for (int o = 1; o < 32; o <<= 1) {
-            /*
-            DPCT1108: '__shfl_up_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const int y = strata::sub_group_shift_right(
                 sycl::ext::oneapi::this_work_item::get_sub_group(),
                 t, o);
@@ -98,19 +83,9 @@ inline int block_scan(int v, int *warp_sums, int &total) {
         }
         warp_sums[lane] = t;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     total = warp_sums[31];
     const int excl = x - v + (w > 0 ? warp_sums[w - 1] : 0);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     return excl;
 }
@@ -131,11 +106,6 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     const int epoch = m.ctl[0] + 1;
     if (item_ct1.get_local_id(2) == 0) { s_nmiss = 0; s_lookups = 0; }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     // 1. hits take this epoch and their reference bit; a missing block is claimed exactly once (-1 -> -2)
     int lookups = 0;
@@ -162,11 +132,6 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
     }
     dpct::atomic_fetch_add<sycl::access::address_space::generic_space>(
         &s_lookups, lookups);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier();
     // 2. one victim per miss: a clock sweep from the hand. A slot this call uses (stamp == epoch) is never taken;
     //    a referenced one loses its bit as the hand passes it and is taken on the next pass.
@@ -184,11 +149,6 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (cand && rank == want - 1) s_cut =
             item_ct1.get_local_id(2) +
@@ -196,11 +156,6 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         const int cut = s_cut;
@@ -215,11 +170,6 @@ auto &s_nmiss = *sycl::ext::oneapi::group_local_memory_for_overwrite<int>(
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier();
     }

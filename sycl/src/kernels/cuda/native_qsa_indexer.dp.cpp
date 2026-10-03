@@ -39,11 +39,6 @@ constexpr int D = 128, R = 4, ROT = 64, THREADS = 256;
 inline float warp_sum(float x) {
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1)
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         x += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             offset);
     return x;
@@ -107,21 +102,11 @@ append(const float *__restrict__ raw, const int32_t *__restrict__ pos_dev,
     square_sum = warp_sum(square_sum);
     const int lane = d % 32;
     if (lane == 0) partials[d / 32] = square_sum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     square_sum = lane < THREADS / 32 ? partials[lane] : 0.0f;
     square_sum = warp_sum(square_sum);
     const float scale = sycl::rsqrt(square_sum / D + epsilon);
     if (d < D) values[d] = scale * mean * gamma[d];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (d >= D) return;
     const int b = pos / R;
@@ -180,11 +165,6 @@ __dpct_inline__ float norm_scale(float mean, float *partials, int d) {
     square_sum = warp_sum(square_sum);
     const int lane = d % 32;
     if (lane == 0) partials[d / 32] = square_sum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     sycl::ext::oneapi::this_work_item::get_nd_item<3>().barrier();
     square_sum = lane < THREADS / 32 ? partials[lane] : 0.0f;
     square_sum = warp_sum(square_sum);
@@ -233,11 +213,6 @@ append_first(const float *__restrict__ raw, const float *__restrict__ gamma,
     const float square_sum = norm_scale(mean, partials, d);
     const float scale = sycl::rsqrt(square_sum / D + epsilon);
     if (d < D) values[d] = scale * mean * gamma[d];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (d >= D) return;
     const float y = pooled_value<TAB>(values, d, 0, theta_scale, freq_scale, corr_low, corr_high, ext_factor, mscale,
@@ -297,11 +272,6 @@ append_blocks(const float *__restrict__ raw, int64_t n, int64_t p0,
     const float square_sum = norm_scale(mean, partials, d);
     const float scale = sycl::rsqrt(square_sum / D + epsilon);
     if (d < D) values[d] = scale * mean * gamma[d];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (d >= D) return;
     const int rope_pos = pos_base + R * (int) b;

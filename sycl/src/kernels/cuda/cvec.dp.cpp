@@ -121,11 +121,6 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
             float[THREADS / 32]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
 #pragma unroll
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         for (int o = 16; o > 0; o >>= 1) dot +=
             strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), dot, o);
         if ((item_ct1.get_local_id(2) & 31) == 0)
@@ -134,22 +129,12 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (item_ct1.get_local_id(2) < 32) {
             float p = item_ct1.get_local_id(2) < THREADS / 32
                           ? part[item_ct1.get_local_id(2)]
                           : 0.0f;
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             for (int o = 16; o > 0; o >>= 1) p +=
                 strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), p, o);
             if (item_ct1.get_local_id(2) == 0) part[0] = p;
@@ -157,11 +142,6 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
         /*
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
         */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         dot = part[0] * s;   // s (h . v)

@@ -660,11 +660,6 @@ template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0,
 
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int o = 16; o > 0; o >>= 1) v +=
         strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
@@ -1543,19 +1538,9 @@ __dpct_inline__ void q8_1_store(const float xi, block_q8_1 *__restrict__ y,
     float amax = sycl::fabs(xi), sum = xi;
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         amax = sycl::fmax(
             amax,
             strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), amax, o));
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         sum += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
     }
     const float d = amax / 127.0f;

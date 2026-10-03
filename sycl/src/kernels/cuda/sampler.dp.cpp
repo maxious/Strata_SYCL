@@ -170,17 +170,7 @@ sampler_greedy_kernel(const float *__restrict__ logits, int n_vocab,
         if (s > bv) { bv = s; best = v; }
     }
     for (int off = 16; off > 0; off >>= 1) {
-        /*
-        DPCT1108: '__shfl_down_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
-        /*
-        DPCT1108: '__shfl_down_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), best, off);
         if (ov > bv || (ov == bv && oi < best)) { bv = ov; best = oi; }
     }
@@ -198,17 +188,7 @@ sampler_greedy_kernel(const float *__restrict__ logits, int n_vocab,
             lane < nw ? sv[lane] : sycl::bit_cast<float, int>(0xff800000);
         int wi = lane < nw ? si[lane] : n_vocab;
         for (int off = 16; off > 0; off >>= 1) {
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wv, off);
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wi, off);
             if (ov > wv || (ov == wv && oi < wi)) { wv = ov; wi = oi; }
         }
@@ -504,17 +484,7 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
             if (s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), best, off);
             if (ov > bv || (ov == bv && oi < best)) { bv = ov; best = oi; }
         }
@@ -532,19 +502,7 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
                 lane < nw ? sv[lane] : sycl::bit_cast<float, int>(0xff800000);
             int wi = lane < nw ? si[lane] : n_vocab;
             for (int off = 16; off > 0; off >>= 1) {
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
                 const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wv, off);
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
                 const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wi, off);
                 if (ov > wv || (ov == wv && oi < wi)) { wv = ov; wi = oi; }
             }
@@ -639,17 +597,7 @@ __dpct_inline__ void take_first(float &bv, int &bi, float ov, int oi) {
 __dpct_inline__ void warp_first(float &bv, int &bi) {
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         const float ov = strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         const int oi = strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), bi, off);
         take_first(bv, bi, ov, oi);
     }
@@ -688,11 +636,6 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
         if (lane == 0)
 #pragma unroll
             for (int i = 0; i < k; ++i) sum += ex[i];
-        /*
-        DPCT1108: '__shfl_sync' was migrated with the experimental feature
-        masked sub_group function which may not be supported by all compilers or
-        runtimes. You may need to adjust the code.
-        */
         sum = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, 0);
         sycl::group_barrier(sycl::ext::oneapi::this_work_item::
                                 get_sub_group()); // lane 0 has read every `ex`
@@ -709,11 +652,6 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
                 if (cum >= (double) p.top_p) { cut = i + 1; break; }
             }
         }
-        /*
-        DPCT1108: '__shfl_sync' was migrated with the experimental feature
-        masked sub_group function which may not be supported by all compilers or
-        runtimes. You may need to adjust the code.
-        */
         cut = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), cut, 0);
         if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
         n_keep = cut;
@@ -740,11 +678,6 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
     if (lane == 0)
 #pragma unroll
         for (int i = 0; i < n_keep; ++i) sum += ex[i];
-    /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     sum = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, 0);
     sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
 #pragma unroll
@@ -853,17 +786,7 @@ sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
             if ((s < prev_v || (s == prev_v && v > prev_i)) && s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), best, off);
             if (ov > bv || (ov == bv && oi < best)) { bv = ov; best = oi; }
         }
@@ -879,19 +802,7 @@ sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
                 lane < nw ? sv[lane] : sycl::bit_cast<float, int>(0xff800000);
             int wi = lane < nw ? si[lane] : n_vocab;
             for (int off = 16; off > 0; off >>= 1) {
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
                 const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wv, off);
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
                 const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wi, off);
                 if (ov > wv || (ov == wv && oi < wi)) { wv = ov; wi = oi; }
             }
@@ -1167,11 +1078,6 @@ __dpct_inline__ void coupled_penalize_kernel(
 #pragma unroll
     for (int w = item_ct1.get_local_id(2); w < words;
          w += item_ct1.get_local_range(2)) seen[w] = 0u;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     for (int i = item_ct1.get_local_id(2); i < h;
          i += item_ct1.get_local_range(2)) {

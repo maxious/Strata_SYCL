@@ -37,11 +37,6 @@ namespace {
 template <int Width> __dpct_inline__ float warp_sum(float x) {
 #pragma unroll
     for (int offset = Width / 2; offset; offset >>= 1)
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         x += dpct::experimental::permute_sub_group_by_xor(
             0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             offset, Width);
@@ -50,11 +45,6 @@ template <int Width> __dpct_inline__ float warp_sum(float x) {
 __dpct_inline__ float warp_max(float x) {
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1)
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         x = sycl::fmax(x,
                        strata::sub_group_permute_xor(
                            sycl::ext::oneapi::this_work_item::get_sub_group(),
@@ -155,11 +145,6 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
         }
 #pragma unroll
         for (int offset = 8; offset < 32; offset <<= 1)
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             next_max = sycl::fmax(
                 next_max,
                 strata::sub_group_permute_xor(
@@ -243,18 +228,8 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
         }
     }
     if (warp == 0) { max_shared[lane] = -FLT_MAX / 2.0f; sum_shared[lane] = 0.0f; }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (lane == 0) max_shared[warp] = maximum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float global_max = warp_max(max_shared[lane]);
     const float rescale = sycl::native::exp(maximum - global_max);
@@ -287,11 +262,6 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
     sum *= rescale;
     sum = warp_sum<32>(sum);
     if (lane == 0) sum_shared[warp] = sum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     sum = warp_sum<32>(sum_shared[lane]);
 #pragma unroll

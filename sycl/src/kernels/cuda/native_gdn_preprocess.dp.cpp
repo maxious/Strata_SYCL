@@ -41,11 +41,6 @@ constexpr int S = 128;
 __dpct_inline__ float warp_sum(float value) {
 #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1)
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         value += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             value, offset);
     return value;
@@ -55,11 +50,6 @@ __dpct_inline__ float norm_sum(float value, float *sums) {
     const int lane = item_ct1.get_local_id(2) % 32;
     value = warp_sum(value);
     if (lane == 0) sums[item_ct1.get_local_id(2) / 32] = value;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     value = lane < 8 ? sums[lane] : 0.0f;
     return warp_sum(value);

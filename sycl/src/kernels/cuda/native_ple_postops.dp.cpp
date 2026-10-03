@@ -37,11 +37,6 @@ namespace strata::kernels {
 namespace {
 constexpr int N = 2560, H = 4, D = N * H, HISTORY = 9;
 inline float warp_sum(float x) {
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature masked
-sub_group function which may not be supported by all compilers or runtimes. You
-may need to adjust the code.
-*/
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1) x +=
         strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), x, offset);
@@ -158,11 +153,6 @@ conv_residual_kernel(const float *history, const float *normalized,
 // weighted_rms_norm (native_gr_norm.cu) with the gamma row repeating every H rows (one token's H groups)
 inline float norm_warp_sum(float value) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int offset = 16; offset > 0; offset >>= 1) value +=
         strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), value, offset);
     return value;

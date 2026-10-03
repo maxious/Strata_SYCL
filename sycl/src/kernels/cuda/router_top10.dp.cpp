@@ -107,40 +107,20 @@ __dpct_inline__ void router_top10_kernel(const float *__restrict__ logits,
     float mx = -INFINITY;
 #pragma unroll
     for (int e = tid; e < n_expert; e += nt) mx = sycl::fmax(mx, l[e]);
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) mx = sycl::fmax(
         mx, strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 mx, off));
     if ((tid & 31) == 0) s_red[tid >> 5] = mx;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (tid < 32) {
         const int nw = (nt + 31) >> 5;
         float v = (tid < nw) ? s_red[tid] : -INFINITY;
-        /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
         for (int off = 16; off > 0; off >>= 1) v = sycl::fmax(
             v, strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off));
         if (tid == 0) s_red[0] = v;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     mx = s_red[0];
 
@@ -149,11 +129,6 @@ runtimes. You may need to adjust the code.
 #pragma unroll
     for (int e = tid; e < n_expert; e += nt)
         s_ex[e] = sycl::exp((double)l[e] - (double)mx);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
     // ---- the sum, ascending, on one thread: see the note above on why this is NOT parallelised.
@@ -163,11 +138,6 @@ runtimes. You may need to adjust the code.
         for (int e = 0; e < n_expert; ++e) sum += s_ex[e];
         s_sum = sum;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float inv = (float) (1.0 / s_sum);
 
@@ -183,11 +153,6 @@ runtimes. You may need to adjust the code.
     float* s_p = (float*) (s_ex + n_expert);
 #pragma unroll
     for (int e = tid; e < n_expert; e += nt) s_p[e] = (float)(s_ex[e] * inv);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
     // ================================ THE SELECTION, IN k PASSES ================================
@@ -204,11 +169,6 @@ runtimes. You may need to adjust the code.
     // `else if (f < e && pf == pe) ++rank`.  A stable descending top-k, ties by index.
 #pragma unroll
     for (int e = tid; e < n_expert; e += nt) s_taken[e] = 0;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
     for (int i = 0; i < k; ++i) {
@@ -220,18 +180,8 @@ runtimes. You may need to adjust the code.
             if (pe > bv) { bv = pe; bi = e; }
         }
         for (int off = 16; off > 0; off >>= 1) {
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 bv, off);
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 bi, off);
             if (ov > bv || (ov == bv && oi < bi)) { bv = ov; bi = oi; }
@@ -241,30 +191,13 @@ runtimes. You may need to adjust the code.
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (tid < 32) {
             const int nw = (nt + 31) >> 5;
             float v = (tid < nw) ? s_red[tid] : -INFINITY;
             int ix = (tid < nw) ? s_rid[tid] : n_expert;
             for (int off = 16; off > 0; off >>= 1) {
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
                 const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
                 const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), ix,
                     off);
                 if (ov > v || (ov == v && oi < ix)) { v = ov; ix = oi; }
@@ -279,18 +212,8 @@ runtimes. You may need to adjust the code.
         DPCT1118: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
     // ---- renormalise, with ggml's lower clamp.  Order preserved.

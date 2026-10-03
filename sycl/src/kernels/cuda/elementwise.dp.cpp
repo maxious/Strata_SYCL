@@ -151,11 +151,6 @@ __dpct_inline__ void rms_norm_weighted_kernel(float *__restrict__ x,
     float acc = 0.0f;
 #pragma unroll
     for (int64_t c = lane; c < cols; c += 32) acc += r[c] * r[c];
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
         strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(),
@@ -165,11 +160,6 @@ runtimes. You may need to adjust the code.
     // same number but a needless 32-way divergence in the last bit.
     float inv = 0.0f;
     if (lane == 0) inv = sycl::rsqrt(acc / (float)cols + eps);
-    /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     inv = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), inv,
         0);
 #pragma unroll
@@ -581,11 +571,6 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
     are needed.
     */
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier();
     if (item_ct1.get_local_id(2) == 0) {
         /*

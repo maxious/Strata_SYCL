@@ -235,11 +235,6 @@ __dpct_inline__ void indexer_key_append_kernel(
     }
 
     if (slot != r - 1) return;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(); // the tail rows this thread is about to read are
                         // written above
 
@@ -264,11 +259,6 @@ math built-in function rounding mode is aligned with OpenCL C 1.2 standard.
     m = m + (double)raw[d];
     m = m / (double) r;
     s_mean[d] = m;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
     double ss = 0.0;
@@ -294,11 +284,6 @@ math built-in function rounding mode is aligned with OpenCL C 1.2 standard.
     // The rotation position for this row, kept because a capture reader and the debug dumps want it.  It is the
     // block's first cell's POSITION, `pos_base + b*r`, and NOT the cell index `b*r`.
     if (d == 0) *block_pos = (int32_t) (pos_base + b * r);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(); // the row is complete only now; the rotation below
                         // reads TWO elements of it
 
@@ -368,11 +353,6 @@ __dpct_inline__ void qsa_index_kernel(const float *__restrict__ pooled,
         */
         acc = acc + (double)pooled[(size_t)b * idx_dim + d] *
                         (double)q_idx[(size_t)wid * idx_dim + d];
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
     /*
 DPCT1013: The rounding mode could not be specified and the generated code
 may have different accuracy than the original code. Verify the correctness. SYCL
@@ -594,11 +574,6 @@ __dpct_inline__ void kv_gather_kernel(
 // ================= 6. qsa_attend =================
 
 __dpct_inline__ float warp_max(float v) {
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v = sycl::fmax(
         v, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o));
@@ -606,11 +581,6 @@ runtimes. You may need to adjust the code.
 }
 
 __dpct_inline__ float warp_sum(float v) {
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v +=
         strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
@@ -666,11 +636,6 @@ __dpct_inline__ void qsa_attend_kernel(
             h2f(krow[i]) * q[(size_t)h * head_dim + i];
         w[j] = acc * scale;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float mx = -FLT_MAX;    // not -inf, whose double -> float conversion nvcc warns about
@@ -679,29 +644,14 @@ __dpct_inline__ void qsa_attend_kernel(
         mx = sycl::fmax(mx, w[j]);
     mx = warp_max(mx);
     if (lane == 0) red[wid] = mx;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (wid == 0) {
         mx = (lane < nwarp) ? red[lane] : -FLT_MAX;
         mx = warp_max(mx);
         if (lane == 0) red[0] = mx;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     mx = red[0];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float sum = 0.0f;
@@ -712,29 +662,14 @@ __dpct_inline__ void qsa_attend_kernel(
     }
     sum = warp_sum(sum);
     if (lane == 0) red[wid] = sum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     if (wid == 0) {
         sum = (lane < nwarp) ? red[lane] : 0.0f;
         sum = warp_sum(sum);
         if (lane == 0) red[0] = 1.0f / sum;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
     const float inv = red[0];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float acc = 0.0f;

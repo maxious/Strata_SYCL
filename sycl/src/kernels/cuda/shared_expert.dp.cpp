@@ -113,29 +113,11 @@ void to_f16_kernel(const float* __restrict__ in, uint16_t* __restrict__ out, int
 // A wrong scalar here is the quiet failure mode: sigmoid bounds the damage to [0,1], so a gate that should be
 // 0.5 and reads 1.0 scales the shared expert by 2x and produces perfectly finite, perfectly plausible logits.
 __dpct_inline__ double warp_sum_d(double v) {
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-    /*
-DPCT1121: Make sure that the "v" which is used in the SYCL group
-function/algorithm is initialized.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
         strata::sub_group_shift_left(
             sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             off);
-    /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
-    /*
-    DPCT1121: Make sure that the "v" which is used in the SYCL group
-    function/algorithm is initialized.
-    */
     return strata::sub_group_select(
         sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
 }
