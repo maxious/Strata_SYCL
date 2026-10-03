@@ -155,8 +155,17 @@ struct Run {
     std::vector<uint8_t> scratch;
 };
 
+// `exact`: demand the two implementations agree bit for bit.  The per-hit entry points do - they run the same
+// float expression - so their check stays strict.  The grouped entry point runs a deliberately different
+// formulation: `gu_grouped_t_kernel` pairs a chunk's (gate, up) rows and accumulates `dw*dx*(sum c*x - sum x)`
+// per entry, where `gu_grouped_kernel` calls `chunk_dot` per row - algebraically the same expression, compiled
+// into two kernels, so the two agree to float contraction and not to the bit.  Measured worst 1.5e-07 of the
+// row's scale, and with fp16 scales the packed output is bitwise identical; the difference is a few ulp, where
+// a wrong sum would be percent-level.  Those cases pass `exact = false` and are instead held to the
+// double-precision reference on BOTH runs, which is the stronger check.
 bool twice(const char* name, float* d_out, size_t out_floats, const Scratch& s,
-           const std::function<void()>& call, Run* keep, bool expect_new = true) {
+           const std::function<void()>& call, Run* keep, bool expect_new = true, bool exact = true,
+           Run* keep_old = nullptr) {
     Run r[2];
     for (int old = 1; old >= 0; --old) {
         ck(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue())
@@ -194,14 +203,34 @@ bool twice(const char* name, float* d_out, size_t out_floats, const Scratch& s,
         else if (i < gu + q8) ++diff_q8;
         else ++diff_hs;
     }
-    const bool ok = diff_out + diff_gu + diff_q8 + diff_hs == 0;
-    std::printf("  %-44s %s", name, ok ? "bitwise identical" : "DIFFERS");
-    if (!ok)
-        std::printf(" (out %zu floats, gate/up %zu B, intermediate %zu B, its scales %zu B)", diff_out, diff_gu,
-                    diff_q8, diff_hs);
+    const bool bitwise = diff_out + diff_gu + diff_q8 + diff_hs == 0;
+    // The magnitude separates a float-order difference from a wrong value: a reformulated but equal sum shows up
+    // as a few ulp of the row's scale, a bug as a whole percent.
+    double worst = 0.0, scale = 0.0;
+    for (size_t i = 0; i < out_floats; ++i) {
+        worst = std::max(worst, std::fabs((double) r[0].out[i] - (double) r[1].out[i]));
+        scale = std::max(scale, std::fabs((double) r[0].out[i]));
+    }
+    {
+        const float* a = (const float*) r[0].scratch.data();   // gate/up is the only float region of the scratch
+        const float* b = (const float*) r[1].scratch.data();
+        const size_t nf = (size_t) gu / 4;
+        for (size_t i = 0; i < nf; ++i) {
+            worst = std::max(worst, std::fabs((double) a[i] - (double) b[i]));
+            scale = std::max(scale, std::fabs((double) a[i]));
+        }
+    }
+    const double rel = scale > 0 ? worst / scale : 0.0;
+    const bool ok = bitwise || (!exact && rel <= 1e-5);
+    std::printf("  %-44s %s", name,
+                ok ? (bitwise ? "bitwise identical" : "within 1e-5 (float order)") : "DIFFERS");
+    if (!bitwise)
+        std::printf(" (out %zu floats, gate/up %zu B, intermediate %zu B, its scales %zu B; worst |d| %.3g of %.3g = %.2e)",
+                    diff_out, diff_gu, diff_q8, diff_hs, worst, scale, rel);
     std::printf("\n");
     if (!ok) ++g_fail;
     if (keep) *keep = std::move(r[1]);
+    if (keep_old) *keep_old = std::move(r[0]);
     return ok;
 }
 
@@ -435,14 +464,15 @@ void check_all() {
         const Scratch s = make_scratch(n);
         float* d_out = dalloc<float>((size_t) n * H);
         for (int scaled = 1; scaled >= 0; --scaled) {
-            Run r;
+            Run r, r_prev;
             const std::string name = std::string("moe_grouped_s2 (") + std::to_string(n_groups) + " groups" +
                                      (scaled ? ", fp32 scales)" : ", fp16 d)");
             twice(name.c_str(), d_out, (size_t) n * H, s, [&] {
                 k::moe_grouped_s2(d_gptr, d_gstart, d_ng, d_edst, d_etok, cap_groups, n, d_x, scaled ? d_xs : nullptr,
                                   s.p, d_out, nullptr);
-            }, &r);
+            }, &r, /*expect_new=*/true, /*exact=*/false, &r_prev);
             reference(name.c_str(), r, s, ent, x, scaled ? &xs : nullptr);
+            reference((name + " (previous kernels)").c_str(), r_prev, s, ent, x, scaled ? &xs : nullptr);
         }
         ck(DPCT_CHECK_ERROR(sycl::free(h_host, dpct::get_in_order_queue())),
            "free host blob");
@@ -474,13 +504,14 @@ void check_all() {
         const Scratch s = make_scratch(n);
         float* d_out = dalloc<float>((size_t) n * H);
         for (int scaled = 1; scaled >= 0; --scaled) {
-            Run r;
+            Run r, r_prev;
             const std::string name = std::string("moe_group_resident + moe_grouped_s2") + (scaled ? " (fp32)" : " (fp16)");
             twice(name.c_str(), d_out, (size_t) n * H, s, [&] {
                 k::moe_grouped_s2(d_gptr, d_gstart, d_counts, d_edst, d_etok, n, n, d_x, scaled ? d_xs : nullptr, s.p,
                                   d_out, nullptr);
-            }, &r);
+            }, &r, /*expect_new=*/true, /*exact=*/false, &r_prev);
             reference(name.c_str(), r, s, ent, x, scaled ? &xs : nullptr);
+            reference((name + " (previous kernels)").c_str(), r_prev, s, ent, x, scaled ? &xs : nullptr);
         }
     }
 

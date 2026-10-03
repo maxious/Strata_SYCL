@@ -614,9 +614,25 @@ What each merge needed:
 - `ple_parity`: needs a real Q2_0 GGUF shard (default `../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf`,
   or `STRATA_PLE_GGUF`), the packed `pack/full/dense.bin`, and `bench/micro/ple_{in,out}.bin` captures. This model
   is ~13 GB and not committed to the repo (gitignored `logs/`); point the env var at a downloaded shard.
-- `s2_expert_grouped_parity`: NOT a data issue - a real kernel bug in the grouped (host-built `/`resident) path; the
-  old vs new grouped kernels disagree deterministically in the gate/up scratch (fp32 out/141734 B, fp16 intermediate
-  0 B). Per-hit cases pass; grouped cases fail with both `STRATA_OLD_GROUPED=0/1`. Open under the "expert kernels" work.
+  **Fixed (2026-10-03): the port had it registered BARE.** The parity loop did `add_test(NAME ple_parity COMMAND
+  ple_parity --selftest)` with the build directory as the working directory, so the test looked for
+  `bench/micro/ple_{in,out}.bin` under `sycl/build-b60/` and could never find it, on any machine. Upstream wires
+  it with `--in`/`--out` from `STRATA_PLE_FIXTURE_DIR` and `WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}`. The
+  port now does the same, and registers the test only when the capture is actually there - the binary still exits
+  2 without it, so a missing fixture can never look like a pass, and CMake says so at configure time:
+  `ple_parity NOT registered: no ggml capture in <dir>`. The capture is a CUDA-side artifact
+  (`ple_layer_xcheck`) and `bench/micro/*.bin` is gitignored, so a port-only machine legitimately has nothing to
+  run here. Suite: 26 tests, all pass.
+- `s2_expert_grouped_parity`: was recorded as "a real kernel bug". It is not one - it is float order, and the
+  old assertion asked for the impossible. The grouped entry point runs `gu_grouped_t_kernel` (a chunk's gate and
+  up rows paired, accumulating `dw*dx*(sum c*x - sum x)` per entry) where `STRATA_OLD_GROUPED` runs
+  `gu_grouped_kernel` (`chunk_dot` per row). Those are the **same expression** - `chunk_dot` returns
+  `dw*dx*(s-hx)` with the same exact dp4a sums - compiled into two kernels, so they agree to float contraction
+  and not to the bit: **measured worst 1.5e-07 of the row scale**, and with fp16 scales the packed output is
+  bitwise identical. A wrong sum would be percent-level. **Fixed (2026-10-03)** by asserting the real contract:
+  the per-hit cases keep their byte-for-byte check, and the grouped cases are held to the double-precision
+  reference on **both** runs (worst 9.7e-08 of sum|term|, 0 rows outside tolerance, each) with the old-vs-new
+  difference reported and bounded at 1e-5. That is a stronger check than the bitwise compare it replaces.
 - `conversation_snapshot_test`: was a dpct-migrated double-free (host-USM pointers freed with C `free`); fixed with
   `sycl::free` in `~Fixture()`. Passes.
 

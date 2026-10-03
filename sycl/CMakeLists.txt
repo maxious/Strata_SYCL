@@ -201,13 +201,32 @@ option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)
 if(STRATA_SYCL_PARITY)
   enable_testing()
   foreach(p IN ITEMS dequant_s2 s2_gemv iq shared_expert gr gdn s2_gemv_q8 sampler rope quantize_act router_top10
-                     s_gemv elementwise bf16_gemv s_gemv_q8k qsa ple kv_q8 kv_stream kv_q4 cvec)
+                     s_gemv elementwise bf16_gemv s_gemv_q8k qsa kv_q8 kv_stream kv_q4 cvec)
     strata_resolve(_src src/kernels/${p}_parity.cpp)
     add_executable(${p}_parity ${_src})
     target_include_directories(${p}_parity PRIVATE ${STRATA_ROOT}/src/kernels)   # the oracle .inc fixtures
     target_link_libraries(${p}_parity PRIVATE strata_kernels)
     add_test(NAME ${p}_parity COMMAND ${p}_parity --selftest)
   endforeach()
+  # ple_parity is NOT in the loop above: its oracle is a ggml capture, not an .inc, and unlike every other parity
+  # test it needs those capture paths and the tree that holds `pack/full` as its working directory.  Upstream wires
+  # it that way; registering it bare (as the loop would) can only ever fail, because the capture lives in
+  # `bench/micro/`, which is gitignored and absent on a machine that only runs the port.
+  set(STRATA_PLE_FIXTURE_DIR "${STRATA_ROOT}/bench/micro" CACHE PATH
+      "Directory holding the required ple_in.bin / ple_out.bin ggml captures for ple_parity")
+  strata_resolve(_src src/kernels/ple_parity.cpp)
+  add_executable(ple_parity ${_src})
+  target_include_directories(ple_parity PRIVATE ${STRATA_ROOT}/src/kernels)
+  target_link_libraries(ple_parity PRIVATE strata_kernels)
+  if(EXISTS "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin" AND EXISTS "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin")
+    add_test(NAME ple_parity COMMAND ple_parity --selftest
+      --in "${STRATA_PLE_FIXTURE_DIR}/ple_in.bin" --out "${STRATA_PLE_FIXTURE_DIR}/ple_out.bin"
+      WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  else()
+    # Not registered, never skipped-as-passed: the binary still exits 2 without its capture.  Say so loudly.
+    message(STATUS "ple_parity NOT registered: no ggml capture in ${STRATA_PLE_FIXTURE_DIR} "
+                   "(gitignored bench/micro/*.bin, written by the CUDA-side ple_layer_xcheck; see docs/INTEL.md)")
+  endif()
   # iq_parity runs its ten i-quants against deterministically generated fixtures (tools/iq_fixture.py); the test's
   # --selftest flag is its fixture directory, so ctest needs them under <build>/--selftest before it runs.
   find_package(Python3 COMPONENTS Interpreter)
