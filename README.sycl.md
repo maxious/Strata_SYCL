@@ -82,9 +82,13 @@ Coder IQ1_M unless noted.
   (`-fsycl-default-sub-group-size=32`) and keeps SIMD16 variants opt-in (`STRATA_MMVQ_SG`, measured no net gain
   in-engine). Worth one more look now that we know BMG's native width: llama.cpp's decode kernels are written
   around the native 16 and get the register-per-thread benefit.
-- **INT8 prompt GEMM on XMX** (INTEL.md planned item 6, not built): llama.cpp's MKL path converts KV to F16
-  before XMX GEMM; the comparable move for our GEMM-fed prompt path is an INT8/oneMKL-INT8 expert GEMM (half the
-  dequant bytes, up to 2x rate).
+- **INT8 prompt GEMM on XMX** - **built, measured, parked** (INTEL.md planned item 6; `int8_path_bench`,
+  `Gemm::int8`, `iq_quant_*_i8`, opt-in `STRATA_PREFILL_INT8=1`).  The INT8 oneMKL GEMM is genuinely 1.9-2.1x the
+  FP16 GEMM at the gate/up shape, but the whole expert comes out 0.42-0.64x: requantizing Q2_0 to INT8 costs 4.6x
+  what the FP16 dequant does (0.065 vs 0.014 ms - two passes a row plus a per-row reduce), and the activation
+  quantizer and the rescaling epilogue add four more small kernels over the FP16 path's two.  It is also lossy:
+  one scale per row cannot carry Q2_0's per-64 block scales, so the output carries 1.0% (gate/up) / 2.4% (down)
+  median relative error against an FP16 path that is exact.  Default off.
 
 ---
 
@@ -108,8 +112,12 @@ is bandwidth-bound where the i-quants are LUT-bound: `dequant_bench` on the B60 
 IQ4_NL 68-75, IQ2_XS 192, IQ2_S 183 GB/s** (gate/up 1280x2560 and down 2560x640). The prompt GEMM itself also
 prefers the narrow type: `int8_gemm_bench` measures **INT8 oneMKL GEMM 1.4-2.2x faster than FP16, bit-exact** at the
 expert shapes (down 1.4-1.7x, gate/up 1.9-2.2x at T>=96). So the i-quants pay the LUT-bound dequant that made "the
-dequant the real prize" (experiments 02/11); Q2_0's dequant is ~6x cheaper and keeps the INT8 GEMM win live. When
-the picker offers a size, take **Q2_0** for an Arc.
+dequant the real prize" (experiments 02/11) while Q2_0's dequant is ~6x cheaper.  **The narrower GEMM does not
+follow, though (exp 13):** built and measured on real Q2_0 rows, the INT8 expert path is 0.42-0.64x of the FP16
+one - the per-expert requantization to INT8 (0.065 ms vs the FP16 dequant's 0.014) plus the extra activation and
+epilogue kernels cost more than the 1.9-2.1x GEMM saves at the per-expert batch a routed expert actually sees -
+and it is lossy by 1.0% (gate/up) / 2.4% (down).  Q2_0 stays the pick because its dequant is cheap, not because
+an INT8 GEMM pays.  When the picker offers a size, take **Q2_0** for an Arc.
 
 The **IQ3_S Flash-Next shards are the test target**: they are the biggest supported size, exercises the IQ3_S
 expert kernels and the largest host-mirror share, and would validate the INT8 XMX prompt path on a heavier model
@@ -133,13 +141,19 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   kernels' column-vectorization. NOT wired into production (it would regress). Parked as not-a-win; do not
   reopen without new measurements. (The earlier "2.13x" note was a bench bug - it ran the single-column
   kernel once against nc columns.)
-- [ ] **GEMM-shaped INT8 prompt dequant path** (the open prompt lever; re-scoped from the parked MMQ item, exp
+- [~] **GEMM-shaped INT8 prompt dequant path** (the open prompt lever; re-scoped from the parked MMQ item, exp
   07 / 09 / 10 / 11). llama.cpp disables SYCL i-quant MMQ and has no SYCL i-quant prompt GEMM, and its SYCL
   dequant kernels are not on any prompt path (exp 10/11). Strata's `iq_dequant_f16` reads only 12-30% of card
   bandwidth for the i-quants (ALU/LUT-bound, not write-bound), so the ~30% dequant phase has headroom. A
   faster Strata-side dequant (wider per-work-item chunks, fewer table lookups per value) feeding the accepted
   dequant+oneMKL FP16 path (571.7 tok/s baseline) is the one open prompt lever. Acceptance: prompt tok/s up
   at 2,184 and 8,000 tokens with output identical, INTEL.md speed-table row.
+  **Outcome (exp 13): the INT8 half is closed; the dequant-speed half is the one that remains.** The INT8 expert
+  GEMM is implemented end to end (`Gemm::int8`, `iq_quant_gu_i8`/`iq_quant_i8`, `quantize_act_i8`, `scale_rows_i8`,
+  wired behind `STRATA_PREFILL_INT8=1`) and measured on real Q2_0 rows: 0.42-0.64x of the FP16 expert path and
+  1-2.4% lossy, so the dequant+oneMKL FP16 path stands. What is left of this item is the faster *dequant* feeding
+  FP16 - and `dequant_bench` says Q2_0's is already bandwidth-bound (419-473 GB/s), so the headroom is in the
+  i-quants, not in the size the port tells people to pick.
 - [~] **Host-pinned memory for host-to-device (#26789) and dev2dev memcpy by SYCL API (#24476/#26234/#27550
   P2P).** REFUTED-AS-GAIN in research (exp 03 + close read of the blob-fused weights): Strata runs each
   GpuStage in its own SYCL context, where raw peer-USM `memcpy` is a silent no-op (llama.cpp's own warning,
@@ -203,6 +217,7 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | 09 | prompt-batched i-quant MMQ (mmvq port) | parity-exact, builds, but ~6x SLOWER at prefill (73 vs 571.7 tok/s) | parked opt-in; FP16 dequant+oneMKL stays default |
 | 10 | GEMM-shaped INT8 path research | llama.cpp has NO SYCL i-quant GEMM (MMQ off; reorder-MMVQ = Q1_0..Q6_K only); the GEMM path is CUDA-only (mmq-load-tiles.cuh), tensor-core-tuned; B60 dp4a = 0.24-0.37x oneMKL FP16 | frontier accepted: dequant+oneMKL FP16 (571.7 tok/s) is it; no code |
 | 11 | dequant-phase A/B | Strata iq_dequant_f16 = 12-60% of card bw (ALU/LUT-bound, headroom exists) but llama.cpp's SYCL dequant is NOT on any prompt path (zero callers) | moot for llama.cpp port; faster dequant is a Strata-side kernel project |
+| [13](sycl-experiments/13-int8-expert-path.md) | INT8 prompt expert GEMM, built and measured (`int8_path_bench`, B60, one real Q2_0 expert) | the int8 GEMM itself is 1.9-2.1x (gate/up) / 1.0-1.7x (down), but the whole expert path is **0.42-0.64x**: requantizing Q2_0 to int8 costs 0.065 ms against the FP16 dequant's 0.014, and act-quant + epilogue add 4 kernels; output error 1.0% gate/up, 2.4% down (FP16 is exact).  In the engine (5-token prompt, warm, `strata --prefill 128`, two runs each) the int8 path takes 501.7 / 523.3 ms against FP16's 397.0 / 395.8 | PARKED: opt-in `STRATA_PREFILL_INT8=1`, default off, FP16 dequant+oneMKL stays |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)

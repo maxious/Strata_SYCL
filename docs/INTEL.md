@@ -446,6 +446,22 @@ first decode round, so it is a once-per-process cost, not lost throughput. Ruled
    (bandwidth-bound) vs IQ4_NL 68-75, IQ2_XS 192, IQ2_S 183 GB/s (LUT-bound)**. The i-quants pay the LUT-bound
    dequant that made exp 02/11 "dequant-bound"; Q2_0 removes it, so the INT8 GEMM win is realizable on Q2_0.
    Consequence: **prefer Q2_0 on the SYCL path** (README.sycl.md, model picker note).
+   **Built and refuted (2026-10-03, `int8_path_bench`, B60, one real Q2_0 expert, 4 layers).** The whole INT8
+   expert path now exists - `Gemm::int8`, `iq_quant_gu_i8` / `iq_quant_i8` (Q2_0 -> int8 + one scale per output
+   row), `quantize_act_i8`, `scale_rows_i8`, wired into the prefill's FP16 branch behind `STRATA_PREFILL_INT8=1` -
+   and the int8 GEMM rate above is real. The *expert* is not faster: it is **0.42-0.64x the FP16 path**, and lossy.
+   Where the FP16 expert (~0.051 ms at T=96) spends 0.014 ms dequantizing and 0.032 ms in the two GEMMs, the INT8
+   path spends **0.065 ms requantizing the weights** - two full passes over each row (a max scan and the write)
+   plus a subgroup reduce, where the FP16 dequant makes one - 0.025 ms on the two activation quantizations and
+   0.009 ms on the two rescaling epilogues, while the two GEMMs save only ~0.012 ms. The "half the dequant bytes"
+   note missed the other half of the trade: int8 writes half the bytes but reads the block codes twice, and the
+   per-expert batch a routed expert actually sees (ne ~ T/51) is far too small for a GEMM-rate win to matter.
+   Fidelity, against a FP16 path that is **exact** for Q2_0: one scale per row cannot carry the per-64 block
+   scales, so gate/up comes out 1.0% (median) and down 2.4% off, p90 6.5% / 15.2%. Parked opt-in, default off;
+   the FP16 dequant+oneMKL path stands and Q2_0 stays the pick for its cheap dequant alone. End to end the same
+   way: a 5-token prompt on the Q2_0 pack (warm, `--prefill 128`, two runs each) takes 501.7 / 523.3 ms with
+   `STRATA_PREFILL_INT8=1` against 397.0 / 395.8 ms without it - the wiring and both paths run, and the int8 one
+   is 1.29x the slower of the two.
 7. Fewer graph nodes per decode round (~2,500 at ~5 us): norm+rope, scores+top-k, gate+quantize fused.
 
 **Read-side blockage (P2): oneDNN/MKL SDPA must not fight graph capture.** llama.cpp's own note (fattn-onednn.cpp,
