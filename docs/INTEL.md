@@ -507,10 +507,22 @@ clean (exp 14).** The port carries 1,151 DPCT markers across 33 codes. The large
   compile-time `if (STAGE_X)`. Corroborated by `ctest` **25/27** - both failures are the documented ones
   (`ple_parity`'s missing fixture, `s2_expert_grouped_parity`'s grouped-path kernel bug).
 
-Still open from the sweep, in the order I would take them: **DPCT1110** (46 sites, register pressure in the hot
-decode kernels: `fused_gr` 8, `prefill/kernels` 6, `s2_expert_grouped` 5, `qsa_select`'s top-k kernels), then
-**DPCT1098** (42, `__ldg` dropped, incl. `s_gemv` and the KV paths), then the **DPCT1010/1009** placeholder error
-strings (217) as hygiene.
+**Round 2 (exp 15): the two remaining perf-flavoured codes are closed without an engine change.**
+**DPCT1110 does not predict register pressure.** Intel's IGC dumps the final ISA including the allocator's own
+spill report (`IGC_ShaderDumpEnable=1 IGC_ForceIgnoreCaching=1 NEO_CACHE_PERSISTENT=0` + `IGC_DumpToCustomDir`;
+the cache-busting matters - on a program-cache hit only the `.spv` is dumped and the `.asm` never appears).
+Measured on the B60, all kernels `numGRF=128`: the **flagged** `native_mmvq_multi_kernel`, `s_gemv` (3 variants)
+and `sampler_greedy/one_block/split_merge` spill **0 B**, while the **unflagged** `native_mmvq_q6k_wide` spills
+384 B - the marker counts declared locals, not what the allocator does, so the 46-site list was the wrong list.
+The one flagged spiller is `sampler_split_part_kernel` at **2176 B** (`float s[32]` is exactly the 128-byte
+threshold); it runs once per *token*, and the ~1 MB of logits it must scan is ~5 us against a 12.8 ms decode
+token, so the whole kernel is ~0.1% and that bounds any win. **DPCT1098**: every one of the 42 sites is a plain
+dereference of an already-`const __restrict__` chain, which is the whole of the read-only contract a compiler
+needs - Xe has a unified L1 and SYCL/SPIR-V exposes no `__ldg` counterpart, so nothing was lost.
+
+Still open from the sweep: the hygiene families **DPCT1010/1009** (217 placeholder error strings) and
+**DPCT1000/1001** (128), and **DPCT1013** (71 rounding-mode intrinsics - a parity audit, not a perf one). None
+is expected to move a number.
 
 **Keeping up with upstream.** A merge of upstream `main` into `b70` leaves the copies in `sycl/` behind
 wherever upstream touched a file they mirror. They are refreshed by re-migration, not by hand (done for
