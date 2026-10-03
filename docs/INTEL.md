@@ -522,6 +522,47 @@ expert cache ("no room").
 - The call is restored, and `tools/fixups.py` re-applies it after a re-migration.
 - Found and tested on 2x B70 by tmking01 in the upstream PR review.
 
+**Load time (2026-10-02).** Starting a model is mostly the expert cache's fill from the GGUF (`--stream-experts`):
+the Coder's 23.4 GiB of experts took 64-76 s, the IQ2_XS's 24.9 GiB 91 s, because the fill read each expert's
+three slices, copied the blob and waited for the copy before the next read. It is a pipeline now: the slots are
+admitted in profile order first (the same placement), the reads go in file order by up to 8 threads into
+page-locked batches of 64, and a batch's copies run while the next one is read. Cold page cache: 76.2 s -> 18.8 s
+(0.33 -> 1.34 GB/s); a whole Coder start from the engine's launch to its first token 82 s -> 26 s, the IQ2_XS
+120 s -> 41 s (its 8.2 GB host mirror is ~9 s of the rest). Output identical. `STRATA_FILL_SERIAL=1` is the old fill.
+
+**0.1.35 and seven open upstream PRs (2026-10-02).** Upstream main 0.1.33 -> 0.1.35 merged as before, then seven open
+PRs ported into `sycl/` ahead of upstream (one dpct run of main + all of them, 3-way merged into only the files they
+touch; `sycl/tools/merge_upstream.py`). Their header changes live in `sycl/include` until upstream merges them.
+
+| PR | what | on the B70 |
+|---|---|---|
+| #385 (sergqwer) | stager: a buffer's first job of a generation waits for the previous DMA from it | race fix; same output |
+| #463 (constantindjonkam) | decode waits for an adaptive swap before reading the residency table | determinism fix |
+| #453 (architectds) | the drafter's batched K/V on the KV-streaming ring | 128K int8: 888 -> 895 tok/s prompt, 66.6 -> 67.0 decode |
+| #374 (sergqwer) | the first chunk's PLE rows read beside layer 0 | part of the 2,184-token prompt's 784 -> 825 tok/s |
+| #363 (BlueKingMuch) | the PCIe expert call: group stride, fused SwiGLU + q8_1 | IQ2_XS decode +1.7%; re-done on the port's lane kernels |
+| #407 (sergqwer) | `--adapt-tuned` (opt-in) | neutral here; stays opt-in |
+| #413 (BlueKingMuch) | DeltaNet recurrence per key head | bit-identical but 8% slower prompt here: off (`STRATA_GDN_KEYHEAD=1`) |
+
+#374 needed two port fixes: its next-chunk read assumed every chunk is the full chunk length (the port's first chunk
+is 256 tokens: the second chunk's rows were read from the wrong place), and its host wait on the PLE upload's event,
+now inside the layer loop, deadlocked the prompt past ~4K tokens under the Level Zero v2 adapter (the stager's bug
+again): the upload is marked by a polled sequence number now. #413's gate is an NVIDIA SM-count rule and its parity
+test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 19 / 2,184 tokens, IQ2_XS, 40K).
+
+**Not ported yet (2026-10-01).**
+
+- Three kernels carry inline PTX (`mma.sync` tensor-core matrix ops, `ldmatrix`, `cp.async`):
+  `qsa_prompt_attn`, `qsa_select`'s block scores, `native_qsa_score`. The SYCL build takes the "older card"
+  fallback the CUDA build uses below sm_80. `qsa_prompt_attn` also has an XMX version (`joint_matrix`, opt-in
+  `STRATA_PROMPT_ATTN_XMX=1`): correct, but slower than the fallback (see "XMX prompt attention v2").
+- The ggml MMQ prefill path (`moe_mmq.cu`) is not built. The CUDA port cannot live behind the SYCL prefill on
+  Intel (it pulls `cuda_runtime.h`; tried 2026-10-03, reverted - experiment 08). The path forward is llama.cpp's
+  native-SYCL `ggml-sycl/mmq.cpp` wrapped behind `strata::prefill::mmq`; this is the prompt-dequant+GEMM target
+  (58.6% of prompt time, experiment 07).
+- AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
+  compiling on the first window).
+
 ## Not done
 
 - **Images,** on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
