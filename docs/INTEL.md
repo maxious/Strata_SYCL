@@ -439,6 +439,13 @@ plus decode time is the same in both modes (4.95-5.17 s): the stall lands either
 first decode round, so it is a once-per-process cost, not lost throughput. Ruled out: NVMe APST, the I/O scheduler
 (`none`), CPU starvation (93% idle during decode), I/O thread count. Compare runs on time to first token + decode.
 6. INT8 prompt GEMMs: experts dequantized to INT8, oneMKL/oneDNN INT8 on XMX (half the dequant bytes, 2x rate).
+   **Measured 2026-10-03 (int8_gemm_bench + dequant_bench, B60, Q2_0 shards in place).** Two facts that make this
+   the open prompt lever and make Q2_0 the type to build it on: (a) INT8 oneMKL GEMM is **1.4-2.2x faster than
+   FP16, bit-exact** at the expert shapes (down 1.4-1.7x, gate/up 1.9-2.2x at T>=96) - reconfirms exp 02; (b) the
+   dequant that gated it is cheap for Q2_0 and not for the i-quants: `dequant_bench` reads **Q2_0 419-473 GB/s
+   (bandwidth-bound) vs IQ4_NL 68-75, IQ2_XS 192, IQ2_S 183 GB/s (LUT-bound)**. The i-quants pay the LUT-bound
+   dequant that made exp 02/11 "dequant-bound"; Q2_0 removes it, so the INT8 GEMM win is realizable on Q2_0.
+   Consequence: **prefer Q2_0 on the SYCL path** (README.sycl.md, model picker note).
 7. Fewer graph nodes per decode round (~2,500 at ~5 us): norm+rope, scores+top-k, gate+quantize fused.
 
 **Read-side blockage (P2): oneDNN/MKL SDPA must not fight graph capture.** llama.cpp's own note (fattn-onednn.cpp,

@@ -102,6 +102,15 @@ llama.cpp is being run against and are **not** packable by Strata today.
 | `gemma-3-12b-it-heretic-Q4_K_M(.gguf)` + `_mmproj` | 6.8 + 0.8 GB | no | non-Strata architecture. |
 | `qwen3vl_32b_...-nvfp4.safetensors` | 14.6 GB | no | safetensors, not GGUF; no Strata path. |
 
+**Prefer Q2_0 for the SYCL port.** On the Arc, the Q2_0 quant is the favorable size for the prompt path, and the
+choice is measured, not aesthetic. The prompt bottleneck is the weight dequant feeding oneMKL, and Q2_0's dequant
+is bandwidth-bound where the i-quants are LUT-bound: `dequant_bench` on the B60 measures **Q2_0 at 419-473 GB/s vs
+IQ4_NL 68-75, IQ2_XS 192, IQ2_S 183 GB/s** (gate/up 1280x2560 and down 2560x640). The prompt GEMM itself also
+prefers the narrow type: `int8_gemm_bench` measures **INT8 oneMKL GEMM 1.4-2.2x faster than FP16, bit-exact** at the
+expert shapes (down 1.4-1.7x, gate/up 1.9-2.2x at T>=96). So the i-quants pay the LUT-bound dequant that made "the
+dequant the real prize" (experiments 02/11); Q2_0's dequant is ~6x cheaper and keeps the INT8 GEMM win live. When
+the picker offers a size, take **Q2_0** for an Arc.
+
 The **IQ3_S Flash-Next shards are the test target**: they are the biggest supported size, exercises the IQ3_S
 expert kernels and the largest host-mirror share, and would validate the INT8 XMX prompt path on a heavier model
 than the Coder. Concretely: `python3 sycl/setup_intel.py --model IQ3_S` after building, then the 2,184-token
