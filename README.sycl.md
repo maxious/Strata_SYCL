@@ -230,6 +230,7 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | 08 | CUDA MMQ wiring | fails on `cuda_runtime.h` | wrong path; SYCL i-quant kernels are decode matvecs only |
 | 09 | prompt-batched i-quant MMQ (mmvq port) | parity-exact, builds, but ~6x SLOWER at prefill (73 vs 571.7 tok/s) | parked opt-in; FP16 dequant+oneMKL stays default |
 | 10 | GEMM-shaped INT8 path research | llama.cpp has NO SYCL i-quant GEMM (MMQ off; reorder-MMVQ = Q1_0..Q6_K only); the GEMM path is CUDA-only (mmq-load-tiles.cuh), tensor-core-tuned; B60 dp4a = 0.24-0.37x oneMKL FP16 | frontier accepted: dequant+oneMKL FP16 (571.7 tok/s) is it; no code |
+| 11 | dequant-phase A/B | Strata iq_dequant_f16 = 12-60% of card bw (ALU/LUT-bound, headroom exists) but llama.cpp's SYCL dequant is NOT on any prompt path (zero callers) | moot for llama.cpp port; faster dequant is a Strata-side kernel project |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)
