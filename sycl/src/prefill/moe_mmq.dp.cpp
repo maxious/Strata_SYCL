@@ -1,15 +1,29 @@
-// src/prefill/moe_mmq.cu - see include/strata/prefill/moe_mmq.hpp.  llama.cpp's MMQ (ggml-cuda, MIT) is compiled
-// from the pinned llama.cpp checkout the build already takes ggml from; src/prefill/ggml_cuda_host.cu supplies the
-// few host symbols of ggml-cuda.cu it references.
+// src/prefill/moe_mmq.dp.cpp - see include/strata/prefill/moe_mmq.hpp.  llama.cpp's SYCL matvec kernels
+// (ggml-sycl, MIT) are compiled from the pinned llama.cpp checkout the build already takes ggml from:
+// quantize.hpp's quantize_row_q8_1_sycl writes the q8_1 activations, the ported mmvq.cpp matvec kernels dot
+// them against the GGUF blocks through vecdotq.hpp's vec_dot_*_q8_1 (ggml-common.h's block types, SYCL
+// declaration mode - no ggml-cuda header is reachable from here).
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
-#include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
 #include "strata/prefill/moe_mmq.hpp"
 
-#include "common.cuh"
-#include "mmq.cuh"
-#include "quantize.cuh"
+#define GGML_SYCL_WARP_SIZE 32   // Strata's port-wide sub-group size (the build forces 32 everywhere)
+#include "common.hpp"            // ggml-sycl: presets (WARP_SIZE, GGML_SYCL_MMV_Y) + ggml-common.h in SYCL declaration
+                                 // and implementation mode (the block types, the codebook grids) + the
+                                 // ggml_sycl_dp4a family - the include set mmvq.cpp itself runs on
+#include "quantize.hpp"          // ggml-sycl: quantize_row_q8_1_sycl (the packed block_q8_1 activations)
+#include "vecdotq.hpp"           // ggml-sycl: the vec_dot_*_q8_1 the matvec kernels call
+
+// This TU's dpct is ggml-sycl's (above): Strata's vendored <dpct/dpct.hpp> - which "strata/sycl_queue.hpp" pulls
+// in - is a second, different dpct (dpct::dp4a, err0, get_in_order_queue would each be defined twice), so the two
+// pieces of Strata's the kept kernels use are declared here instead.
+template <class... Args> class dpct_kernel_name;
+namespace strata {
+// strata/sycl_queue.hpp's q_of, with ggml-sycl's dpct::get_in_order_queue
+inline sycl::queue* q_of(const void* stream) {
+    return stream ? (sycl::queue*) stream : &dpct::get_in_order_queue();
+}
+}  // namespace strata
 
 #include <cstdio>
 #include <cstdlib>
@@ -21,6 +35,20 @@ void ck(dpct::err0 e, const char *what) {
 }
 
 int64_t pad512(int64_t n) { return (n + 511) / 512 * 512; }
+
+// ggml-cuda mmq.cuh's block_q8_1_mmq (the CUDA tensor-core MMQ's transposed q8_1 tile): q8_bytes() sizes the
+// activation buffer in its terms, and its 36 bytes per 32 values is also exactly the packed block_q8_1 rows
+// quantize() writes (mmq.cuh asserts sizeof(block_q8_1_mmq) == 4*sizeof(block_q8_1)), so the contract covers
+// both.  The union's exact bytes are the MMQ layouts' business; the packed layout only needs the size.
+struct block_q8_1_mmq {
+    union {
+        float d4[4];             // 1 32 bit scale per 32 values, stored as d0,d1,d2,d3
+        sycl::half2 ds4[4];      // 1 16 bit scale + 1 16 bit partial sum per 32 values
+    };
+    int8_t qs[4 * QK8_1];
+};
+static_assert(sizeof(block_q8_1_mmq) == 4 * QK8_1 + 4 * sizeof(sycl::half2), "Unexpected block_q8_1_mmq size");
+static_assert(sizeof(block_q8_1_mmq) == 4 * sizeof(block_q8_1), "Unexpected block_q8_1_mmq size");
 
 __dpct_inline__ void copy16_kernel(const sycl::uint4 *__restrict__ a,
                                    int64_t na,
@@ -118,9 +146,508 @@ __dpct_inline__ void iota_kernel(int32_t *dst, int64_t n) {
 
 unsigned blocks(int64_t n) { return (unsigned) ((n + 255) / 256); }
 
+// ---------------------------------------------------- the q8_1 activation quantizer (ggml-sycl quantize.hpp)
+// quantize.hpp's quantize_q8_1 (one WARP_SIZE sub-group per 32 values) with the row gather the native
+// quantize_row_q8_1_sycl can't express: output row r takes x row ids[r] (x rows ld floats apart, the row
+// itself when ids is null).  quantize_q8_1_impl's arithmetic and the packed block_q8_1 layout, unchanged.
+template <int ElementsPerWI>
+struct quantize_q8_1_gather {
+    __dpct_inline__ void operator()(const float *__restrict__ x, const int32_t *__restrict__ ids, void *vy,
+                                    const int kx, const int64_t ld, const sycl::nd_item<1> &it) const {
+        auto subgroup_id = it.get_group(0);
+        auto wi_id       = it.get_local_id(0);
+
+        const int num_blocks_per_row = kx / QK8_1;
+        const int row                = (int) (subgroup_id / num_blocks_per_row);
+        const int64_t src            = ids ? ids[row] : row;   // output row r takes x row ids[r]
+
+        sycl::vec<float, ElementsPerWI> wi_f32_vals;
+        wi_f32_vals = *reinterpret_cast<const sycl::vec<float, ElementsPerWI> *>(
+            x + src * ld + (int64_t) (subgroup_id % num_blocks_per_row) * QK8_1 + ElementsPerWI * wi_id);
+
+        sycl::vec<int8_t, ElementsPerWI> quantized_values;
+        float d = 0.0f;
+        float sum = 0.0f;
+        float amax = 0.0f;
+
+#pragma unroll(ElementsPerWI)
+        for (int i = 0; i < ElementsPerWI; i++) {
+            sum += wi_f32_vals[i];
+            amax                = sycl::fmax(amax, sycl::fabs(wi_f32_vals[i]));
+            quantized_values[i] = 0;
+        }
+        sum  = sycl::reduce_over_group(it.get_sub_group(), sum, sycl::plus<float>());
+        amax = sycl::reduce_over_group(it.get_sub_group(), amax, sycl::maximum<float>());
+        d    = amax == 0 ? 1 : amax / 127;
+
+#pragma unroll(ElementsPerWI)
+        for (int i = 0; i < ElementsPerWI; i++) {
+            quantized_values[i] = sycl::round(wi_f32_vals[i] / d);
+        }
+
+        d = amax == 0 ? 0 : d;
+
+        block_q8_1 * b = (block_q8_1 *) vy + subgroup_id;   // packed: row * num_blocks_per_row + col
+        *reinterpret_cast<sycl::vec<int8_t, ElementsPerWI> *>(&b->qs[wi_id * ElementsPerWI]) = quantized_values;
+        if (wi_id == 0) {
+            b->ds = sycl::half2(sycl::half(d), sycl::half(sum));
+        }
+    }
+};
+
+// quantize_row_q8_1_sycl's launch shape, for the gather above.
+static void quantize_q8_1_gather_sycl(const float * x, const int32_t * ids, void * vy, const int kx,
+                                      const int64_t ld, const int ky, dpct::queue_ptr stream) {
+    static_assert(QK8_1 % WARP_SIZE == 0);
+    auto local_range      = std::size_t(WARP_SIZE);
+    auto num_quant_blocks = (size_t) ky * (kx / QK8_1);
+    auto global_range     = num_quant_blocks * local_range;
+    dpct::has_capability_or_fail(stream->get_device(), { sycl::aspect::fp16 });
+
+    stream->parallel_for(sycl::nd_range<1>({ global_range }, { local_range }),
+                         [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                             quantize_q8_1_gather<QK8_1 / WARP_SIZE>()(x, ids, vy, kx, ld, it);
+                         });
+}
+
+// ---------------------------------------------------- the ported matvec kernels (ggml-sycl mmvq.cpp)
+// mmvq.cpp's mul_mat_vec_q* with the batched head the prompt path needs: sub-group (row, token) of one expert's
+// launch computes dst row `row` of token row `token` - token = bounds[0] + group(1) within the expert's
+// [bounds[0], bounds[1]) (bounds on the device), the activation row xq + token*y_blocks (quantize()'s packed
+// block_q8_1 rows), the result to dst[ids[token]*ld_dst + row] (an identity table works).  The dot loop and the
+// sub-group reduction are mmvq.cpp's, unchanged.
+
+template <int qk, int qi, typename block_q_t, int vdr, vec_dot_q_sycl_t vec_dot_q_sycl>
+static void mul_mat_vec_q(const void *__restrict__ vx, const int32_t *__restrict__ bounds,
+                          const void *__restrict__ xq, const int32_t *__restrict__ ids,
+                          float *__restrict__ dst, int64_t ld_dst, const int ncols, const int nrows,
+                          const int y_blocks, const sycl::nd_item<3> &item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) + item_ct1.get_local_id(1);
+
+    if (row >= nrows) {
+        return;
+    }
+    const int token = bounds[0] + item_ct1.get_group(1);
+    if (token >= bounds[1]) {
+        return;
+    }
+
+    const int     blocks_per_row  = ncols / qk;
+    constexpr int blocks_per_warp = (vdr * WARP_SIZE + qi - 1) / qi;  // Ensuring blocks_per_warp > 0
+
+    assert(blocks_per_warp > 0);
+
+    // partial sum for each thread
+    float tmp = 0.0f;
+
+    const block_q_t *  x = (const block_q_t *) vx;
+    const block_q8_1 * y = (const block_q8_1 *) xq + (int64_t) token * y_blocks;
+
+    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row; i += blocks_per_warp) {
+        const int ibx = row * blocks_per_row + i;  // x block index
+
+        const int iby = i * (qk / QK8_1);          // y block index that aligns with ibx
+
+        for (size_t elem = 0; elem < qi / vdr; elem += WARP_SIZE) {
+            const int iqs = elem + vdr * (item_ct1.get_local_id(2) %
+                                          (qi / vdr));  // x block quant index when casting the quants to int
+
+            tmp += vec_dot_q_sycl(&x[ibx], &y[iby], iqs);
+        }
+    }
+
+    // sum up partial sums and write back result
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp += dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (item_ct1.get_local_id(2) == 0) {
+        dst[(int64_t) (ids ? ids[token] : token) * ld_dst + row] = tmp;
+    }
+}
+
+template <int qk, int qi, typename block_q_t, int vdr>
+static void mul_mat_vec_q_iq2_xxs_q8_1(const void *__restrict__ vx, const int32_t *__restrict__ bounds,
+                                       const void *__restrict__ xq, const int32_t *__restrict__ ids,
+                                       float *__restrict__ dst, int64_t ld_dst, const int ncols, const int nrows,
+                                       const int y_blocks, const sycl::nd_item<3> &item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) +
+                    item_ct1.get_local_id(1);
+
+    if (row >= nrows) {
+        return;
+    }
+    const int token = bounds[0] + item_ct1.get_group(1);
+    if (token >= bounds[1]) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / qk;
+    const int blocks_per_warp = vdr * WARP_SIZE / qi;
+    assert(blocks_per_warp>0);
+// partial sum for each thread
+    float tmp = 0.0f;
+
+    const block_q_t  * x = (const block_q_t  *) vx;
+    const block_q8_1 * y = (const block_q8_1 *) xq + (int64_t) token * y_blocks;
+
+    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row;
+         i += blocks_per_warp) {
+        const int ibx = row*blocks_per_row + i; // x block index
+
+        const int iby = i * (qk/QK8_1); // y block index that aligns with ibx
+
+        const int iqs =
+            vdr *
+            (item_ct1.get_local_id(2) %
+             (qi / vdr)); // x block quant index when casting the quants to int
+
+        tmp += vec_dot_iq2_xxs_q8_1(&x[ibx], &y[iby], iqs, iq2xxs_grid, ksigns_iq2xs, kmask_iq2xs);
+    }
+
+    // sum up partial sums and write back result
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp +=
+            dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (item_ct1.get_local_id(2) == 0) {
+        dst[(int64_t) (ids ? ids[token] : token) * ld_dst + row] = tmp;
+    }
+}
+
+template <int qk, int qi, typename block_q_t, int vdr>
+static void mul_mat_vec_q_iq2_xs_q8_1(const void *__restrict__ vx, const int32_t *__restrict__ bounds,
+                                      const void *__restrict__ xq, const int32_t *__restrict__ ids,
+                                      float *__restrict__ dst, int64_t ld_dst, const int ncols, const int nrows,
+                                      const int y_blocks, const sycl::nd_item<3> &item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) +
+                    item_ct1.get_local_id(1);
+
+    if (row >= nrows) {
+        return;
+    }
+    const int token = bounds[0] + item_ct1.get_group(1);
+    if (token >= bounds[1]) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / qk;
+    const int blocks_per_warp = vdr * WARP_SIZE / qi;
+    assert(blocks_per_warp>0);
+// partial sum for each thread
+    float tmp = 0.0f;
+
+    const block_q_t  * x = (const block_q_t  *) vx;
+    const block_q8_1 * y = (const block_q8_1 *) xq + (int64_t) token * y_blocks;
+
+    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row;
+         i += blocks_per_warp) {
+        const int ibx = row*blocks_per_row + i; // x block index
+
+        const int iby = i * (qk/QK8_1); // y block index that aligns with ibx
+
+        const int iqs =
+            vdr *
+            (item_ct1.get_local_id(2) %
+             (qi / vdr)); // x block quant index when casting the quants to int
+
+        tmp += vec_dot_iq2_xs_q8_1(&x[ibx], &y[iby], iqs, iq2xs_grid, ksigns64);
+    }
+
+    // sum up partial sums and write back result
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp +=
+            dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (item_ct1.get_local_id(2) == 0) {
+        dst[(int64_t) (ids ? ids[token] : token) * ld_dst + row] = tmp;
+    }
+}
+
+template <int qk, int qi, typename block_q_t, int vdr>
+static void mul_mat_vec_q_iq2_s_q8_1(const void *__restrict__ vx, const int32_t *__restrict__ bounds,
+                                     const void *__restrict__ xq, const int32_t *__restrict__ ids,
+                                     float *__restrict__ dst, int64_t ld_dst, const int ncols, const int nrows,
+                                     const int y_blocks, const sycl::nd_item<3> &item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) +
+                    item_ct1.get_local_id(1);
+
+    if (row >= nrows) {
+        return;
+    }
+    const int token = bounds[0] + item_ct1.get_group(1);
+    if (token >= bounds[1]) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / qk;
+    const int blocks_per_warp = vdr * WARP_SIZE / qi;
+    assert(blocks_per_warp>0);
+// partial sum for each thread
+    float tmp = 0.0f;
+
+    const block_q_t  * x = (const block_q_t  *) vx;
+    const block_q8_1 * y = (const block_q8_1 *) xq + (int64_t) token * y_blocks;
+
+    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row;
+         i += blocks_per_warp) {
+        const int ibx = row*blocks_per_row + i; // x block index
+
+        const int iby = i * (qk/QK8_1); // y block index that aligns with ibx
+
+        const int iqs =
+            vdr *
+            (item_ct1.get_local_id(2) %
+             (qi / vdr)); // x block quant index when casting the quants to int
+
+        tmp += vec_dot_iq2_s_q8_1(&x[ibx], &y[iby], iqs);
+    }
+
+    // sum up partial sums and write back result
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp +=
+            dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (item_ct1.get_local_id(2) == 0) {
+        dst[(int64_t) (ids ? ids[token] : token) * ld_dst + row] = tmp;
+    }
+}
+
+template <int qk, int qi, typename block_q_t, int vdr>
+static void mul_mat_vec_q_iq3_xxs_q8_1(const void *__restrict__ vx, const int32_t *__restrict__ bounds,
+                                       const void *__restrict__ xq, const int32_t *__restrict__ ids,
+                                       float *__restrict__ dst, int64_t ld_dst, const int ncols, const int nrows,
+                                       const int y_blocks, const sycl::nd_item<3> &item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) +
+                    item_ct1.get_local_id(1);
+
+    if (row >= nrows) {
+        return;
+    }
+    const int token = bounds[0] + item_ct1.get_group(1);
+    if (token >= bounds[1]) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / qk;
+    const int blocks_per_warp = vdr * WARP_SIZE / qi;
+    assert(blocks_per_warp>0);
+// partial sum for each thread
+    float tmp = 0.0f;
+
+    const block_q_t  * x = (const block_q_t  *) vx;
+    const block_q8_1 * y = (const block_q8_1 *) xq + (int64_t) token * y_blocks;
+
+    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row;
+         i += blocks_per_warp) {
+        const int ibx = row*blocks_per_row + i; // x block index
+
+        const int iby = i * (qk/QK8_1); // y block index that aligns with ibx
+
+        const int iqs =
+            vdr *
+            (item_ct1.get_local_id(2) %
+             (qi / vdr)); // x block quant index when casting the quants to int
+
+        tmp += vec_dot_iq3_xxs_q8_1(&x[ibx], &y[iby], iqs, iq3xxs_grid, ksigns64);
+    }
+
+    // sum up partial sums and write back result
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp +=
+            dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (item_ct1.get_local_id(2) == 0) {
+        dst[(int64_t) (ids ? ids[token] : token) * ld_dst + row] = tmp;
+    }
+}
+
+template <int qk, int qi, typename block_q_t, int vdr>
+static void mul_mat_vec_q_iq3_s_q8_1(const void *__restrict__ vx, const int32_t *__restrict__ bounds,
+                                     const void *__restrict__ xq, const int32_t *__restrict__ ids,
+                                     float *__restrict__ dst, int64_t ld_dst, const int ncols, const int nrows,
+                                     const int y_blocks, const sycl::nd_item<3> &item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) +
+                    item_ct1.get_local_id(1);
+
+    if (row >= nrows) {
+        return;
+    }
+    const int token = bounds[0] + item_ct1.get_group(1);
+    if (token >= bounds[1]) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / qk;
+    const int blocks_per_warp = vdr * WARP_SIZE / qi;
+    assert(blocks_per_warp>0);
+// partial sum for each thread
+    float tmp = 0.0f;
+
+    const block_q_t  * x = (const block_q_t  *) vx;
+    const block_q8_1 * y = (const block_q8_1 *) xq + (int64_t) token * y_blocks;
+
+    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row;
+         i += blocks_per_warp) {
+        const int ibx = row*blocks_per_row + i; // x block index
+
+        const int iby = i * (qk/QK8_1); // y block index that aligns with ibx
+
+        const int iqs =
+            vdr *
+            (item_ct1.get_local_id(2) %
+             (qi / vdr)); // x block quant index when casting the quants to int
+
+        tmp += vec_dot_iq3_s_q8_1(&x[ibx], &y[iby], iqs, iq3s_grid);
+    }
+
+    // sum up partial sums and write back result
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp +=
+            dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (item_ct1.get_local_id(2) == 0) {
+        dst[(int64_t) (ids ? ids[token] : token) * ld_dst + row] = tmp;
+    }
+}
+
+template <int qk, int qi, typename block_q_t, int vdr>
+static void mul_mat_vec_q_iq4_nl_q8_1(const void *__restrict__ vx, const int32_t *__restrict__ bounds,
+                                      const void *__restrict__ xq, const int32_t *__restrict__ ids,
+                                      float *__restrict__ dst, int64_t ld_dst, const int ncols, const int nrows,
+                                      const int y_blocks, const sycl::nd_item<3> &item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) +
+                    item_ct1.get_local_id(1);
+
+    if (row >= nrows) {
+        return;
+    }
+    const int token = bounds[0] + item_ct1.get_group(1);
+    if (token >= bounds[1]) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / qk;
+    const int blocks_per_warp = vdr * WARP_SIZE / qi;
+    assert(blocks_per_warp>0);
+// partial sum for each thread
+    float tmp = 0.0f;
+
+    const block_q_t  * x = (const block_q_t  *) vx;
+    const block_q8_1 * y = (const block_q8_1 *) xq + (int64_t) token * y_blocks;
+
+    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row;
+         i += blocks_per_warp) {
+        const int ibx = row*blocks_per_row + i; // x block index
+
+        const int iby = i * (qk/QK8_1); // y block index that aligns with ibx
+
+        const int iqs =
+            vdr *
+            (item_ct1.get_local_id(2) %
+             (qi / vdr)); // x block quant index when casting the quants to int
+
+        tmp += vec_dot_iq4_nl_q8_1(&x[ibx], &y[iby], iqs);
+    }
+
+    // sum up partial sums and write back result
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp +=
+            dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (item_ct1.get_local_id(2) == 0) {
+        dst[(int64_t) (ids ? ids[token] : token) * ld_dst + row] = tmp;
+    }
+}
+
+template <int qk, int qi, typename block_q_t, int vdr>
+static void mul_mat_vec_q_iq4_xs_q8_1(const void *__restrict__ vx, const int32_t *__restrict__ bounds,
+                                      const void *__restrict__ xq, const int32_t *__restrict__ ids,
+                                      float *__restrict__ dst, int64_t ld_dst, const int ncols, const int nrows,
+                                      const int y_blocks, const sycl::nd_item<3> &item_ct1) {
+    const int row = item_ct1.get_group(2) * item_ct1.get_local_range(1) +
+                    item_ct1.get_local_id(1);
+
+    if (row >= nrows) {
+        return;
+    }
+    const int token = bounds[0] + item_ct1.get_group(1);
+    if (token >= bounds[1]) {
+        return;
+    }
+
+    const int blocks_per_row = ncols / qk;
+    const int blocks_per_warp = vdr * WARP_SIZE / qi;
+    assert(blocks_per_warp>0);
+// partial sum for each thread
+    float tmp = 0.0f;
+
+    const block_q_t  * x = (const block_q_t  *) vx;
+    const block_q8_1 * y = (const block_q8_1 *) xq + (int64_t) token * y_blocks;
+
+    for (int i = item_ct1.get_local_id(2) / (qi / vdr); i < blocks_per_row;
+         i += blocks_per_warp) {
+        const int ibx = row*blocks_per_row + i; // x block index
+
+        const int iby = i * (qk/QK8_1); // y block index that aligns with ibx
+
+        const int iqs =
+            vdr *
+            (item_ct1.get_local_id(2) %
+             (qi / vdr)); // x block quant index when casting the quants to int
+
+        tmp += vec_dot_iq4_xs_q8_1(&x[ibx], &y[iby], iqs);
+    }
+
+    // sum up partial sums and write back result
+#pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+        tmp +=
+            dpct::permute_sub_group_by_xor(item_ct1.get_sub_group(), tmp, mask);
+    }
+
+    if (item_ct1.get_local_id(2) == 0) {
+        dst[(int64_t) (ids ? ids[token] : token) * ld_dst + row] = tmp;
+    }
+}
+
+// mmvq.cpp's mul_mat_vec_*_q8_1_sycl launch shape (GGML_SYCL_MMV_Y rows per sub-group), with group(1) = the
+// token row within the expert (max_rows: the most rows one expert has, the launch grid).
+template <typename Kernel>
+static void mul_mat_vec_q_launch(const dpct::queue_ptr s, int64_t max_rows, const int nrows, Kernel body) {
+    const sycl::range<3> block_nums(1, (size_t) max_rows,
+                                    (size_t) ((nrows + GGML_SYCL_MMV_Y - 1) / GGML_SYCL_MMV_Y));
+    const sycl::range<3> block_dims(1, GGML_SYCL_MMV_Y, WARP_SIZE);
+    s->submit([&](sycl::handler &cgh) {
+        cgh.parallel_for(sycl::nd_range<3>(block_nums * block_dims, block_dims),
+                         [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(WARP_SIZE)]] {
+                             body(item_ct1);
+                         });
+    });
+}
+
 }  // namespace
 
-bool built() { return true; }
+bool built() {
+    // opt-in: the i-quant matvec port is parity-clean but ~30x slower than dequant+oneMKL GEMM on batched
+    // prompts (measured 2026-10-03, 91.5% of GPU time in the matvec gemm phases), so the FP16 path stays the
+    // default; STRATA_PREFILL_MMQ=1 enables it
+    static const bool v = [] { const char* e = std::getenv("STRATA_PREFILL_MMQ"); return e != nullptr && std::atoi(e) != 0; }();
+    return v;
+}
 
 bool supported(int t) {
     switch ((ggml_type) t) {
@@ -130,6 +657,13 @@ bool supported(int t) {
         default:
             return false;
     }
+}
+
+bool fits(int t, int64_t w_rows) {
+    (void) w_rows;
+    // the matvec kernels hold no shared-memory tile (the CUDA MMQ's J_best test had one), so every supported
+    // type runs at any w_rows: the non-MMQ path (#420) is for the unsupported types only
+    return supported(t);
 }
 
 size_t matrix_bytes(int t, int64_t rows, int64_t cols) {
@@ -142,52 +676,92 @@ size_t q8_bytes(int64_t rows, int64_t cols) {
 
 void quantize(const float* x, const int32_t* ids, void* xq, int t, int64_t cols, int64_t ld, int64_t rows, void* stream) {
     if (rows <= 0) return;
-    quantize_mmq_q8_1_cuda(x, ids, xq, (ggml_type) t, cols, ld, rows * ld, rows * ld, pad512(cols), rows, 1, 1,
-                           (cudaStream_t) stream);
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
+    (void) t;   // the q8_1 activations do not depend on the weight type (run()'s kernels do)
+    const dpct::queue_ptr s = strata::q_of(stream);
+    if (ids == nullptr && ld == cols) {
+        // the native quantizer: contiguous rows into the packed block_q8_1 layout the matvec kernels read
+        quantize_row_q8_1_sycl<quantize_q8_1>(x, xq, (int) cols, (int) rows, (int) cols, s);
+    } else {
+        // the gather the native one can't express: output row r = x row ids[r], x rows ld floats apart
+        quantize_q8_1_gather_sycl(x, ids, xq, (int) cols, ld, (int) rows, s);
+    }
     ck(0, "quantize");
 }
 
 Context::Context() {
-    int dev = 0;
-    dev = dpct::get_current_device_id();
-    ctx_ = new ggml_backend_cuda_context(dev);
+    // the matvec kernels keep no scratch pool (the CUDA MMQ's stream-k fixup did), ctx_ stays null
 }
-Context::~Context() { delete (ggml_backend_cuda_context*) ctx_; }
+Context::~Context() {}
 
 void Context::run(const Product& p, void* stream) {
     if (p.n <= 0 || p.max_rows <= 0) return;
     const ggml_type t = (ggml_type) p.type;
-    const int64_t qk = ggml_blck_size(t), bpr = p.w_cols / qk;
-    const mmq_args a = {(const char*) p.w, t, (const int*) p.xq, p.ids, p.bounds, p.dst, nullptr,
-                        p.w_cols, p.w_rows, p.total_rows, bpr, p.total_rows, p.ld_dst,
-                        p.n, p.n, (int64_t) (p.expert_bytes / ggml_type_size(t)), 0, 0,
-                        1, 1, 0, 0, 0,
-                        p.max_rows, p.max_rows};
-    auto& ctx = *(ggml_backend_cuda_context*) ctx_;
     const dpct::queue_ptr s = strata::q_of(stream);
-    switch (t) {
-        case GGML_TYPE_Q2_0: mul_mat_q_case<GGML_TYPE_Q2_0>(ctx, a, s); break;
-        case GGML_TYPE_IQ2_XXS: mul_mat_q_case<GGML_TYPE_IQ2_XXS>(ctx, a, s); break;
-        case GGML_TYPE_IQ2_XS: mul_mat_q_case<GGML_TYPE_IQ2_XS>(ctx, a, s); break;
-        case GGML_TYPE_IQ2_S: mul_mat_q_case<GGML_TYPE_IQ2_S>(ctx, a, s); break;
-        case GGML_TYPE_IQ3_XXS: mul_mat_q_case<GGML_TYPE_IQ3_XXS>(ctx, a, s); break;
-        case GGML_TYPE_IQ3_S: mul_mat_q_case<GGML_TYPE_IQ3_S>(ctx, a, s); break;
-        case GGML_TYPE_IQ4_NL: mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, a, s); break;
-        case GGML_TYPE_IQ4_XS: mul_mat_q_case<GGML_TYPE_IQ4_XS>(ctx, a, s); break;
-        default:
-            std::fprintf(stderr, "prefill mmq: type %d is not covered\n", (int) t);
-            std::exit(1);
+    const int ncols = (int) p.w_cols, nrows = (int) p.w_rows;
+    const int y_blocks = ncols / QK8_1;   // one token row of packed q8_1 blocks (quantize()'s layout)
+    const void* xq = p.xq;
+    const int32_t* ids = p.ids;
+    float* dst = p.dst;
+    const int64_t ld_dst = p.ld_dst;
+    // one launch per expert: its token rows [bounds[e], bounds[e+1]) (bounds on the device) against its
+    // [w_rows, w_cols] matrix; max_rows (the most rows one expert has) is the launch grid
+    for (int e = 0; e < p.n; ++e) {
+        const void* w = (const char*) p.w + (int64_t) e * (int64_t) p.expert_bytes;
+        const int32_t* bnd = p.bounds + e;
+        switch (t) {
+            case GGML_TYPE_Q2_0:
+                mul_mat_vec_q_launch(s, p.max_rows, nrows, [=](sycl::nd_item<3> it) {
+                    mul_mat_vec_q<QK2_0, QI2_0, block_q2_0, VDR_Q2_0_Q8_1_MMVQ, vec_dot_q2_0_q8_1>(
+                        w, bnd, xq, ids, dst, ld_dst, ncols, nrows, y_blocks, it);
+                });
+                break;
+            case GGML_TYPE_IQ2_XXS:
+                mul_mat_vec_q_launch(s, p.max_rows, nrows, [=](sycl::nd_item<3> it) {
+                    mul_mat_vec_q_iq2_xxs_q8_1<QK_K, QI2_XXS/2, block_iq2_xxs, 1>(
+                        w, bnd, xq, ids, dst, ld_dst, ncols, nrows, y_blocks, it);
+                });
+                break;
+            case GGML_TYPE_IQ2_XS:
+                mul_mat_vec_q_launch(s, p.max_rows, nrows, [=](sycl::nd_item<3> it) {
+                    mul_mat_vec_q_iq2_xs_q8_1<QK_K, QI2_XS/2, block_iq2_xs, 1>(
+                        w, bnd, xq, ids, dst, ld_dst, ncols, nrows, y_blocks, it);
+                });
+                break;
+            case GGML_TYPE_IQ2_S:
+                mul_mat_vec_q_launch(s, p.max_rows, nrows, [=](sycl::nd_item<3> it) {
+                    mul_mat_vec_q_iq2_s_q8_1<QK_K, QI2_S/2, block_iq2_s, 1>(
+                        w, bnd, xq, ids, dst, ld_dst, ncols, nrows, y_blocks, it);
+                });
+                break;
+            case GGML_TYPE_IQ3_XXS:
+                mul_mat_vec_q_launch(s, p.max_rows, nrows, [=](sycl::nd_item<3> it) {
+                    mul_mat_vec_q_iq3_xxs_q8_1<QK_K, QI3_XXS/2, block_iq3_xxs, 1>(
+                        w, bnd, xq, ids, dst, ld_dst, ncols, nrows, y_blocks, it);
+                });
+                break;
+            case GGML_TYPE_IQ3_S:
+                mul_mat_vec_q_launch(s, p.max_rows, nrows, [=](sycl::nd_item<3> it) {
+                    mul_mat_vec_q_iq3_s_q8_1<QK_K, QI3_S/2, block_iq3_s, 1>(
+                        w, bnd, xq, ids, dst, ld_dst, ncols, nrows, y_blocks, it);
+                });
+                break;
+            case GGML_TYPE_IQ4_NL:
+                mul_mat_vec_q_launch(s, p.max_rows, nrows, [=](sycl::nd_item<3> it) {
+                    mul_mat_vec_q_iq4_nl_q8_1<QK4_NL, QI4_NL, block_iq4_nl, 2>(
+                        w, bnd, xq, ids, dst, ld_dst, ncols, nrows, y_blocks, it);
+                });
+                break;
+            case GGML_TYPE_IQ4_XS:
+                mul_mat_vec_q_launch(s, p.max_rows, nrows, [=](sycl::nd_item<3> it) {
+                    mul_mat_vec_q_iq4_xs_q8_1<QK_K, QI4_XS/4, block_iq4_xs, 1>(
+                        w, bnd, xq, ids, dst, ld_dst, ncols, nrows, y_blocks, it);
+                });
+                break;
+            default:
+                std::fprintf(stderr, "prefill mmq: type %d is not covered\n", (int) t);
+                std::exit(1);
+        }
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     ck(0, "mul_mat_q");
 }
 

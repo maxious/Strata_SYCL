@@ -107,18 +107,20 @@ decode target.
 Priority order based on payoff on the B70. Ranked for *headroom* (where we already measured ourselves below the
 card's capability) and *adoptability* (how directly llama.cpp's code maps onto ours).
 
-### P0 - PRIMARY GOAL: native-SYCL MMQ prompt path (next we build)
+### P0 - PRIMARY GOAL: native-SYCL MMQ prompt path (MEASURED + parked, 2026-10-03)
 
-The single highest-payoff open item, decided by experiments 07 + 08 on the B60: the prompt path is
-**dequant + oneMKL-GEMM bound at 58.6%** (exp 07: dequant 30.1% + gemm down 20.0% + gemm gate/up 8.5%), and
-llama.cpp already ships a **native-SYCL** fused int8-tensor-core matmul (`ggml/src/ggml-sycl/mmq.cpp`: q8_1
-activations x quantized weights, dp4a products, `sycl::half2`/warp shuffles, no CUDA headers). Strata's
-`sycl/src/prefill/moe_mmq.dp.cpp` is a **CUDA** port that cannot compile on Intel (`cuda_runtime.h`; exp 08)
-and stays out of the build. Approach: wrap the native-SYCL mmq behind Strata's existing
-`strata::prefill::mmq` API (header `include/strata/prefill/moe_mmq.hpp`: built/supported/fits/quantize/Product),
-gated by `STRATA_PREFILL_MMQ=0` (default ON once real), measured against the 571 tok/s prompt baseline.
+**Measured + parked (experiment 09, docs/sycl-experiments/09-mmq-prompt.md).** The discovery wave reframed
+this: llama.cpp **disables SYCL MMQ** (`ggml_sycl_supports_mmq` -> false, ggml-sycl.cpp:4084) and has no SYCL
+i-quant prompt matmul anywhere; the i-quant kernels exist only in the CUDA mmq.cuh and the SYCL **decode**
+mmvq.cpp. Per the pivot, the SYCL decode `mul_mat_vec_q_iq*_q8_1` kernels were ported into a batched prompt
+matmul behind `strata::prefill::mmq` (SYCL-only, `quantize_row_q8_1_sycl`, `vecdotq.hpp` dots). Result:
+**parity-exact** (token sequences identical on vs off), **builds clean** (no cuda headers), but **a measured ~6x
+prefill regression** (MMQ-on 73 tok/s vs FP16 571.7 tok/s at 1,280 tokens; the matvec shape's per-token i-quant
+codebook dots lose to oneMKL GEMM) - the same reason llama.cpp keeps MMQ off on SYCL. The port stays **opt-in**
+(`STRATA_PREFILL_MMQ=1`; default off) and the FP16 dequant+oneMKL path remains the default at 571.7 tok/s.
 
-MMQ implementation, broken down (staged - parity first, then bottom-up so each step is testable):
+The real prompt lever (exp 07) remains the ~30% dequant phase; a win there needs a **GEMM-shaped INT8 path**,
+not a matvec port. The original MMQ implementation plan, broken down (kept for reference):
 
 1. **Kernel transplant (one type first).** Lift llama.cpp's native-SYCL `mul_mat_q`/`vec_dot_*_q8_1` kernel
    bodies out of `ggml-sycl/mmq.cpp` (take the kernels, NOT ggml's `ggml_tensor`/`ggml_backend_sycl_context`
@@ -225,7 +227,8 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | 05 | decode-round node fusion | 52 ms/2,541 nodes, kernel-bound | parked |
 | 06 | fused-GR gated variants | default 14-84% faster | confirmed; no change |
 | 07 | prompt bottleneck | dequant+GEMM = 58.6%; 571 tok/s @1,280 tok | **MMQ = the target** |
-| 08 | CUDA MMQ wiring | fails on `cuda_runtime.h` | wrong path; adopt native-SYCL mmq |
+| 08 | CUDA MMQ wiring | fails on `cuda_runtime.h` | wrong path; SYCL i-quant kernels are decode matvecs only |
+| 09 | prompt-batched i-quant MMQ (mmvq port) | parity-exact, builds, but ~6x SLOWER at prefill (73 vs 571.7 tok/s) | parked opt-in; FP16 dequant+oneMKL stays default |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)

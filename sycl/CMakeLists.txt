@@ -164,11 +164,33 @@ target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_ker
 
 # cuBLAS -> oneMKL through dpct::blas (needs the MKL SYCL BLAS domain)
 strata_resolve(_prefill src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
-add_library(strata_prefill STATIC ${_prefill}
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp)   # upstream's fused int8 kernels: not built here
+# upstream's fused int8 kernels, stubbed: not built here (they are the CUDA fused-GR path)
+set(_prefill_stub ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp)
+# prompt-speed plan step 2b, the SYCL port: the same pinned checkout the CPU experts come from also carries
+# ggml-sycl - moe_mmq.dp.cpp (the CUDA build's src/prefill/moe_mmq.cu) takes its quantizer (quantize.hpp's
+# quantize_row_q8_1_sycl) and dot products (vecdotq.hpp) against ggml-common.h's block types in SYCL declaration
+# mode, where the top-level build's strata_mmq uses the same checkout's ggml-cuda.  Without the checkout (no
+# STRATA_NATIVE_EXPERTS) the file stays out and prefill.cpp's stub MMQ applies.
+if(STRATA_NATIVE_EXPERTS)
+  list(APPEND _prefill ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_mmq.dp.cpp)
+endif()
+add_library(strata_prefill STATIC ${_prefill} ${_prefill_stub})
 target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
+if(STRATA_NATIVE_EXPERTS)
+  if(STRATA_GGML_DIR)
+    set(_strata_gg ${STRATA_GGML_DIR}/ggml)
+  else()
+    set(_strata_gg ${strata_llamacpp_SOURCE_DIR}/ggml)
+  endif()
+  target_include_directories(strata_prefill PRIVATE
+    ${_strata_gg}/src/ggml-sycl ${_strata_gg}/src ${_strata_gg}/include ${STRATA_ROOT}/third_party/ggml)
+  target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1)
+  # ggml-common.h's SYCL declaration mode (the block types + codebook grids), moe_mmq.dp.cpp only: the other
+  # prefill sources include no ggml header
+  target_compile_definitions(strata_prefill PRIVATE GGML_COMMON_DECL_SYCL)
+endif()
 
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
