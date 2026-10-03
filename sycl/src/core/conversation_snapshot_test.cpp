@@ -122,7 +122,9 @@ struct Fixture {
     ~Fixture() {
         for (void *p : device)
             DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
-        for (void *p : host) DPCT_CHECK_ERROR(free(p));
+        // host == malloc_host USM: must be released with sycl::free, not C free
+        for (void *p : host)
+            DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
     }
 };
 bool equal(const ConversationKv& a,const ConversationKv& b) {

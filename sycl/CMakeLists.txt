@@ -208,6 +208,20 @@ if(STRATA_SYCL_PARITY)
     target_link_libraries(${p}_parity PRIVATE strata_kernels)
     add_test(NAME ${p}_parity COMMAND ${p}_parity --selftest)
   endforeach()
+  # iq_parity runs its ten i-quants against deterministically generated fixtures (tools/iq_fixture.py); the test's
+  # --selftest flag is its fixture directory, so ctest needs them under <build>/--selftest before it runs.
+  find_package(Python3 COMPONENTS Interpreter)
+  if(Python3_Interpreter_FOUND)
+    set(_iq_fixdir ${CMAKE_CURRENT_BINARY_DIR}/--selftest)
+    set(_iq_fixture_gen ${CMAKE_CURRENT_BINARY_DIR}/iq_fixture.stamp)
+    add_custom_command(OUTPUT ${_iq_fixture_gen}
+      COMMAND ${CMAKE_COMMAND} -E rm -rf ${_iq_fixdir}
+      COMMAND ${Python3_EXECUTABLE} ${STRATA_ROOT}/tools/iq_fixture.py --out ${_iq_fixdir}
+      COMMAND ${CMAKE_COMMAND} -E touch ${_iq_fixture_gen}
+      COMMENT "Generating iq_parity fixtures into ${_iq_fixdir}")
+    add_custom_target(iq_fixtures DEPENDS ${_iq_fixture_gen})
+    add_dependencies(iq_parity iq_fixtures)
+  endif()
   # 0.1.31: the IQ kernels that decode a weight part once for every column/entry, bitwise vs the per-column ones
   # (no --selftest flag: it runs its checks by default), and the rewritten per-hit/grouped expert kernels vs the
   # previous ones, bitwise
