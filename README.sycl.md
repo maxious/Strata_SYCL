@@ -109,12 +109,16 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
 
 ### P0 - the biggest measured perf levers (decode first, then prompt)
 
-- [ ] **L1 decode matvec: weight reorder + ESIMD, ported from `dmmv.cpp`/`esimd.hpp`.** The single biggest open
-  gap, on the user-facing decode path. INTEL.md already lists the misaligned IQ4_XS / IQ4_NL / Q8_0 loads as
-  stuck around ~100-280 GB/s while the aligned types hit 400+. llama.cpp's `reorder_qw_*` + ESIMD `mac_pair`
-  is exactly the layout move that wins there (the alignment fix alone was a Q6_K row 150 -> 407 GB/s and
-  decode 44.9 -> 54 tok/s). Acceptance: parity-clean (`s2_gemv_q8k_parity`, `iq_parity`,
-  `native_expert_parity`), and the wide decode kernels move off the "still misaligned" list in INTEL.md.
+- [x] **L1 decode matvec: weight reorder + ESIMD, ported from `dmmv.cpp`/`esimd.hpp`.** The single biggest open
+  gap, on the user-facing decode path. INTEL.md listed the misaligned IQ4_XS / IQ4_NL / Q8_0 loads as stuck
+  around ~100-280 GB/s while the aligned types hit 400+. The SoA reorder + ESIMD `q8_0_mac_stripe` port now
+  exists and is Q8_0-proven on the B60 (`reorder_esimd_bench`, exp 12, committed): output matches the AOS
+  path within float rounding, and it wins the multi-column decode shapes up to 2.13x (6144x2560 cols6
+  370 -> 788 GB/s; the misaligned cols4/6 row moved 229-415 -> 397-424 GB/s, aligned-class). Cols1 is a wash.
+  Gated by `reorder_esimd_bench --selftest` (esimd_kq_parity, ctest). Q8_0 is off the "still misaligned"
+  list: see exp 12 + INTEL.md. Acceptance parity: `s2_gemv_q8k_parity`, `native_expert_parity` green;
+  `iq_parity` remains fixture-gated (needs the gguf-py fixtures). Production dispatch wiring (per-tensor SoA
+  cache into `NativeSharedWeights`) is the tracked follow-on.
 - [ ] **GEMM-shaped INT8 prompt dequant path** (the open prompt lever; re-scoped from the parked MMQ item, exp
   07 / 09 / 10 / 11). llama.cpp disables SYCL i-quant MMQ and has no SYCL i-quant prompt GEMM, and its SYCL
   dequant kernels are not on any prompt path (exp 10/11). Strata's `iq_dequant_f16` reads only 12-30% of card
@@ -122,11 +126,13 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   faster Strata-side dequant (wider per-work-item chunks, fewer table lookups per value) feeding the accepted
   dequant+oneMKL FP16 path (571.7 tok/s baseline) is the one open prompt lever. Acceptance: prompt tok/s up
   at 2,184 and 8,000 tokens with output identical, INTEL.md speed-table row.
-- [ ] **Host-pinned memory for host-to-device (#26789) and dev2dev memcpy by SYCL API (#24476/#26234/#27550
-  P2P).** llama.cpp moved host access to pinned buffers and added a device-to-device (P2P) copy path - the exact
-  transfer Experiment 03 measured on both B60s at 7.7-8.6 GB/s. The layer split already works (exp 03); pipe
-  the window hand-off through the native dev2dev path instead of host staging. Decode-side gain on the
-  multi-GPU window hand-off, independent of the P0 dequant lever.
+- [~] **Host-pinned memory for host-to-device (#26789) and dev2dev memcpy by SYCL API (#24476/#26234/#27550
+  P2P).** REFUTED-AS-GAIN in research (exp 03 + close read of the blob-fused weights): Strata runs each
+  GpuStage in its own SYCL context, where raw peer-USM `memcpy` is a silent no-op (llama.cpp's own warning,
+  ggml-sycl.cpp:7189), the hand-off already uses host-pinned `malloc_host` (generate.cpp:4816), it costs only
+  ~34 us / 256 KiB (not the decode bottleneck), and the 1.4x decode gain comes from the layer-split compute
+  distribution that already ships. Direct dev2dev would need a single-context rebuild that breaks per-stage
+  isolation, to recover a ~34 us hand-off. No code; drop.
 - [ ] **Q8_0/Q8_1 wide-load + DMMV ESIMD (#29186), Q2_K/Q5_K reordered ESIMD (#27490/#26376).** llama.cpp's newest
   decode work adds wide-load MMVQ and ESIMD DMMV for Q8_0, and completes reordered-ESIMD for the K-quants.
   Extends the L1 reorder/ESIMD fast path to the remaining dense types; a decode follow-on to the item above.
