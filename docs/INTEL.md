@@ -425,6 +425,35 @@ mirror. They are refreshed by re-migration, not by hand:
 7. **Check outputs.** Compare greedy output tokens against the previous build: Coder 19 / 2,184-token prompts,
    IQ2_XS, and a 40K prompt.
 
+**Two-speed runs, explained (2026-09-30).** Identical greedy runs decode at either ~45 or ~39 tok/s. A per-gather
+trace of the PLE reader (`STRATA_PLE_TRACE=1`) shows the slow runs pay one 226 ms PLE read stall in the first
+decode round, after the window graphs are captured; every other read and round matches the fast runs. Prompt time
+plus decode time is the same in both modes (4.95-5.17 s): the stall lands either in the prompt's PLE wait or in the
+first decode round, so it is a once-per-process cost, not lost throughput. Ruled out: NVMe APST, the I/O scheduler
+(`none`), CPU starvation (93% idle during decode), I/O thread count. Compare runs on time to first token + decode.
+6. INT8 prompt GEMMs: experts dequantized to INT8, oneMKL/oneDNN INT8 on XMX (half the dequant bytes, 2x rate).
+7. Fewer graph nodes per decode round (~2,500 at ~5 us): norm+rope, scores+top-k, gate+quantize fused.
+
+**Read-side blockage (P2): oneDNN/MKL SDPA must not fight graph capture.** llama.cpp's own note (fattn-onednn.cpp,
+issue #26413) says **"MKL GEMM calls are incompatible with SYCL graph capture replay"** - that build keeps
+`GGML_SYCL_GRAPH=ON` and the server reuses captured graphs, so any prompt node routed through an MKL SDPA would
+break that replay. Strata's prompt path captures its window and draft graphs once at load (`generate.cpp` warm
+block, `STRATA_WARM_GRAPHS=0` to opt out), and the P1 oneDNN fused-XMX SDPA A/B must therefore be checked against
+`STRATA_WARM_GRAPHS` before it is kept: run the A/B with graphs on AND off, and make sure the victory (if any) is
+not an artifact of the SDPA node escaping capture.
+8. Wider speculation (two draft branches per verify window): the kernels are latency-bound, so it is nearly free.
+9. A model bigger than VRAM: the original Qwen3.8-Flash-Next IQ2_XS (35.5 GB of experts; the same path suits Q2_0
+   and Swift 1.5) on the B70 with 23 GB of RAM. ~24 GB of experts in VRAM, the rest (~10-12 GB) in the pinned host
+   mirror the device plan reads over PCIe (item 2). The port has the IQ2_XS/IQ3_XXS/Q2_0 expert kernels. Open: whether
+   a 10+ GB pinned mirror fits beside everything else in 23 GB, and decode with that share of experts on a Gen3 x8
+   link (3.6 GB mirrored measured 40.9 tok/s; expect less). Needs the 68 GB download.
+   **Done (2026-10-01)**: shard 1 downloaded (39.2 GB; shard 2 is byte-identical to the Coder's, so a hard link),
+   a native pack (`tools/iq_pack.py`, 6 s), the original model's expert profile, the same MTP draft layer. 18,329 of
+   24,576 experts in VRAM (24.6 GiB), 6,247 in the pinned host mirror (8.4 GiB, 9 s to fill), host RAM never below
+   12 GB free. **Decode 50.8 tok/s** on the 19-token prompt and **60.6** after 2,184 tokens, prompt 549 tok/s;
+   coherent, correct answers on both. Q2_0 and Swift 1.5 (similar size) should behave the same; IQ3_XXS/IQ3_S
+   (43-50 GB of experts) would need 19-26 GB mirrored, more than 23 GB of RAM allows.
+
 What each merge needed:
 
 - **0.1.25-0.1.27 (2026-09-30):** the first re-migration. The draft layer's prompt pass became upstream's batched

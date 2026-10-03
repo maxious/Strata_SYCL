@@ -157,9 +157,11 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
 
 ### P2 - structural / hygiene
 
-- [ ] **Read-side blockage: oneDNN/MKL calls must not fight SYCL graph capture.** llama.cpp's fattn.cpp notes MKL
+- [x] **Read-side blockage: oneDNN/MKL calls must not fight SYCL graph capture.** llama.cpp's fattn.cpp notes MKL
   GEMM is incompatible with graph capture replay. Our prompt path captures window graphs; a oneDNN/MKL SDPA
-  experiment must check it does not break `STRATA_WARM_GRAPHS`. Document the interaction in INTEL.md.
+  experiment must check it does not break `STRATA_WARM_GRAPHS`. Documented in INTEL.md (the read-side note under
+  the graph-node item): any MKL SDPA A/B must run with `STRATA_WARM_GRAPHS` on AND off so a victory is not an
+  artifact of the SDPA node escaping captured-graph replay.
 - [ ] **Model matrix: load-test the IQ3_S Flash-Next shards** (the two shards above) end to end through
   `sycl/setup_intel.py --model IQ3_S`, and add the per-shard checksum / expected sizes to the parity fixtures so
   `IQ3_S` stops being "not yet load-tested" in this table. Acceptance: an IQ3_S row in INTEL.md's measured table.

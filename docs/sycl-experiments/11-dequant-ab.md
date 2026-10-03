@@ -48,6 +48,28 @@ dequant would be a Strata-side kernel improvement (e.g. wider per-work-item chun
 value), which is a separate, real kernel project - not an A/B port. The llama.cpp dequant lane is closed as
 moot; the "strata-side faster dequant" remains the one open prompt lever, flagged for a future session.
 
+## Follow-up (2026-10-03): the "fewer table lookups" lever is MEASURED NEUTRAL, not the bind
+
+The suggested first lever (exp 11 conclusion: "fewer table lookups per value") was tried on IQ4_NL, the
+largest dequant (39/48 layers): `dq_iq4_nl` was rewritten to build the 8 output values from `iq4nl_lut4` (the
+16-byte `kvalues_iq4nl` codebook held in registers as ALU constants - the same trick `vec_dot_iq4_nl_q8_1`
+already uses for the MMVQ dots) instead of per-value `kvalues_iq4nl[]` global lookups. Output is bit-identical
+(same dequant checksum). Measured with a new `dequant_bench` (sycl/src/kernels/dequant_bench.cpp, filled
+1280x2560 gate/up shape, IQ4_NL, wired into CMake):
+
+| path | GB/s (warm, 600 reps, 3 runs) | checksum |
+|---|---|---|
+| scalar `kvalues_iq4nl[]` lookups | 101 / 122 / 118 | 3fe10f4c7bc3b479 |
+| register-LUT `iq4nl_lut4` | 111 / 154 / 148 | 3fe10f4c7bc3b479 |
+
+The B60's clock spread (the card warms to 110-150 GB/s; a cold first run reads half that) swamps the
+LUT-vs-scalar difference - they are within noise of each other. **The codebook lookup is not the dequant's
+bind**: the 16-byte table is cache-resident, so replacing it with register ALU moves nothing. The rewrite was
+reverted (bit-identical but not faster = added branch risk for no gain); `dequant_bench` stays as the
+measurement instrument for future dequant work. The i-quants' 12-30%-of-bandwidth is the ALU/FMA arithmetic
+(scale multiply + sign mask per value), not a table-lookup skin; a faster dequant must reduce per-value math
+or widen the work, not the LUT path.
+
 ## Validity
 - GB/s from exp-07's measured per-expert dequant ms (0.018-0.087, warm, same shapes), card bandwidth ~608 GB/s
   (the B60's spec-class figure used throughout INTEL.md).
