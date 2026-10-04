@@ -6276,6 +6276,11 @@ int main(int argc, char **argv) try {
             const DecSnap ds0 = dec_snap();
             double dt_run = 0, dt_commit = 0, dt_draft = 0;
             int64_t dec_windows = 0, dec_T = 0;
+            // D2 hold instrumentation: what a window-level pipeline would keep of the chain's prediction for
+            // the next window (full hold = the whole predicted set survives, full miss = the first draft is
+            // already wrong).  Print only - nothing in the loop reads these back.
+            int hold_wins = 0, hold_full = 0, hold_miss = 0, hold_kept = 0, hold_off = 0;
+            int hold_t_wins[9] = {}, hold_t_full[9] = {};
             const int64_t decode_hits0 = drive.d.cache_hits;
             // CS-T: the RAM and file tiers of this request (the mmap source; 0 with the arena)
             const int64_t ram0 = src.ram_reads(), files0 = src.file_reads();
@@ -6335,6 +6340,15 @@ int main(int argc, char **argv) try {
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
+                if (T > 1) {
+                    const int t = T < 9 ? T : 8;
+                    ++hold_wins;
+                    ++hold_t_wins[t];
+                    hold_kept += a;
+                    hold_off += T - 1;
+                    if (a + 1 == T) { ++hold_full; ++hold_t_full[t]; }
+                    if (a == 0) ++hold_miss;
+                }
                 const Clock::time_point tw1 = Clock::now();
                 std::thread adapt_thr;   // the adaptive tier beside the commit and the draft (as in generate)
                 bool adapt_ok = true;
@@ -6434,6 +6448,15 @@ int main(int argc, char **argv) try {
                              (d1.entries - ds0.entries) / (w * L), (d1.hits - ds0.hits) / (w * L), (d1.pcie - ds0.pcie) / (w * L));
                 const std::string pr = ver.profile_report();
                 if (!pr.empty()) std::fprintf(stderr, "strata decode GPU stages (ms/window):%s\n", pr.c_str());
+                if (hold_wins > 0) {
+                    std::fprintf(stderr, "strata decode pipeline hold: %d windows, fully held %d (%.1f%%), full miss %d, "
+                                         "drafts kept %d of %d (%.1f%%); by T (full/windows):",
+                                 hold_wins, hold_full, 100.0 * hold_full / hold_wins, hold_miss, hold_kept, hold_off,
+                                 hold_off > 0 ? 100.0 * hold_kept / hold_off : 0.0);
+                    for (int t = 2; t < 9; ++t)
+                        if (hold_t_wins[t]) std::fprintf(stderr, " T%d %d/%d", t, hold_t_full[t], hold_t_wins[t]);
+                    std::fprintf(stderr, "\n");
+                }
             }
             if (!cancelled) {
                 // a prompt stopped halfway leaves the session somewhere between two chunks: nothing to continue from

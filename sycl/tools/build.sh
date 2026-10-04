@@ -4,7 +4,12 @@ set -uo pipefail
 # oneAPI env init (named setenv.sh on some installs): puts icpx/oneMKL on PATH + LD_LIBRARY_PATH and registers
 # OCL_ICD_FILENAMES, without which the build misses the MKL includes and every run fails with 'No device of
 # requested type available'. Failing non-fatally so a source-only checkout still configures what it can.
+# -u is suspended for the source alone: oneAPI's compiler/.../env/vars.sh reads OCL_ICD_FILENAMES unbound when it
+# is not already in the environment, and an unbound variable in a sourced file takes this whole shell with it -
+# a silent rc=1 with no output, which reads exactly like a clean build if the log is not checked for freshness.
+set +u
 source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 || true
+set -u
 repo=${REPO:-/work/Strata_B70}
 b=${BUILD_DIR:-$repo/build-sycl}
 [ -f $b/build.ninja ] || cmake -S $repo/sycl -B $b -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx \

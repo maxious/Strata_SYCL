@@ -42,6 +42,14 @@ Hardin22/Strata-DualGPU's `docs/DUAL_GPU.md` documents). So an engine-level A/B 
 +-1.5% TG here, and any claim from these three runs would be noise. The load/copy path shows the same: the
 profile fill took 48.1 s with the property and 44.6 s without, the latter matching the pre-change run exactly.
 
+**And the two arms were never even different binaries.** `sycl/tools/build.sh` was failing before it built
+anything (the `set -u` trap exp 35 records: oneAPI's `compiler/.../env/vars.sh:258` reads `OCL_ICD_FILENAMES`
+unbound and takes the shell with it, silently, with the log left stale), so the "property on" and "property off"
+runs both executed the same engine. The three numbers above are therefore run-to-run variance of one binary, not
+an A/B of the property - which is still the number worth keeping (it is the reason F1 could only be decided by
+the bench), but the property's verdict rests on `mmvq_bench`, which *was* rebuilt and whose new read-only
+comparison printed.
+
 ### The bench decides it: 1.000x, bit-identical
 
 `mmvq_bench` now allocates its weights **twice** in one process - once plainly, once with

@@ -486,9 +486,11 @@ these are the ones that pass adds, grouped by the problem they would touch, and 
   (exp 33): NULL - parked.** The toolchain has the extension (macro = 1 on the B60) and the property is
   semantically true of both targets, but it moves nothing: `mmvq_bench` times the same Q6_K wide kernel over a
   plain and a read-only allocation in one process at **1.000x (ncols=4) and 1.001x (ncols=1)** with **0 of 10,240
-  and 0 of 2,560 results different**, and the load path showed no gain either. The engine A/B cannot see an effect
-  of this size - three runs of the same config offered 142/145/148 drafts and accepted 121/120/121, so this
-  decode's run-to-run noise floor is ~+-1.5% TG (a useful number by itself, for every later engine A/B). Reverted
+  and 0 of 2,560 results different**, and the load path showed no gain either. The three-run engine numbers cannot
+  see an effect of this size (and the arms turned out to be the *same* binary - the engine build had silently
+  failed, see exp 35's trap - so they measure run-to-run variance): three runs of one config offered 142/145/148
+  drafts and accepted 121/120/121, so this decode's noise floor is ~+-1.5% TG, a useful number by itself for every
+  later engine A/B. Reverted
   from the engine's allocations; the bench keeps the A/B so a new driver is one command away.
 - [x] **F2 - `sycl_ext_oneapi_prefetch` (experimental): prefetch into a chosen cache level from inside a
   kernel. MEASURED (exp 33): no target in the decode set - closed, not implemented.** Cooperative group
