@@ -42,10 +42,11 @@ struct Pending {
     uint64_t bytes;
     DevicePtr data;
 };
-// exp 27/28 (P0 #2 avenue 1, STRATA_MMVQ_PREUNPACK=1): pre-unpack each Q6_K tensor once so the decode skips the
-// per-token 6-bit unpack/gather (measured ~2x on the dense decode).  Default off; the packed path stays.
+// exp 27/28 (P0 #2 avenue 1): pre-unpack each Q6_K tensor once so the decode skips the per-token 6-bit
+// unpack/gather (measured ~2x on the dense decode).  DEFAULT ON (parity-gated, ~1e-7 vs the packed path);
+// STRATA_MMVQ_PREUNPACK=0 opts out and the packed path takes over.
 bool q6k_preunpack_enabled() {
-    static const bool v = std::getenv("STRATA_MMVQ_PREUNPACK") != nullptr && std::atol(std::getenv("STRATA_MMVQ_PREUNPACK")) != 0;
+    static const bool v = std::getenv("STRATA_MMVQ_PREUNPACK") == nullptr || std::atol(std::getenv("STRATA_MMVQ_PREUNPACK")) != 0;
     return v;
 }
 }

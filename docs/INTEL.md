@@ -330,15 +330,16 @@ and decode with the existing load+dp4a path, at a persistent ~1.30x weight buffe
 memory-reorder (exp 12/22); it removes the ALU unpack, not a memory stall. WIRING is the next step.
 q6k_preunpack_bench stays as the regression measure. docs/sycl-experiments/27.
 
-**Pre-unpacked Q6_K decode, wired opt-in (2026-10-04, B60): exp 28.** `STRATA_MMVQ_PREUNPACK=1` pre-unpacks each Q6_K
-tensor once at load (`native_q6k_preunpack` -> `Q6U` signed-byte blocks with the two fp32 per-16 scales, transcribed
-from dequant.hpp) and routes `native_mmvq(14)` - which is the dense decode (layer.cpp:154), verify, the head,
-shared-expert and PLE - through the no-bit-unpack kernel (`Wide32Q6U` = Q8_0 wide32 with two scales). Correctness:
-`q6k_preunpack_parity` passes all shapes (max-rel ~1e-7 vs the packed oracle, routed path identical). Speed: the
-deployed Q6U decode is 2.05x at ncols=1 (19.1 -> 9.4 us) and 1.58-2.10x across, matching the Q8_0 ceiling. Default
-OFF: with no env the packed path is bit-identical (mmvq_bench unchanged). Persistent ~1.25x weight buffer; the
-pre-unpack runs once at load outside graph capture. End-to-end decode tok/s + output parity over a real model still
-to be confirmed on the runtime/bench box. docs/sycl-experiments/28.
+**Pre-unpacked Q6_K decode, wired DEFAULT ON (2026-10-04, B60): exp 28.** `STRATA_MMVQ_PREUNPACK=0` opts out to the
+packed path; with no env the engine pre-unpacks each Q6_K tensor once at load (`native_q6k_preunpack` -> `Q6U`
+signed-byte blocks with the two fp32 per-16 scales, transcribed from dequant.hpp) and routes `native_mmvq(14)` -
+which is the dense decode (layer.cpp:154), verify, the head, shared-expert and PLE - through the no-bit-unpack
+kernel (`Wide32Q6U` = Q8_0 wide32 with two scales). Correctness: `q6k_preunpack_parity` passes all shapes
+(max-rel ~1e-7 vs the packed oracle, routed path identical). Speed: the deployed Q6U decode is 2.05x at ncols=1
+(19.1 -> 9.4 us) and 1.58-2.10x across, matching the Q8_0 ceiling. The packed path stays available and bit-identical
+(mmvq_bench unchanged) under the opt-out. Persistent ~1.25x weight buffer; the pre-unpack runs once at load outside
+graph capture. End-to-end decode tok/s + output parity over a real model still to be confirmed on the runtime/bench
+box. docs/sycl-experiments/28.
 
 ### Serving the port
 
