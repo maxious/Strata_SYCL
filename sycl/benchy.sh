@@ -20,12 +20,14 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 warm=0
 for a in "$@"; do [ "$a" = --warm ] && warm=1; done
-command -v docker >/dev/null || { echo "benchy: docker is not installed (the engine runs in the oneAPI image)" >&2; exit 2; }
-docker image inspect "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" >/dev/null 2>&1 \
-    || { echo "benchy: the image ${STRATA_SYCL_IMAGE:-strata-sycl-dev} is missing (sycl/tools/Dockerfile)" >&2; exit 2; }
+if [ "${STRATA_NATIVE:-0}" != "1" ]; then
+    command -v docker >/dev/null || { echo "benchy: docker is not installed (the engine runs in the oneAPI image; STRATA_NATIVE=1 runs it directly)" >&2; exit 2; }
+    docker image inspect "${STRATA_SYCL_IMAGE:-strata-sycl-dev}" >/dev/null 2>&1 \
+        || { echo "benchy: the image ${STRATA_SYCL_IMAGE:-strata-sycl-dev} is missing (sycl/tools/Dockerfile)" >&2; exit 2; }
+fi
 if [ "$(id -u)" != 0 ] && [ $warm = 0 ]; then
     echo "benchy v1: re-running with sudo (it drops the page cache before each run; --warm to run without)" >&2
-    exec sudo --preserve-env=STRATA_SYCL_ROOT,STRATA_SYCL_IMAGE,STRATA_SYCL_BIN,ONEAPI_DEVICE_SELECTOR "$0" "$@"
+    exec sudo --preserve-env=STRATA_SYCL_ROOT,STRATA_SYCL_IMAGE,STRATA_SYCL_BIN,ONEAPI_DEVICE_SELECTOR,STRATA_NATIVE,SPLIT_DEVICES,ONEAPI_DEVICE_SELECTOR "$0" "$@"
 fi
 rc=0
 python3 "$here/tools/perf_matrix.py" "$@" || rc=$?
