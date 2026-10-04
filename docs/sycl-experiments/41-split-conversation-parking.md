@@ -76,9 +76,21 @@ buffers to the next park with an `unchanged_tokens` bound, and only the cells pa
 a split that carries **only the primary's** K/V - `conversations.retain(std::move(incoming->kv), ...)` - so **every
 later stage's pages are re-copied in full on each park** (`reused_kv_bytes=0` in every line above).
 
-This is not only a compaction concern: `limit_reuse(first_dirty)` exists for *any* rewrite of a live conversation -
-regenerate, branch, or a future compaction - and under a split all of them pay a full re-copy of stages 1..N. That is
-the top follow-up.
+This is not only a compaction concern: `limit_reuse(first_dirtry)` exists for *any* rewrite of a live conversation -
+regenerate, branch, or a future compaction - and under a split all of them pay a full re-copy of stages 1..N.
+
+**Implemented, and MEASURED NULL.** `StageKvReuse` now rides along in `ConversationKvReuse`, `stage_save` takes its
+stage's retained K/V and passes `unchanged_tokens` down exactly as the primary does, `stage_capture_bytes` does the
+retained-K/V accounting so `make_room` is not charged for pages that are not copied, `retain()` keeps every stage and
+`limit_reuse` clamps them all. On the same two-conversation run it **does not engage**: every park still reports
+`reused_kv_bytes=0`, and the switch times are unchanged (3675.8 / 2182.4 ms against 3684.4 / 2184.9 ms before the
+change - identical within noise). ctest 29/29.
+
+So the plumbing is correctly shaped but inert, and **the reason is not diagnosed**. The candidates, none confirmed:
+the retained image is dropped before the next park (`drop_superseded` and `make_room` run in between),
+`limit_reuse(read_from)` sees a `read_from` of 0 on a conversation switch and zeroes the reuse, or `retain()`'s budget
+check declines it. Until one of those is ruled in or out with a log line, treat per-stage reuse as **not working**,
+and treat the "no new kernel needed" framing for compaction as unproven.
 
 ## Four defects found in this item, all in the new code
 

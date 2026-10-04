@@ -5148,7 +5148,7 @@ int main(int argc, char **argv) try {
                     strata::core::SavedStage st;
                     const bool owns_draft = (i + 1 == stages.size());
                     strata::core::StageKvReuse stage_reuse =
-                        reuse.stages.empty() ? strata::core::StageKvReuse{} : std::move(reuse.stages[i]);
+                        (i < reuse.stages.size()) ? std::move(reuse.stages[i]) : strata::core::StageKvReuse{};
                     if (!strata::core::stage_save(st, view.ids, stages[i]->ss, g,
                                                   owns_draft ? &mtp.kv_state() : nullptr,
                                                   int64_t(view.ids.size()), err,

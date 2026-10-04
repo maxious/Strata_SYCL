@@ -89,9 +89,16 @@ leaves the bottleneck but does not remove it. ExTV's 0.4-0.5 s restores the whol
 
 **Open: one generated token differs** (request 4, position 2: `21966` vs `3575`, the other 11 identical; requests 1-3
 are bit-identical). The obvious rounding explanation is unsupported - request 3 had a different reuse split and
-matched exactly - so it is recorded as undiagnosed. `STRATA_SNAPSHOT_VERIFY=1` is the next step. **Also open:**
-`retain()` still recycles only the primary's K/V, so later stages re-copy in full on each park (`reused_kv_bytes=0`),
-which costs every conversation *rewrite* - regenerate, branch, or a future compaction - not just a switch.
+matched exactly - so it is recorded as undiagnosed. `STRATA_SNAPSHOT_VERIFY=1` is the next step.
+
+**Per-stage K/V reuse: implemented, and MEASURED NULL.** `StageKvReuse` now rides in `ConversationKvReuse`,
+`stage_save` takes its stage's retained K/V and passes `unchanged_tokens` down as the primary does,
+`stage_capture_bytes` does the retained-K/V accounting, and `retain()`/`limit_reuse` cover every stage. It does **not**
+engage: every park still reports `reused_kv_bytes=0` and the switch times are unchanged (3675.8 / 2182.4 ms against
+3684.4 / 2184.9 ms - identical within noise). ctest 29/29. The cause is **undiagnosed**; the candidates are
+`drop_superseded`/`make_room` discarding the retained image, `limit_reuse(read_from)` zeroing it on a switch, or
+`retain()`'s budget check declining it. Until one is ruled out, **treat per-stage reuse as not working** and the
+"no new kernel needed" framing for compaction as unproven.
 
 Four defects lived in this item, all in the new code and all found by reading the engine's own refusal rather than
 by a test: an empty `live.ids` that restored stale pooled rows; the `stage_parts` guard that survived removing the
