@@ -526,7 +526,15 @@ constexpr int TK_PER = 33;
 // thread at 1,024 threads allow only TK_PER.
 constexpr int TK_PER_MAX = 66;
 #else
-constexpr int TK_PER_MAX = TK_PER;
+// SYCL/Xe: the GRF is the same lever as AMD's VGPRs, and Xe2's holds 66 keys per thread at 1,024 threads exactly as
+// RDNA's does - measured on the B60 (exp 37): with the shipped 262,144 --max-context the top-k runs 1.9x (200,000
+// cells) to 2.4x (262,144) faster than the 33-wide fit, and the selected ids are identical to the reference in every
+// case; a capacity of 131,072 or less is unchanged (both builds take the 33-wide kernel there, bit for bit). The
+// width is a template argument, so it is fixed at compile time: -DSTRATA_TK_PER_MAX=<n> overrides it.
+#ifndef STRATA_TK_PER_MAX
+#define STRATA_TK_PER_MAX 66
+#endif
+constexpr int TK_PER_MAX = STRATA_TK_PER_MAX;
 #endif
 
 __dpct_inline__ int block_excl_scan(int v, int *s_warp, int &total) {
@@ -1475,7 +1483,17 @@ void qsa_block_topk(const float* scores, const int32_t* steps, int64_t nq, int64
                          (any_card || topk_active_turing_device());
 #endif
     const int64_t reach = counted && active_blocks < max_blocks ? active_blocks : max_blocks;
-    const int64_t fit = (int64_t) TK_T * (counted ? TK_PER_MAX : TK_PER);
+    // On SYCL there is no "counted" case (the CUDA active-count paths do not apply), so a capacity dispatch would
+    // always measure the fit against TK_PER and TK_PER_MAX would be dead code - the register kernel's reach would
+    // stay at 4 * 1024 * 33 = 135,168 cells whatever the build asked for.  So on this branch the capacity dispatch
+    // uses TK_PER_MAX, which still *is* TK_PER unless the build sets STRATA_TK_PER_MAX: the default dispatch is
+    // unchanged, and a wider register fit becomes reachable instead of unreachable.
+    const int64_t fit = (int64_t) TK_T *
+#if defined(__HIPCC__)
+                        (counted ? TK_PER_MAX : TK_PER);
+#else
+                        (TK_PER_MAX);
+#endif
 #if defined(__HIPCC__)
     constexpr int64_t kRegMinBlocks = 7168;   // gfx1201: below ~28K cells the 1,024-thread kernel's fixed cost loses to the ref
     const bool too_small = counted && reach < kRegMinBlocks;

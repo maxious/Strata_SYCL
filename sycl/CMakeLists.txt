@@ -335,6 +335,11 @@ if(STRATA_SYCL_PARITY)
   add_test(NAME reorder_esimd_bench COMMAND reorder_esimd_bench --selftest)   # the reorder+ESIMD decode correctness gate
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  # the QSA block scorer and top-k alone (qsa_select_bench.cpp), for the long-context top-k fit: the register kernel's
+  # TK_PER_MAX is 33 on the Intel build against HIP's 66, so 262K cells falls to the wide kernel. Needs prefill for
+  # the dispatch the kernels share.
+  add_executable(qsa_select_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/qsa_select_bench.cpp)
+  target_link_libraries(qsa_select_bench PRIVATE strata_kernels strata_prefill)
   # the GDN recurrence alone, its variants selected by env (DPCT1053 lead: the key-head kernel's cp.async)
   add_executable(gdn_rec_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gdn_rec_bench.cpp)
   target_link_libraries(gdn_rec_bench PRIVATE strata_prefill)
