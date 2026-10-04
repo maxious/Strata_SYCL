@@ -300,6 +300,16 @@ numerically identical to oneMKL (~2-6e-7 vs fp64 ref, exact on integer grid) and
 1.76x) but slower at the engine's real per-expert routed `ne` (gu T=16-32: 0.73-0.78x). OneMKL stays. Full numbers
 to the plan's P0b item and the column-major-layout trap: docs/sycl-experiments/24.
 
+**Dense-decode XMX (2026-10-04, B60): dequant-then-XMX-GEMM is a no-win for the decode matvec (README P0b #2/#3, exp
+25).** The Q6_K decode MMVQ is PIPE-bound (exp 23) and leaves the matrix units idle, so the one untried XMX-as-decode
+was measured: a persistent-FP16 copy of the weights + oneMKL dense FP16 GEMM at the decode batch
+(`decode_xmx_gemm_bench`, 2560x2560, ncols 1..8, verified vs fp64 ~1.4e-7). At the engine's real decode ncols it is
+*slower* (ncols=1..4: 39.9/38.0/34.4 us vs native_mmvq 21.4/23.9/29.7, i.e. 0.54-0.86x) - XMX's launch/backend
+overhead dwarfs a single-column matvec - and only crosses over at the fat drafter window (ncols=6: 1.33x, ncols=8:
+2.39x), which costs 2x dense VRAM plus ~12 us materialization. `native_mmvq` stays the decode path; P0 #2's XMX
+avenue is closed, leaving the pipe-arithmetic slimming (P0 #2 avenue 1) and the NCOLS-unroll-to-loop (avenue 2) as
+the open decode levers. `decode_xmx_gemm_bench` stays in the tree. docs/sycl-experiments/25.
+
 ### Serving the port
 
 `serve/server.py --engine strata` runs the SYCL engine unchanged through `sycl/serve/strata-sycl.sh`. That script

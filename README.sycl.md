@@ -189,7 +189,8 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
      symptom of unrolling all columns into one work-item. A small column *loop* instead of a full unroll is the
      thing to try, measured against the curve above; llama.cpp's `Q4_K multi-column MMVQ redundant-work cut`
      (#27062, in the mined list below) is the same shape of change for a sibling type.
-  3. **XMX / oneMKL** - see the library tier below.
+  3. **XMX / oneMKL** - CLOSED by exp 25 (see the library tier below): a persistent-FP16 dense GEMM loses the
+     engine's real decode ncols (0.54-0.86x at ncols=1..4), so XMX stays a prompt-only lever.
   Do not redo: the 384 B spill (exp 21: free) and the cache policy (exp 22: the sweep was null because the option
   never reached the compiler, so it is untested rather than refuted).
 - [~] **GEMM-shaped INT8 prompt dequant path** (the open prompt lever; re-scoped from the parked MMQ item, exp
@@ -246,18 +247,21 @@ Ranked by how directly the library replaces work the port currently hand-writes.
   T=16-32: 0.73-0.78x). OneMKL stays default; oneDNN is linked opt-in (`STRATA_SYCL_DNNL=1`) with `onednn_probe`
   (reports `jit:gemm:any` on the B60) parked for a future large-batch dense path. Full numbers plus the
   column-major-layout trap: docs/sycl-experiments/24.
-- [ ] **oneMKL: the FP16 XMX GEMM is the prompt path already; the untested shape is the decode batch.**
-  `xmx_gemm_bench` measures 30-60 TFLOP/s at prompt shapes and `int8_gemm_bench` measures INT8 at 1.4-2.2x FP16.
-  Nobody has measured a oneMKL GEMM at **M=1..6** - the decode/verify window - against `native_mmvq`. The traffic
-  arithmetic says why it is doubtful: unfused, it must materialize FP16 weights (13.1 MB for 2560x2560) against
-  the packed 5.4 MB, before *every* call, so it loses at M=1 unless the FP16 copy is persistent; with a persistent
-  copy it is 2.4x the weight traffic but moves the work off the pipe (exp 23). One measurement decides it.
-- [ ] **XMX for the dense decode matvec: the untried version is dequant-then-GEMM, not another fused quantized
-  kernel.** Every refuted XMX result here is *fused quantized* (`xmx_gemm_iq` 4-5x slower; the expert dots
-  1.4-3x; `qsa_prompt_attn_xmx` ~3x), while the one that wins is FP16 dense GEMM through oneMKL (30-60 TFLOP/s).
-  Since exp 23 leaves the matrix units idle while the pipe is the bottleneck, "dequantize once into a persistent
-  FP16 copy and GEMM on XMX" is the version worth a single A/B - stated up front with its cost: 2x the dense
-  weights resident in VRAM.
+- [x] **oneMKL: the FP16 XMX GEMM is the prompt path already; the untested shape is the decode batch. MEASURED (exp
+  25): the decode shape is a no-win.** `xmx_gemm_bench` measures 30-60 TFLOP/s at prompt shapes and `int8_gemm_bench`
+  measures INT8 at 1.4-2.2x FP16. The one missing measurement - a oneMKL GEMM at **M=1..6** against `native_mmvq` -
+  is now made (`decode_xmx_gemm_bench`): with a persistent FP16 copy it is *slower at every ncols the engine runs*
+  (ncols=1..4: 39.9/38.0/34.4 us vs native 21.4/23.9/29.7, i.e. 0.54-0.86x) and only crosses over at the fat drafter
+  window (ncols=6: 1.33x, ncols=8: 2.39x), which costs 2x dense VRAM plus the ~12 us materialization. The launch/
+  backend overhead of a single-column XMX GEMM is exactly what P0b #2's traffic arithmetic predicted.
+- [x] **XMX for the dense decode matvec: the untried version is dequant-then-GEMM. MEASURED (exp 25): no-win at the
+  engine's decode ncols.** Every refuted XMX result here is *fused quantized* (`xmx_gemm_iq` 4-5x slower; the expert
+  dots 1.4-3x; `qsa_prompt_attn_xmx` ~3x), while the one that wins is FP16 dense GEMM through oneMKL (30-60
+  TFLOP/s). The one candidate exp 23 motivated - "dequantize once into a persistent FP16 copy and GEMM on XMX" -
+  closes poorly: at the engine's real decode call (ncols=1 every layer, ncols=T up to 6 in the drafter) the GEMM is
+  1.2-1.9x slower (ncols=1..4), and its fat-window cross-over (ncols>=6) does not repay the 2x dense-VRAM residency
+  (`decode_xmx_gemm_bench`, exp 25). The matrix units were idle because XMX's backend cost only repays at
+  GEMM-shaped batch, which decode is not. Parked with the other fused-XMX losers.
 
 ### P1 - attention A/Bs and fusion (mostly gated on P0, or low measured headroom)
 
@@ -323,6 +327,7 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | [22](sycl-experiments/22-q6k-mmvq-shape-curves.md) | Q6_K MMVQ shape curves | cols 1/2/4/6/8 = 19.1/21.5/26.2/35.9/55.4 us (281 -> 97 GB/s); rows 2560 -> 20480 = 205.7 -> 205.3 GB/s; 256 GRF identical at every point; a `-cl-load-cache-default` sweep was **null** (the option never reached the compiler) | not bandwidth- or parallelism-bound; the cache policy is untested, not refuted |
 | [23](sycl-experiments/23-q6k-mmvq-stall-reasons.md) | Q6_K MMVQ stall reasons | 8,061 instances, 27 us average (matches the bench); stalls **Pipe 16.8%, Send 0.0%**, Dist or Acc 2.1% | **PIPE-bound, not memory-bound** - the lever is arithmetic per weight byte |
 | [24](sycl-experiments/24-onednn-dense-f16-ab.md) | oneDNN dense-F16 A/B (reframed P0b #1) | fusion blocked: oneDNN's `Dequantize` reads s8/u8, not ggml blocks; dense F16 is numerics-identical to oneMKL, faster only at large batch (gu T>=64, 1.76x), slower where the engine's per-expert routed `ne` lives (T=16-32, 0.73-0.78x) | oneMKL default; oneDNN linked opt-in `STRATA_SYCL_DNNL=1` with `onednn_probe`+`onednn_gemm_bench` |
+| [25](sycl-experiments/25-decode-xmx-gemm.md) | oneMKL dense-FP16 GEMM at decode batch vs native_mmvq (P0b #2+#3) | GEMM loses the engine's real decode ncols (ncols=1..4: 0.54-0.86x) and only crosses at the fat drafter window (ncols=6: 1.33x, ncols=8: 2.39x); persistent-FP16 costs 2x dense VRAM + ~12 us materialization | dequant-then-XMX-GEMM is a no-win for decode; `native_mmvq` stays; P0b #2+#3 closed, P0 #2 XMX avenue closed |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)
@@ -354,6 +359,12 @@ backend), bf16/fp16 op type widening, clean-dup/revert churn, CI/build fixes.
 ### Not on the list (tried and parked - do not reopen without new evidence)
 
 - Fused **dequant + XMX GEMM** (`xmx_gemm_iq`): 4-5x slower than dequant + oneMKL. INTEL.md: parked, opt-in.
+- **Dequant-then-XMX dense GEMM for the decode matvec** (exp 25, `decode_xmx_gemm_bench`): with a persistent-FP16
+  weight copy, oneMKL's dense GEMM is *slower* than `native_mmvq` at the engine's real decode ncols (0.54-0.86x at
+  ncols=1..4) and only crosses over at MTP/fat window ncols>=6, which costs 2x dense VRAM + ~12 us materialization.
+  The matrix units are idle on decode because XMX's backend cost only repays at GEMM-shaped batch. INTEL.md: the
+  decode lever is P0 #2's pipe-arithmetic slimming and the NCOLS-unroll-to-loop, not a GEMM.
+
 - **XMX for per-token decode (expert dots, INT8 DPAS)**: three `joint_matrix` versions were 1.4x and 2-3x slower
   than the dp4a path, one hung the GPU. INTEL.md: parked. llama.cpp's own design (ESIMD reorder for decode,
   XMX only for fat GEMM/SDPA) agrees; only revisit if a weight reorder gives decode a big enough target.
