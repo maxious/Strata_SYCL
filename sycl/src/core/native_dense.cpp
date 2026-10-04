@@ -216,15 +216,17 @@ bool NativeDense::load(const std::vector<std::string> &shards,
             item.ref->native_type = item.type;
             item.ref->native_q8_1 = scratch.get();
             weights_.push_back(item.data.release());
-            if (preunpack && item.type == 14) {   // Q6_K: one-time Q6K->Q6U transform + register the route
+            if (preunpack && (item.type == 14 || item.type == 13)) {   // Q6_K / Q5_K: one-time pre-unpack + register
                 void* u = nullptr;
-                const uint64_t ubytes = strata::kernels::native_mmvq_q6k_preunpack_bytes((int) item.ref->ne0, (int) item.ref->ne1);
+                const int ni = (int) item.ref->ne0, no = (int) item.ref->ne1;
+                const uint64_t ubytes = item.type == 14 ? strata::kernels::native_mmvq_q6k_preunpack_bytes(ni, no)
+                                                        : strata::kernels::native_mmvq_q5k_preunpack_bytes(ni, no);
                 auto st = DPCT_CHECK_ERROR(u = (void*) sycl::malloc_device(ubytes, dpct::get_in_order_queue()));
                 if (st == 0 && u) {
-                    strata::kernels::native_q6k_preunpack(item.ref->native_data, u, (int) item.ref->ne0, (int) item.ref->ne1,
-                                                          &dpct::get_in_order_queue());
+                    if (item.type == 14) strata::kernels::native_q6k_preunpack(item.ref->native_data, u, ni, no, &dpct::get_in_order_queue());
+                    else strata::kernels::native_q5k_preunpack(item.ref->native_data, u, ni, no, &dpct::get_in_order_queue());
                     dpct::get_in_order_queue().wait();   // finished before any decode uses it
-                    strata::kernels::native_mmvq_register_q6k_preunpack(item.ref->native_data, u);
+                    strata::kernels::native_mmvq_register_q6k_preunpack(item.ref->native_data, u);   // shared dense-K-quant registry
                     weights_.push_back(u);               // keep alive for the lifetime of this NativeDense
                     preunpacked_any = true;
                 }

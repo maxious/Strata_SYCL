@@ -54,6 +54,11 @@ constexpr int VDR = 2;
 constexpr int WARPS = 4;
 constexpr int WARP = 32;
 constexpr int QUANT_THREADS = 256;
+// shared dense-K-quant pre-unpack registry (exp 28/30): packed device ptr -> pre-unpacked device ptr.
+// Registered once at weight load (single-threaded), read per decode call.  Each callsite (native_q6_k_mmvq /
+// native_q5_k_mmvq) routes to its own decode kernel when its packed pointer is found and routing is enabled.
+std::unordered_map<const void*, const void*> g_q6k_preunpack;
+int g_q6k_preunpack_enabled = 0;
 
 struct Q5KBlock {
     sycl::half2 dm;
@@ -2118,6 +2123,14 @@ void native_q5_k_mmvq(const void* weights, const void* x_q8_1, float* y,
     validate_pointer(x_q8_1);
     validate_pointer(y);
     validate_stream(stream);
+    // exp 30 (P0 #5): a registered pre-unpacked Q5U buffer decodes through the no-bit-unpack path.
+    if (g_q6k_preunpack_enabled && ncols >= 1 && ncols <= 8) {
+        auto it = g_q6k_preunpack.find(weights);
+        if (it != g_q6k_preunpack.end() && n_in % 32 == 0) {
+            native_mmvq_q5k_unpacked(it->second, x_q8_1, y, n_in, n_out, ncols, stream);
+            return;
+        }
+    }
     if (try_wide<WideQ5K>(weights, x_q8_1, y, n_in, n_out, ncols, stream)) { launch_check(); return; }
     if (ncols > 1) {
         launch_multi<Q5KTraits>(weights, x_q8_1, y, n_in, n_out, ncols, stream);
@@ -2500,12 +2513,6 @@ void native_q4_k_f32(const void* weights, const float* x, void* scratch_q8_1,
 // ISA showed is the pipe cost (dp4a is 32 of 985 instr on the same ALU int pipe as the bfn/xor/mov unpack).  The
 // unpacked Q6U blocks are decoded by the identical load+dp4a path the Q8_0 wide32 kernel uses (Wide32Q6U mirrors
 // Wide32Q8 with the two per-16 scales Q6_K keeps), so the decode land at the measured ~2x ceiling.
-namespace {
-    // register once at weight load (single-threaded), read per decode call.
-    std::unordered_map<const void*, const void*> g_q6k_preunpack;
-    int g_q6k_preunpack_enabled = 0;
-}
-
 void native_mmvq_set_q6k_preunpack(bool enabled) { g_q6k_preunpack_enabled = enabled ? 1 : 0; }
 void native_mmvq_register_q6k_preunpack(const void* packed, const void* unpacked) { g_q6k_preunpack[packed] = unpacked; }
 void native_mmvq_unregister_q6k_preunpack(const void* packed) { g_q6k_preunpack.erase(packed); }
@@ -2584,6 +2591,91 @@ void native_mmvq_q6k_unpacked(const void* weights, const void* x_q8_1, float* y,
         case 6: launch_q6k_unpacked<6>(weights, x_q8_1, y, n_in, n_out, s); return;
         case 7: launch_q6k_unpacked<7>(weights, x_q8_1, y, n_in, n_out, s); return;
         default: launch_q6k_unpacked<8>(weights, x_q8_1, y, n_in, n_out, s); return;
+    }
+}
+
+// ---------------------------------------------------------------------- exp 30 (P0 #5)
+// pre-unpacked Q5_K decode: Q5_K is the min-offset analog of Q6_K (value = d*sc*code5 - mn*m, per 32-group).
+// Pre-unpacking folds d*sc and mn*m into Q5UBlock{dsc,mn1,qs[32]} once, and the decode is native
+// q5_q8_dot_impl minus the per-element 5-bit gather (the vl/vh/0x10101010 build), keeping the same dp4a count.
+std::size_t native_mmvq_q5k_preunpack_bytes(int n_in, int n_out) {
+    return (std::size_t) n_out * (n_in / 32) * sizeof(Q5UBlock);
+}
+void native_q5k_preunpack_kernel(const Q5KBlock* __restrict__ w, Q5UBlock* __restrict__ out, int n_blocks) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<1>();
+    const int blk = int(item.get_global_id(0));
+    if (blk >= n_blocks) return;
+    const Q5KBlock* b = w + blk;
+    Q5UBlock* ob = out + (std::size_t) blk * 8;                       // 8 x 32-groups per 256 super-block
+    const float d = (float) b->dm.x(), mn = (float) b->dm.y();
+    const uint8_t* ql = b->qs; const uint8_t* qh = b->qh;
+#pragma unroll
+    for (int g = 0; g < 8; ++g) {                                     // per 32-group
+        const int j = g;
+        uint8_t sc, m;                                                // get_scale_min_k4(g, scales, sc, m), inlined
+        if (j < 4) { sc = b->scales[j] & 63; m = b->scales[j + 4] & 63; }
+        else { sc = (uint8_t)(b->scales[j + 4] & 0x0F) | (uint8_t)((b->scales[j - 4] >> 6) << 4);
+               m  = (uint8_t)(b->scales[j + 4] >> 4) | (uint8_t)((b->scales[j]     >> 6) << 4); }
+        Q5UBlock o; o.dsc = d * (float) sc; o.mn1 = mn * (float) m;
+#pragma unroll
+        for (int i = 0; i < 32; ++i) {
+            const int e = 32 * g + i;
+            const int jj = e / 64, l = e % 32;                        // jj: 64-group, l: position in 32-run
+            const bool lo = (e % 64) < 32;
+            const int nibble = lo ? (ql[32 * jj + l] & 0x0F) : (ql[32 * jj + l] >> 4);
+            const int bit = lo ? (1 << (2 * jj)) : (2 << (2 * jj));
+            o.qs[i] = (int8_t) (nibble + ((qh[l] & bit) ? 16 : 0));
+        }
+        ob[g] = o;
+    }
+}
+void native_q5k_preunpack(const void* weights, void* unpacked, int n_in, int n_out, void* stream) {
+    const auto s = strata::q_of(stream);
+    const int n_blocks = n_out * (n_in / 256);
+    if (n_blocks <= 0) return;
+    const std::size_t local = 128, global = (std::size_t) ((n_blocks + (int) local - 1) / (int) local) * local;
+    s->parallel_for<dpct_kernel_name<class native_q5k_preunpack_kernel_dpct>>(
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(local)),
+        [=](sycl::nd_item<1> it) { native_q5k_preunpack_kernel((const Q5KBlock*) weights, (Q5UBlock*) unpacked, n_blocks); });
+}
+
+// reads of the activation 16-byte half; a signed dot with qs (0..31) and a ones-dot give the d*code - m affine term.
+struct Wide32Q5U {
+    using Block = Q5UBlock;
+    static constexpr int LPB = 2;
+    struct W { sycl::int4 q; float dsc, mn1; int half; };
+    static W load(const Block* b, int l) {
+        W r; r.half = l; r.q = load16_a2(b->qs + 16 * l); r.dsc = b->dsc; r.mn1 = b->mn1; return r;
+    }
+    static float apply(const W& r, const Q81Block* xb) {
+        const sycl::int4 u = ld_q8_16(xb, r.half);
+        const sycl::int4 ones = sycl::int4(0x01010101, 0x01010101, 0x01010101, 0x01010101);
+        const int dot = dp4a4(r.q, u, 0);
+        const int sdsum = dp4a4(ones, u, 0);
+        return (float) xb->ds[0] * ((float) dot * r.dsc - (float) sdsum * r.mn1);
+    }
+};
+template <int NCOLS>
+void launch_q5k_unpacked(const void* w, const void* xq, float* y, int n_in, int n_out, dpct::queue_ptr s) {
+    const unsigned blocks = unsigned((std::size_t) n_out + WARPS - 1) / WARPS;
+    s->parallel_for<dpct_kernel_name<class native_mmvq_q5k_unpacked, dpct_kernel_scalar<NCOLS>>>(
+        sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]]
+            { native_mmvq_wide32_kernel<Wide32Q5U, NCOLS>((const Q5UBlock*) w, (const Q81Block*) xq, y, n_in, n_out); });
+}
+void native_mmvq_q5k_unpacked(const void* weights, const void* x_q8_1, float* y,
+                              int n_in, int n_out, int ncols, void* stream) {
+    if (ncols < 1 || ncols > 8 || n_in % 32 != 0) return;
+    const auto s = strata::q_of(stream);
+    switch (ncols) {
+        case 1: launch_q5k_unpacked<1>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 2: launch_q5k_unpacked<2>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 3: launch_q5k_unpacked<3>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 4: launch_q5k_unpacked<4>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 5: launch_q5k_unpacked<5>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 6: launch_q5k_unpacked<6>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 7: launch_q5k_unpacked<7>(weights, x_q8_1, y, n_in, n_out, s); return;
+        default: launch_q5k_unpacked<8>(weights, x_q8_1, y, n_in, n_out, s); return;
     }
 }
 

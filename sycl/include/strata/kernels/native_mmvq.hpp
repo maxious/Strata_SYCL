@@ -131,10 +131,25 @@ void native_q6k_preunpack(const void* weights, void* unpacked, int n_in, int n_o
 void native_mmvq_q6k_unpacked(const void* weights, const void* x_q8_1, float* y,
                               int n_in, int n_out, int ncols, void* stream);
 // route native_mmvq(14)/native_q6_k_mmvq through the pre-unpacked decode when the packed
-// pointer is registered and the feature is enabled (opt-in; STRATA_MMVQ_PREUNPACK=1).
+// pointer is registered and the feature is enabled.  Shared registry for the dense K-quants
+// (each callsite checks its own packed pointer, so one map serves Q6_K and Q5_K).  Default on
+// via native_dense; STRATA_MMVQ_PREUNPACK=0 opts out.
 void native_mmvq_set_q6k_preunpack(bool enabled);
 void native_mmvq_register_q6k_preunpack(const void* packed, const void* unpacked);
 void native_mmvq_unregister_q6k_preunpack(const void* packed);
 void native_mmvq_clear_q6k_preunpack();
+
+// exp 30 (P0 #5): pre-unpacked Q5_K (ggml_type 13), the min-offset analog of Q6_K.  One Q5UBlock
+// per 32 elements: dsc = d*sc[g], mn1 = mn*m[g] (fp32, the two halves of the d*val - m affine
+// form), qs[32] = the unsigned 5-bit code (0..31) per element.  The decode is native
+// q5_q8_dot_impl WITHOUT the per-element 5-bit gather: per half, dsc*dp4a(qs,u) - mn1*ones(u).
+struct Q5UBlock {
+    float dsc, mn1;
+    int8_t qs[32];
+};
+std::size_t native_mmvq_q5k_preunpack_bytes(int n_in, int n_out);
+void native_q5k_preunpack(const void* weights, void* unpacked, int n_in, int n_out, void* stream);
+void native_mmvq_q5k_unpacked(const void* weights, const void* x_q8_1, float* y,
+                              int n_in, int n_out, int ncols, void* stream);
 
 } // namespace strata::kernels

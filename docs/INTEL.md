@@ -341,6 +341,18 @@ kernel (`Wide32Q6U` = Q8_0 wide32 with two scales). Correctness: `q6k_preunpack_
 graph capture. End-to-end decode tok/s + output parity over a real model still to be confirmed on the runtime/bench
 box. docs/sycl-experiments/28.
 
+**Pre-unpacked Q5_K decode, default-on (2026-10-04, B60): P0 #5 (exp 30).** A mass-ulw analysis counted the real
+GGUF shards: the Flash-Next dense decode is Q6_K x128 (shipped), Q4_K x47, Q5_K x35, IQ4_NL x47, IQ4_XS x42, Q8_0 x1;
+Q3_K/Q2_K/Q2_0 only in the non-target Qwen-27B/gemma shards. Implemented Q5_K: pre-unpack to `Q5U {dsc=d*sc, mn1=mn*m,
+code5 qs[32]}` (min-offset analog of Q6_K) once, route native_mmvq(13) through the no-bit-unpack decode via the
+shared dense-K-quant registry, default-on like Q6_K. Correctness: q5k_preunpack_parity PASSes all shapes (~1e-7).
+Speed: 1.29x at ncols=1 (15.6 -> 12.1 us), 1.12-1.29x across (smaller than Q6_K's ~2x: 5-bit unpack removes less
+ALU and the min ones-dp4a is retained). Parked: Q4_K (cheap nibble unpack + irreducible min ones-dp4a, ~1.2x best),
+Q3_K (~2x-plausible but 0 Flash-Next tensors), Q2_0/IQ4_XS (low value / LUT-bound), Q8_0 (already byte wide32). Key
+trap: Q81Block.ds[1] is the FLOAT sum, NOT the int8-code sum the m*sum(a) term needs - use a ones-dp4a. Analysis
+reports + a GGUF dense-usage counter: sycl/bench/reports/p05/ + sycl/tools/gguf_count_dense_usage.py.
+docs/sycl-experiments/30.
+
 ### Serving the port
 
 `serve/server.py --engine strata` runs the SYCL engine unchanged through `sycl/serve/strata-sycl.sh`. That script

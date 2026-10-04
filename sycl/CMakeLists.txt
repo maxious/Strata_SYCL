@@ -312,6 +312,13 @@ if(STRATA_SYCL_PARITY)
   add_executable(q6k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_parity.cpp)
   target_link_libraries(q6k_preunpack_parity PRIVATE strata_kernels)
   add_test(NAME q6k_preunpack_parity COMMAND q6k_preunpack_parity)
+  # the Q5K->Q5U pre-unpack + routed-decode correctness gate (P0 #5, exp 30): the min-offset no-bit-unpack decode
+  # must reproduce the packed Q5_K path within fp32 rounding; and its bench.
+  add_executable(q5k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q5k_preunpack_parity.cpp)
+  target_link_libraries(q5k_preunpack_parity PRIVATE strata_kernels)
+  add_test(NAME q5k_preunpack_parity COMMAND q5k_preunpack_parity)
+  add_executable(q5k_preunpack_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q5k_preunpack_bench.cpp)
+  target_link_libraries(q5k_preunpack_bench PRIVATE strata_kernels)
   # the P0b #2/#3 A/B: oneMKL dense-FP16 GEMM on a persistent weight copy vs native_mmvq at the decode batch (ncols
   # 1..8). Links oneMKL BLAS directly (like onednn_gemm_bench) so building the bench never pulls the whole engine.
   find_package(MKL CONFIG QUIET)
