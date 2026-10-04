@@ -25,96 +25,132 @@ Two rules that every item inherits:
 
 ---
 
-## 1. Confirm the Q6_K/Q5_K pre-unpack end to end - a missing measurement, not an idea
+## 1. The Q6_K/Q5_K pre-unpack end to end - MEASURED (exp 36): DEFAULT OFF, it costs 12.4% of decode
 
-The byte pre-unpack is **wired and default on** (`STRATA_MMVQ_PREUNPACK=0` opts out): Q6_K goes to `Q6U`
-signed-byte blocks, Q5_K to `Q5U {dsc, mn1, qs[32]}`, both loaded once at weight load and decoded through the
-no-bit-unpack kernel. Parity is `~1e-7` (`q6k_preunpack_parity`, `q5k_preunpack_parity`, all shapes PASS) and the
-kernel-level numbers are real: **2.05x at ncols=1** for Q6_K (19.1 -> 9.3 us), 1.58-2.10x across the curve, 1.29x
-for Q5_K. What is missing is the engine-level confirmation on a real model, which is why the item is still open.
+**Done, and it reversed the default.** The byte pre-unpack (Q6_K -> `Q6U` signed-byte blocks, Q5_K -> `Q5U`,
+loaded once at weight load) is faster in isolation on every shape the model actually decodes - 1.04-2.27x at
+ncols=1..8, verified against the Coder IQ1_M's real dense shapes, not just the bench's square one. End to end it is a
+**12.4% decode loss** (42.2 -> 38.0 tok/s, three alternating reps, token-identical output).
 
-It matters because this kernel is **~25% of decode GPU time** (`native_mmvq_q6k_wide_a2`, 3.713 s of 15.141 s on a
-256-token decode, exp 20) and it is **pipe-bound, not memory-bound** (exp 23: Pipe 16.8%, Send 0.0%; exp 22: 281 GB/s
-of a 608 GB/s card, flat from 1 to 20,480 rows). So the 2x is arithmetic removed per weight byte, and it should
-survive into the engine.
+The mechanism is memory, not arithmetic: the pre-unpacked copies are **+163 matrices / 2.53 GiB** of dense VRAM, and
+on a 32 GB card that is **1,300 expert-cache slots** (9,478 -> 8,152, RAM mirror 5.37 -> 7.90 GiB), which the decode
+streams over PCIe every token. At **matched slot counts** the arms are within 1% (38.4/38.4 packed vs 38.0/38.0
+pre-unpacked), so the kernel is worth what the bench says and the regression was the cache all along.
 
-**Do**: two runs each of the real-model decode, `--layer-split` off and on, `STRATA_MMVQ_PREUNPACK=1/0`. Keep
-`q6k_preunpack_bench` / `q5k_preunpack_bench` as the regression measure. **Win looks like**: TG up by roughly the
-kernel ratio, output token-identical, an INTEL.md speed-table row and a checked box in section 2 of the archive.
+`native_dense.cpp` now defaults it **off**; `STRATA_MMVQ_PREUNPACK=1` opts in, where a card whose expert cache is not
+the binding constraint may still win. The route that could make it pay on a 32 GB card is shrinking the block: the
+scales are fp32 in a 40-byte block, so bf16/fp16 scales would halve the 2.53 GiB at the same ~1e-7 parity. Full
+numbers, the slot-matched arms and the new traps (`--expert-cache` is a hint, not a pin; the Q2_0 dual auto-split
+picks K=22 or K=24 between runs; GPU Hotspots reports 0% GPU time on a one-shot engine run) are in
+[docs/sycl-experiments/36-preunpack-end-to-end.md](docs/sycl-experiments/36-preunpack-end-to-end.md).
 
-## 2. The QSA top-k at long context (archive D3 + E3/F6) - a shipped capability that degrades on Intel
+## 2. The QSA top-k at long context (archive D3 + E3/F6) - DONE (exp 37): SHIPPED, `TK_PER_MAX = 66` on SYCL
 
-The register top-k holds `4 * 1024 * TK_PER` cells, and `TK_PER_MAX` is **66 under HIP (270,336 cells) but 33 on
-every other build (135,168 cells)**. So the 262K context we ship stays register-resident on AMD and falls to the
-wide kernel on the Intel card - every key re-read from memory on each radix pass, one block per query, the rest of
-the card idle. The CUDA side replaced that shape with a block cluster: **200 -> 22 us per call at 262K**
-(`decode_cluster_parity --bench`; 58 -> 18 at 128K), and ExTV's patch 01 is upstream's PR #603 - the same fix
-arrived at independently for NVIDIA's 64-register fit.
+Xe2's GRF holds 66 keys per thread at 1,024 threads exactly as RDNA's VGPRs do, and the port was leaving that on
+the table: `TK_PER_MAX` was 33 on every non-HIP build, so the shipped 262,144 context fell off the register kernel
+onto the wide one (every key re-read per radix pass). **Now 66 on the SYCL branch**, with the shipped capacity:
 
-`sycl_ext_codeplay_cuda_cluster_group` is CUDA-only, so the Intel routes are the register/GRF knobs
-(`sycl_ext_intel_maximum_registers`, `sycl_ext_intel_grf_size`) and `sycl_ext_oneapi_private_alloca` for a
-run-time-sized private array. The port uses none of them.
+| ctx (cells), capacity 262,144 | 33 (was) | 66 (now) | speedup | ids identical |
+|---:|---:|---:|---:|---|
+| 135,168 | 0.257 ms | **0.138 ms** | 1.86x | 1/1 |
+| 200,000 | 0.353 ms | **0.177 ms** | 1.99x | 1/1 |
+| 262,144 | 0.541 ms | **0.224 ms** | 2.42x | 1/1 |
 
-**Do**: `sycl/src/kernels/qsa_select_bench.cpp` exists and is **not yet a CMake target** - build it first. Measure
-the top-k at 135K / 200K / 262K cells on the B60, then retry with the GRF/register hints and `private_alloca` before
-writing a new kernel. **Only shows on a real prompt past ~135K cells that keeps generating** - exp 32's synthetic
-long prompts stop early, so use a real document.
+A deployment sized to its context (capacity = ctx) is **unchanged** at 65,536 and 131,072 cells (0.059/0.117 ms,
+identical), because both widths take the 33-wide kernel there; 135,168 is exactly the old cliff edge. Compile flags
+were verified identical apart from the define. `qsa_select_bench` is now a CMake target, `private_alloca` was not
+needed, and `-DSTRATA_TK_PER_MAX=<n>` still overrides. ctest 29/29.
 
-## 3. Conversation parking on a split (archive D5) - the split's largest user-visible cost
+Two dead-code traps are in the write-up: `-DSTRATA_TK_PER_MAX=66` changed nothing until the dispatch's `fit` was
+fixed (`fit = TK_T * (counted ? TK_PER_MAX : TK_PER)`, and `counted` is the CUDA active-count path, always false on
+SYCL - an A/B that returns exactly 1.00x everywhere means the knob is not wired), and the bench's *capacity*
+argument drives the dispatch, not the context. Full numbers:
+[docs/sycl-experiments/37-qsa-topk-tk-per-max.md](docs/sycl-experiments/37-qsa-topk-tk-per-max.md).
 
-Ours refuses: "layer-split parking is not supported" (`sycl/src/core/conversation_state.cpp`). ExTV's patch 07
-parks the main card's session and copies back only the stage's layers, only the cells written since the last copy:
-switching between two conversations (30K and 15K) went from **20-48 s to 0.4-0.5 s**, with 0.8-1.7 GB snapshots
-per 30K tokens. It needs no new kernel - only the state copy the port already does for a stage.
+**Still owed**: the end-to-end confirmation on a real prompt past ~135K cells that keeps generating - exp 32's
+synthetic long prompts stop early.
 
-**Do**: two parked conversations alternating on 2x B60, switch timed with the conversation cache on and off.
-**Win looks like**: switch time in seconds, cache hit rate unchanged, output token-identical.
+## 3. Conversation parking on a split - MEASURED (exp 41): IMPLEMENTED, a switch is 1.9x-2.9x faster
 
-## 4. Do the two stages overlap on adjacent prompt chunks? (archive D4) - first answer is free
+The refusal is gone: a split now parks one image per stage (`SavedStage`), each captured and restored on the card
+that owns those layers, with the drafter's image on the last stage. Two prefix-disjoint 4,000-token conversations,
+alternating on 2x B60 (`--conversation-cache-mib 0` vs `8192`, split auto -> K=22):
 
-Decode parity on 2x B60 is explained (the cards alternate a window at a time; exp 34 shows the window is 89% device
-time with no host gap to remove). The prompt path has the same one-chunk-at-a-time shape, so adjacent chunks could
-overlap exactly as the windows do.
+| request | no parking | with parking | |
+|---|---:|---:|---|
+| A, 1st visit | 7367.6 ms | 7396.6 ms | full prefill either way |
+| B, 1st visit | 6478.7 ms | 6627.6 ms | full prefill either way |
+| **A, return** | 7021.7 ms | **3684.4 ms** | 2185 tokens reused -> **1.91x** |
+| **B, return** | 6435.6 ms | **2184.9 ms** | 3278 tokens reused -> **2.95x** |
 
-**Do**: read `STRATA_DECODE_TIMING` / `--stats` over a prompt and look for stage 0 idle while stage 1 runs. **A win
-looks like**: prompt tok/s toward 1.8-2x of single (445 -> ~800 at 2,185), which is also the 256K prompt's 322.8 s
-TTFT. If the stages already overlap, the 1.29x *is* the prompt's own two-stage dependency - record that number and
-close the item.
+Park 108-141 ms (298-417 MB snapshot), restore **32-36 ms**. Not the ~200x the raw numbers suggest, because a
+restore only brought back a *checkpoint prefix* (2,185 / 3,278 of 4,000 tokens) and the rest was re-read - the copy
+leaves the bottleneck but does not remove it. ExTV's 0.4-0.5 s restores the whole conversation, not a prefix.
 
-## 5. `sycl_ext_oneapi_kernel_args_restrict` (archive F5) - one flag, broad codegen
+**Open: one generated token differs** (request 4, position 2: `21966` vs `3575`, the other 11 identical; requests 1-3
+are bit-identical). The obvious rounding explanation is unsupported - request 3 had a different reuse split and
+matched exactly - so it is recorded as undiagnosed. `STRATA_SNAPSHOT_VERIFY=1` is the next step. **Also open:**
+`retain()` still recycles only the primary's K/V, so later stages re-copy in full on each park (`reused_kv_bytes=0`),
+which costs every conversation *rewrite* - regenerate, branch, or a future compaction - not just a switch.
 
-A supported extension that puts `__restrict__` on every kernel argument in the translation unit. The port sets
-restrict by hand only where it thought about it. No source change per kernel.
+Four defects lived in this item, all in the new code and all found by reading the engine's own refusal rather than
+by a test: an empty `live.ids` that restored stale pooled rows; the `stage_parts` guard that survived removing the
+refusal; stripping `stage_parts` to satisfy it, which broke the checkpoint restore (SIGSEGV *after* a 30.9 ms
+restore); and a test that measured a truncation rather than a switch. Numbers and traps:
+[docs/sycl-experiments/41-split-conversation-parking.md](docs/sycl-experiments/41-split-conversation-parking.md).
 
-**Do**: build with it and A/B `mmvq_bench` at ncols=1..4 first, then the engine decode at 2,185 tokens. A codegen
-change this broad wants the bench, not just the engine. Confirm the option reached the compiler by re-dumping the
-IGC ISA - IGC ignores an unknown option silently (the exp 22 lesson).
+## 4. Adjacent prompt-chunk overlap on 2x B60 - MEASURED (exp 38): CLOSED, the stages already overlap
 
-## 6. Peer access for the peer expert tier (archive E1) - not for the layer hand-off
+**1.25x of concurrency, measured.** On the 8,000-token prompt the per-stage GPU timelines sum to **18.66 s against a
+14.94 s wall** - the chunks are already software-pipelined across the two stages (`prefill.cpp` runs the next stage's
+chunk on a `std::future` while this one runs). The missing 0.75x is not idle time waiting for a neighbour: stage 1
+reads stage 0's residual from the mapped hand-off buffer, so the wall is bounded by the same dependent chain exp 34
+found on the decode side. **There is no adjacent-chunk overlap left to build.**
 
-The port has **zero** `ext_oneapi_can_access_peer` / `enable_peer_access` calls. Two candidate payoffs, and they are
-not equal:
+Two side findings worth keeping. The prompt's real bound is the **expert stream**, not the split: two chunks show
+wall ~2x their GPU timeline, which is `--stream-experts` pulling blobs over PCIe plus host grouping. And the shipped
+`TK_PER_MAX=66` is **neutral on the prompt** (535.5 vs 543.1 tok/s for 33 - 1.4%, inside the noise floor), which is the
+regression check exp 37 owed.
 
-- The layer-split hand-off is **34 us per window** against a 53.8 ms window - not worth it (exp 03).
-- The **peer expert tier** (`--peer-device`, which cannot be combined with `--layer-split`) copies every expert
-  batch through pinned host buffers (`sycl/src/core/remote_experts.cpp`, "small enough to copy as one pinned buffer
-  per layer"). Real expert bytes cross the host every window, and `p2p_bench` measures today's bounce at only
-  **7.7-8.6 GB/s**. This is the case `enable_peer_access` exists for.
+**The trap that cost the most time**: with `--prefill 4096` a 2,185-token prompt is a **single chunk**, so D4's premise
+does not exist at that size, and the phase shares are garbage - a first probe put 96.7% of stage 1's timeline in one
+`qsa select` interval. At 8,000 tokens (7 chunk-timelines) select is 2.7-4.1%. Any probe of this item needs a prompt
+several times the chunk size. Write-up:
+[docs/sycl-experiments/38-prompt-stage-overlap.md](docs/sycl-experiments/38-prompt-stage-overlap.md).
 
-**Do**: on 2x B60, `can_access_peer(dev1, access_supported)`, then a 256 KiB-1 MiB device-to-device copy against
-the current bounce. Note the Level Zero caveat the reference e2e test names:
-`SYCL_UR_L0_RESTRICT_USM_RESIDENCY_TO_P2P`. **Win looks like**: the transfer time dropping with the tier's output
-unchanged in the request log.
+## 5. `kernel_args_restrict` on the MMVQ - MEASURED (exp 40): NULL, because the port already has it by hand
 
-## 7. The MMVQ cache policy, which is untested rather than refuted
+The attribute is real and it **compiles and links** on icpx 2026.1 (verified with a standalone kernel - the opposite of
+item 7's cache controls). Applied to the two Q6_K wide launches behind `-DSTRATA_MMVQ_RESTRICT_ATTR=1`, it changes
+**nothing**: `mmvq_bench` is bit-identical at every ncols (19.1 / 21.5 / 26.1 / 55.3 us at ncols 1 / 2 / 4 / 8), while the
+object md5 differs - so the attribute was applied and simply buys no time. The reason is that
+`native_mmvq_q6k_wide_kernel` **already declares `__restrict__` on w and x** (88 occurrences in the file, 0 uses of the
+attribute in the tree), and the kernel is pipe-bound rather than alias-bound (exp 23). Parked, default off; the knob
+stays in the source for a kernel that is *not* hand-annotated, and it is an unchecked assertion, so it must not be
+sprayed over kernels that accumulate in place.
 
-exp 22 swept `-cl-load/store-cache-default` 13 ways and got a null - but the option **never reached the compiler**
-on a SYCL/SPIR-V input, so nothing was measured. The port currently sets cache hints by hand. If a kernel profile
-ever shows a non-zero `Send` share, this becomes a real lever; until then it is a 30-minute experiment, not a
-project.
+## 6. Peer access for the peer expert tier - MEASURED (exp 40): SUPPORTED both ways, and already in use
 
-**Do**: set the flag **in the source** (`-Xs` or kernel attributes), re-dump the ISA to confirm it applied, and
-re-run `mmvq_bench` across ncols=1..8. Either it moves or it closes for good - both are useful.
+`can_access_peer` is **true in both directions** on the B60 pair, and `enable_peer_access` followed by the identical
+copy is **1.00x** (7.7-7.8 GB/s both ways, round-trip clean): the plain `sycl::memcpy` between the two contexts is
+*already* on the peer path. That corrects exp 03's "silent no-op" reading - the hand-off's 34 us is not a missing peer
+path, and 7.7 GB/s is above the pair's own 13.8 GB/s host-to-device figure, so the copy is peer-class. The peer expert
+tier stays a **plumbing** change, not a bandwidth project. Details in
+[docs/sycl-experiments/40-mmvq-restrict-and-p2p.md](docs/sycl-experiments/40-mmvq-restrict-and-p2p.md).
+
+## 7. The MMVQ cache policy - MEASURED (exp 39): CLOSED, this toolchain cannot express it
+
+exp 22's sweep was null because `-cl-load/store-cache-default` never reached the compiler. The in-source route
+(`sycl_ext_intel_cache_controls`, a `read_hint` property on the launch) is also unusable on **icpx 2026.1**: every
+spelling - the spec's two-entry L1/L2+L3 form, a single-entry `read_hint`, and `annotated_ptr` - **compiles and then
+fails at the SPIR-V device link** with `InvalidLlvmModule: CacheControlLoadINTEL requires exactly 2 extra operands`,
+once per kernel. A~12-line standalone kernel reproduces it, so this is the compiler, not the port.
+
+The knob stays in the source (`-DSTRATA_MMVQ_CACHE_MODE`, default 0 = no hints, the shipping path) so a fixed compiler
+can sweep it later; modes 1-3 do not link here. **exp 22's null is now permanent rather than untested.** Note the
+contrast with item 2: register-width control (`TK_PER_MAX`, a template argument) links fine on the same compiler, so
+this is specific to the cache-control intrinsics, not to build-time kernel tuning. Write-up:
+[docs/sycl-experiments/39-mmvq-cache-policy-toolchain.md](docs/sycl-experiments/39-mmvq-cache-policy-toolchain.md).
 
 ---
 

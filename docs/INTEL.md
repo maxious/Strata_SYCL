@@ -345,6 +345,74 @@ kernel (`Wide32Q6U` = Q8_0 wide32 with two scales). Correctness: `q6k_preunpack_
 graph capture. End-to-end decode tok/s + output parity over a real model still to be confirmed on the runtime/bench
 box. docs/sycl-experiments/28.
 
+**Pre-unpacked Q6_K/Q5_K decode: DEFAULT OFF after the end-to-end A/B (2026-10-05, B60): exp 36.** The two entries
+above shipped default-on on their kernel numbers (2.05x / 1.29x at ncols=1). The engine-level A/B on the Coder IQ1_M
+- the model whose dense decode is Q6_K x128, the case the change was built for - says the opposite: **42.2 -> 38.0
+tok/s, a 12.4% decode LOSS**, reproducible over three alternating reps with token-identical output. The mechanism is
+memory, not arithmetic: the pre-unpacked copies are +163 matrices / **2.53 GiB** of extra dense VRAM, and on a 32 GB
+card that is the **expert cache**: 9,478 -> 8,152 slots, RAM mirror 5.37 -> 7.90 GiB, streamed over PCIe every token
+(prompt experts pulled: 2,972 with it off, 5,533 with it on). At **matched slot counts** the arms are within 1%
+(38.39/38.44 packed vs 38.03/38.03), so the kernel is worth what the bench says and the regression was the cache.
+The kernel is still faster on every shape the model actually decodes (1.04-2.27x; the largest, 2560x10240, only
+1.04x at ncols=1), which is why this is a default and not a revert. **`STRATA_MMVQ_PREUNPACK=1` now opts in**; the
+parity gates stay registered. The route that could make it pay on a 32 GB card is shrinking the block: the scales
+are fp32 in a 40-byte block, so bf16/fp16 scales would halve the 2.53 GiB within the same ~1e-7.
+docs/sycl-experiments/36.
+
+**QSA top-k at long context: `TK_PER_MAX = 66` on SYCL (2026-10-05, B60): exp 37.** The register top-k holds
+`4 * 1024 * TK_PER` cells and `TK_PER_MAX` was 66 under HIP but 33 everywhere else, so the shipped 262,144 context
+fell to the wide kernel on Intel (every key re-read per radix pass). Two dead ends had to be cleared first:
+`qsa_select_bench` was never a CMake target, and `TK_PER_MAX` was *unreachable* on SYCL because the dispatch measured
+the fit against `TK_PER` whenever the CUDA-only "counted" path was false. With the fit reachable and the width at 66:
+**135,168 cells 0.257 -> 0.138 ms (1.86x), 200,000 0.353 -> 0.177 (1.99x), 262,144 0.541 -> 0.224 (2.42x)**, ids
+identical to the reference in every case; a capacity of 131,072 or less is unchanged (0.059/0.117 ms, both builds
+bit-identical). Prompt-path check: **535.5 vs 543.1 tok/s** on an 8,000-token dual prompt - 1.4%, inside the noise
+floor, so the wider fit is free where it does not apply. `private_alloca` was not needed; `-DSTRATA_TK_PER_MAX=<n>`
+overrides. ctest 29/29, graph goldens unchanged. docs/sycl-experiments/37, /38.
+
+**Prompt stages already overlap on 2x B60 (2026-10-05): exp 38.** Per-stage GPU timelines sum to 18.66 s against a
+14.94 s wall on an 8,000-token dual prompt - **1.25x of concurrency**, because `prefill.cpp` already runs the next
+stage's chunk on a `std::future`. The prompt's remaining 0.75x is the dependent chain (stage 1 reads stage 0's
+residual), not idle scheduling, and two chunks show wall ~2x their GPU timeline: the real bound is `--stream-experts`
+pulling blobs over PCIe. Trap: a prompt shorter than `--prefill` is a *single* chunk, so the archive's "adjacent
+chunks" question cannot be answered at 2,185 tokens - and the phase shares are then meaningless.
+
+**MMVQ cache policy: not expressible on icpx 2026.1 (2026-10-05): exp 39.** Every spelling of
+`sycl_ext_intel_cache_controls` (`read_hint` on a launch property, the spec's two-entry L1/L2+L3 form, a single
+entry, and `annotated_ptr`) compiles and then fails at the **SPIR-V device link** with `InvalidLlvmModule: CacheControl
+LoadINTEL requires exactly 2 extra operands`, once per kernel, reproducible in a 12-line kernel. exp 22's null sweep
+is therefore permanent rather than untested. `-DSTRATA_MMVQ_CACHE_MODE` (default 0 = no hints) is kept in the source
+for a fixed compiler; modes 1-3 do not link here. Note the contrast with the top-k width above: ordinary compile-time
+kernel tuning works on this compiler, the cache-control intrinsics do not.
+
+**`intel::kernel_args_restrict` on the MMVQ: measured NULL (2026-10-05): exp 40.** The attribute compiles and links
+on this toolchain (a missing `main` in the first test mimicked an unsupported extension), and it applies - the object
+md5 differs - but `mmvq_bench` is bit-identical at every ncols (19.1/21.5/26.1/55.3 us at 1/2/4/8). The kernels already
+declare `__restrict__` on w and x by hand (88 sites, 0 uses of the attribute) and the decode is pipe-bound, not
+alias-bound. `-DSTRATA_MMVQ_RESTRICT_ATTR=1` is kept, default off; it is an unchecked assertion, so it must not go
+near a kernel that accumulates in place.
+
+**Peer access on the B60 pair: supported, and already in use (2026-10-05): exp 40.** `p2p_bench` now probes and
+enables it: `can_access_peer` is **true both directions**, and `enable_peer_access` plus the identical copy is
+**1.00x** (7.7-7.8 GB/s each way, round-trip clean) - the plain `sycl::memcpy` between the two contexts is already on
+the peer path. That corrects exp 03's "silent no-op" reading: the 34 us hand-off is not a missing peer path, and
+7.7 GB/s is above the pair's own 13.8 GB/s host-to-device figure. The `--peer-device` expert tier stays a plumbing
+change, not a bandwidth project.
+
+**Conversation parking on a layer split: implemented and measured (2026-10-05): exp 41.** The refusal is gone; a
+split parks one image per stage (`SavedStage`), each captured and restored on the card that owns those layers, the
+drafter's image riding on the last stage (`mtp.bind(last_st ...)`), with per-stage RAM accounting and all stages
+validated before any is restored. Two prefix-disjoint 4,000-token conversations alternating on 2x B60, split auto ->
+K=22, `--conversation-cache-mib 0` vs `8192`: **a switch goes 7021.7 -> 3684.4 ms (1.91x) and 6435.6 -> 2184.9 ms
+(2.95x)**, park 108-141 ms (298-417 MB), restore **32-36 ms** - not the ~200x the raw copy time suggests, because a
+restore returns only a checkpoint prefix (2,185 / 3,278 of 4,000 tokens) and the rest is re-read. First visits are
+unchanged (7367.6 / 7396.6 ms), as they must be. **One generated token differs** (request 4, position 2, other 11
+identical; requests 1-3 bit-identical) and the rounding explanation is unsupported - request 3 had a different reuse
+split and matched - so it is undiagnosed; `STRATA_SNAPSHOT_VERIFY=1` is the next step. Known gap:
+`conversations.retain()` recycles only the primary's K/V, so later stages re-copy in full on every park
+(`reused_kv_bytes=0`), which costs every conversation *rewrite* (regenerate, branch, compaction) and not just a
+switch. ctest 29/29. docs/sycl-experiments/41.
+
 **Pre-unpacked Q5_K decode, default-on (2026-10-04, B60): P0 #5 (exp 30).** A mass-ulw analysis counted the real
 GGUF shards: the Flash-Next dense decode is Q6_K x128 (shipped), Q4_K x47, Q5_K x35, IQ4_NL x47, IQ4_XS x42, Q8_0 x1;
 Q3_K/Q2_K/Q2_0 only in the non-target Qwen-27B/gemma shards. Implemented Q5_K: pre-unpack to `Q5U {dsc=d*sc, mn1=mn*m,
