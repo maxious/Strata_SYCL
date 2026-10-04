@@ -326,16 +326,19 @@ parity-first verification (INTEL.md "How to verify any of these").
   (stage 1 reads stage 0's residual from the mapped hand-off buffer), so the chaining costs a launch round trip,
   not a removable wait. **The parity is not a host-wait problem.**
 - [ ] **D2 - pipelined windows: run window n on stage 0 while stage 1 still verifies n-1** (P0's item 1; the fork's
-  x1.17 code / x1.06-x1.30 across its four workloads; default on for exactly two GPUs). This is the one remaining
-  dual-GPU lever exp 34 measured: a split window is **89% device time across two dependent stages** (51% execution
-  plus 39% of the host waiting on the device), so overlapping the stages is worth far more than the 8.5% of the
-  window the host accounts for commit/emit plus draft - and even that 8.5% is an upper bound, since the last
-  stage's commit is already left running for the drafter to overlap (`verify.cpp:1578`, `wait = !use_mtp` at
-  `generate.cpp:7314`). **The ceiling from measured numbers**: the split's window is 53.8 ms at 1.78
-  tokens/window and the same work on one card is ~55-59 ms, so the ~48 ms of device time splits by layers - K=22/48
-  is ~22 ms and 26/48 plus the head and draft is ~26 ms - and a perfect window pipeline would approach the slower
-  stage, **~1.8x**. The gate on that is the speculative hold rate, which the port already measures: **88% of drafted
-  tokens are accepted** (113 of 129 at dual 2,185), better than the fork's 6 of 9.
+  x1.17 code / x1.06-x1.30 across its four workloads). **The ceiling here is ~1.13x, not the ~1.8x an earlier
+  draft of this item claimed, and the reason is structural.** A split window is 89% device time across two
+  *dependent* stages, but window n+1's tokens come from the chain seeded by window n's `outv`, and `outv` only
+  exists once stage 1's window graph - head included - has finished. So stage 0 cannot start n+1 until then, and
+  the only stage-1 work left to overlap is the tail (`commit/emit` + `draft`, 7.67 ms of a 59.92 ms window on the
+  current revision). Steady state: serial is S0 24 + S1 28 + tail 7.7 ~ 59.9 ms; overlapped it is max(52, 35.7) =
+  52 ms, i.e. **~1.15x**, and ~1.13x at the measured hold rate. The fork's larger ratios come from a window where
+  the head and draft are ~46% of it; ours are ~13%.
+  **The speculation itself is safer here than in the fork**: `capture_commit` shows the recurrent state is
+  published by the *commit* graph (`gdn_conv_commit`, `gdn_step_norm_multi`, `native_qsa_indexer_append`, all
+  driven by the mapped commit counts), not by the window graph - so a mispredicted window costs recomputation, not
+  a state restore, and no DeltaNet snapshot is needed. What still argues against building it: ~1.13x for a change
+  to the one part of the port where the bounded device spin turns a stall into a wrong window.
   **What the port already has**: the commit is asynchronous and the drafter already overlaps it - `commit(...,
   wait=false)` says "left running: commit_finish() collects it (the drafter overlaps it)" (`verify.cpp:1578`); the
   ring rewinds by position ("rewinding to a position just means writing from there again", `generate.cpp:895`);
