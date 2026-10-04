@@ -452,6 +452,69 @@ measured thing it would touch:
   exp 22 left them: parked as *untested rather than refuted* (the option never reached the compiler), not as a
   new item.
 
+### P0e - second pass over the whole extension list (all 162 docs, 2026-10-04)
+
+Every document under `~/llvm/sycl/doc/extensions/` (50 supported, 63 experimental, 22 proposed, plus the
+deprecated/removed sets) was listed by name and the port searched for each area's API. The named areas are P0d;
+these are the ones that pass adds, grouped by the problem they would touch, and the ones the pass closed.
+
+- [ ] **F1 - `sycl_ext_oneapi_usm_device_read_only` (supported): mark the weights read-only to the device.** The
+  property says an allocation is host-written and "read-only in all device code" - true of every dense weight and
+  every expert slot we hold. Of the port's 455 `malloc_device` sites, none sets it; dpct's own allocator does
+  (`sycl/include/dpct/detail/memory_detail.hpp:922`), so the gap is only in our own allocations. **Test**: set it
+  on the expert cache and the dense weights in one config, A/B decode at 2,185 and a 32K prompt. Cheap and low
+  risk; the question is whether the driver's caching changes at all.
+- [ ] **F2 - `sycl_ext_oneapi_prefetch` (experimental): prefetch into a chosen cache level from inside a
+  kernel.** Cooperative group prefetches with compile-time cache-level properties, for latency hiding. We
+  prefetch only on the host (`FileExpertSource::prefetch` fills the arena); nothing prefetches into device caches
+  while a layer runs. **Test**: on the *expert* path and the i-quant dense types first - exp 22/23 put the Q6_K
+  wide kernel at Pipe 16.8% / Send 0.0%, i.e. PIPE-bound, where a prefetch has nothing to win, so the Q6_K arena
+  is not the place to try it.
+- [ ] **F3 - `sycl_ext_oneapi_dot_accumulate` (supported): the built-in for the dp4a we hand-write.** It exposes
+  "specialized hardware instructions" for dot-product-plus-accumulate; the port has its own
+  `strata/kernels/dp4a.hpp` with 136 call sites. **Test**: A/B one kernel against the built-in (the Q6_K wide or
+  the Q5_K pre-unpacked path). Expect little - exp 27 counted dp4a as 32 of 985 instructions in the pipe-bound
+  case - but it removes hand-written asm, so it is worth one measurement rather than an argument.
+- [ ] **F4 - the per-submission overhead pair, and prefer the *supported* one.** `sycl_ext_oneapi_discard_queue_events`
+  (supported) tells the runtime an operation's events will not be used, so it can skip making them;
+  `sycl_ext_oneapi_reusable_events` (experimental) reuses event objects instead of allocating per submission. The
+  port uses neither (0 hits) and makes events around the split's commits and every staging copy. **Test**: the
+  same gate as E4 - only after D1's timeline shows host time between windows. The supported `discard_queue_events`
+  supersedes the experimental `ext_intel_event_mode` named in E4 for this purpose.
+- [ ] **F5 - `sycl_ext_oneapi_kernel_args_restrict` (supported): `__restrict__` on every kernel argument in the
+  translation unit.** Less aliasing, better codegen, no source change per kernel. The port sets restrict by hand
+  where it thought about it; the extension applies it everywhere. **Test**: build with it and A/B the decode at
+  2,185 plus `mmvq_bench` at ncols=1..4 - a codegen change this broad wants the bench, not just the engine.
+- [ ] **F6 - `sycl_ext_oneapi_private_alloca` (experimental): variable-size private memory, for D3's top-k.**
+  The register top-k holds `TK_PER` consecutive blocks' keys in a fixed private array; `private_alloca` is the
+  supported way to ask for a run-time-sized one, which is the other route (besides E3's GRF hints) to a larger
+  fit at 262K. **Test**: with D3's bench, raise the per-thread key count through `private_alloca` and see where
+  the kernel stops fitting.
+- [ ] **F7 - `sycl_ext_intel_fp_control` (experimental): rounding and denormals - a parity item as much as a
+  perf one.** INTEL.md already records an fp32-divide rounding trap, and any flush-to-zero or rounding-mode
+  change on the attention, PLE or softmax paths changes bits. **Test**: only behind the port's usual parity gate
+  (a per-layer hash over a whole request), and only if a profile shows denormal traffic.
+- [ ] **F8 - `sycl_ext_oneapi_profiling_tag` (experimental): name regions so the GPU timeline shows them.** This
+  is the measurement tool for P0c's D1 and E2: `STRATA_DECODE_TIMING` gives host clocks per window, and a
+  profiling tag would put named spans on the device timeline to show a stage's idle instead of inferring it.
+  **Test**: tag the two stages' windows, read the device timeline under the profiler once.
+- Closed by this pass, so nobody re-derives them: **`composite_device`** is for multiple *tiles of one card*
+  (the spec says it currently applies only to the Max/PVC series) - irrelevant to two PCIe cards, and its own text
+  prefers separate devices, which is what our split already does. **`sycl_ext_codeplay_cuda_cluster_group`**
+  (proposed) is CUDA-only, so the CUDA side's block-cluster top-k fix (D3) has **no Intel counterpart** - D3 has
+  to raise the register fit or rewrite the wide kernel. **`inter_process_communication`** is the real IPC
+  extension (P0d cited `memory_export`); still no second process, but that is the name to look for. **`tangle`**
+  (`ext::oneapi::experimental::entangle`) is **already used** - `sycl/include/dpct/util.hpp`,
+  `sycl/include/strata/sycl_math.hpp`. **`device_wait`** is already the shape of our hand-off:
+  `sycl/include/strata/core/session.hpp:397` records the hand-off as flags spun on the device with no driver call
+  in the loop, 5.2 us each (the micro-benchmark it cites is kept outside this tree), so it is evidence for D1
+  rather than a new avenue. Searched with no port use and no measured gap named for them, listed here so the next
+  pass can skip them: `queue_priority`, `enqueue_functions`, `group_load_store`, `usm_shortcuts`,
+  `immediate_command_list`, `async_memory_alloc`, `work_group_memory`/`work_group_scratch_memory`,
+  `kernel_properties`/`kernel_arg_properties`, `kernel_compiler*`, `annotated_ptr`, `bindless_images`, `fp8`/`fp4`,
+  `atomic16` (proposed - which is also why fp16 atomics have nothing to adopt), `local_static_mem_used`,
+  `max_work_group_query`, `launch_queries`.
+
 ### P1 - attention A/Bs and fusion (mostly gated on P0, or low measured headroom)
 
 - [ ] **oneDNN fused-XMX SDPA A/B for prompt attention.** llama.cpp has it (`fattn-onednn.hpp`); we have FP32 and
