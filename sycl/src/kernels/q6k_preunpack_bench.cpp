@@ -43,6 +43,10 @@ int main(int argc, char** argv) {
     void* dw8 = sycl::malloc_device(w8bytes, *q);
     q->memcpy(dw6, hw6.data(), w6bytes).wait();
     q->memcpy(dw8, hw8.data(), w8bytes).wait();
+    const size_t u6bytes = strata::kernels::native_mmvq_q6k_preunpack_bytes(n_in, n_out);
+    void* du6 = sycl::malloc_device(u6bytes, *q);          // the deployed pre-unpacked Q6_K decode
+    strata::kernels::native_q6k_preunpack(dw6, du6, n_in, n_out, q);
+    q->wait();
 
     const int nmax = cols[4];
     std::vector<float> xf((size_t) nmax * n_in);
@@ -57,7 +61,8 @@ int main(int argc, char** argv) {
         strata::kernels::native_quantize_q8_1(xf.data(), xq, n_in, ncols, q);
         auto q6 = [&]() { strata::kernels::native_q6_k_mmvq(dw6, xq, y6, n_in, n_out, ncols, q); };
         auto q8 = [&]() { strata::kernels::native_q8_0_mmvq(dw8, xq, y8, n_in, n_out, ncols, q); };
-        q6(); q8(); q->wait();
+        auto qu = [&]() { strata::kernels::native_mmvq_q6k_unpacked(du6, xq, y6, n_in, n_out, ncols, q); };  // deployed routed path
+        q6(); q8(); qu(); q->wait();
         std::vector<float> r6((size_t) ncols * n_out), r8((size_t) ncols * n_out);
         q->memcpy(r6.data(), y6, r6.size() * 4).wait();
         q->memcpy(r8.data(), y8, r8.size() * 4).wait();
@@ -65,13 +70,13 @@ int main(int argc, char** argv) {
         const double w0 = std::chrono::steady_clock::now().time_since_epoch().count();
         auto warm = [&](auto&& fn) { (void) w0; const auto s = std::chrono::steady_clock::now();
             while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s).count() < 300) { for (int i = 0; i < 20; ++i) fn(); q->wait(); } };
-        warm(q6); warm(q8);
+        warm(q6); warm(q8); warm(qu);
         auto time = [&](auto&& fn) { const auto t0 = std::chrono::steady_clock::now();
             for (int i = 0; i < reps; ++i) fn(); q->wait();
             return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / reps; };
-        const double t6 = time(q6), t8 = time(q8);
-        std::printf("%2d cols:  Q6_K unpack-in-kernel %6.1f us (%5.0f GB/s) | Q8_0 byte-no-unpack %6.1f us (%5.0f GB/s) %.2fx  [%s]\n",
-                    ncols, t6, w6bytes / t6 / 1e3, t8, w8bytes / t8 / 1e3, t6 / t8,
+        const double t6 = time(q6), t8 = time(q8), tu = time(qu);
+        std::printf("%2d cols:  Q6_K unpack %6.1f us | Q6K-unpacked(routed) %6.1f us %.2fx | Q8_0 ceiling %6.1f us %.2fx  [%s]\n",
+                    ncols, t6, tu, t6 / tu, t8, t6 / t8,
                     (bad == 0 ? "finite" : ("NONFINITE " + std::to_string(bad)).c_str()));
     }
     return 0;

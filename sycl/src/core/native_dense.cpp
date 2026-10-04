@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -41,6 +42,12 @@ struct Pending {
     uint64_t bytes;
     DevicePtr data;
 };
+// exp 27/28 (P0 #2 avenue 1, STRATA_MMVQ_PREUNPACK=1): pre-unpack each Q6_K tensor once so the decode skips the
+// per-token 6-bit unpack/gather (measured ~2x on the dense decode).  Default off; the packed path stays.
+bool q6k_preunpack_enabled() {
+    static const bool v = std::getenv("STRATA_MMVQ_PREUNPACK") != nullptr && std::atol(std::getenv("STRATA_MMVQ_PREUNPACK")) != 0;
+    return v;
+}
 }
 
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
@@ -200,13 +207,29 @@ bool NativeDense::load(const std::vector<std::string> &shards,
             return false;
         }
         // All checks and allocations finish before publishing any reference.
-        weights_.reserve(pending.size());
+        const bool preunpack = q6k_preunpack_enabled();
+        bool preunpacked_any = false;
+        weights_.reserve(pending.size() + (preunpack ? 1 : 0));
         for (auto& item : pending) {
             item.ref->native_data = item.data.get();
             item.ref->native_type = item.type;
             item.ref->native_q8_1 = scratch.get();
             weights_.push_back(item.data.release());
+            if (preunpack && item.type == 14) {   // Q6_K: one-time Q6K->Q6U transform + register the route
+                void* u = nullptr;
+                const uint64_t ubytes = strata::kernels::native_mmvq_q6k_preunpack_bytes((int) item.ref->ne0, (int) item.ref->ne1);
+                auto st = DPCT_CHECK_ERROR(u = (void*) sycl::malloc_device(ubytes, dpct::get_in_order_queue()));
+                if (st == 0 && u) {
+                    strata::kernels::native_q6k_preunpack(item.ref->native_data, u, (int) item.ref->ne0, (int) item.ref->ne1,
+                                                          &dpct::get_in_order_queue());
+                    dpct::get_in_order_queue().wait();   // finished before any decode uses it
+                    strata::kernels::native_mmvq_register_q6k_preunpack(item.ref->native_data, u);
+                    weights_.push_back(u);               // keep alive for the lifetime of this NativeDense
+                    preunpacked_any = true;
+                }
+            }
         }
+        if (preunpacked_any) strata::kernels::native_mmvq_set_q6k_preunpack(true);
         scratch_ = scratch.release();
         bytes_ = total;
         return true;

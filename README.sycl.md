@@ -188,8 +188,12 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
      (19.1 -> 9.3 us, the engine's primary decode) and 1.6-2.1x across the curve, memory not the limit (Send 0%,
      byte path hits 749 GB/s). The lighter formulation is to NOT unpack per token: pre-unpack Q6_K rows to a
      signed-byte `{d'=d*scale, 32 int8}` layout once at weight load, then decode with the existing load+dp4a path.
-     Cost: a persistent ~1.30x weight buffer. WIRING is the next step (pre-unpack kernel + persistent buffer +
-     routing `layer.cpp:154`/`mtp.cpp`, parity-checked). `q6k_preunpack_bench` is the regression measure.
+     Cost: a persistent ~1.25x weight buffer (fp32 scales). WIRED opt-in (exp 28): `STRATA_MMVQ_PREUNPACK=1`
+     pre-unpacks each Q6_K tensor once at load (`native_q6k_preunpack` -> `Q6U` signed-byte blocks) and routes the
+     dense decode (`native_mmvq(14)`, covering layer.cpp:154 + verify/head/expert/PLE) through the no-bit-unpack
+     kernel. Correctness-gated (`q6k_preunpack_parity` ~1e-7 vs the packed path); default OFF leaves the packed
+     path bit-identical. End-to-end decode still to be measured on the runtime/bench box. `q6k_preunpack_bench` is
+     the regression measure.
   2. **The `NCOLS>=5` unroll. MEASURED (exp 26): the column loop fixes the blow-up but it is a drafter-window lever,
      not the primary decode.** A runtime column loop (activation fused into the dot, `#pragma unroll 1`) behind
      `STRATA_MMVQ_LOOP=1` (default off, applied for NCOLS>=5) flattens the superlinear tail - ncols 6/7/8 go
@@ -337,6 +341,7 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | [25](sycl-experiments/25-decode-xmx-gemm.md) | oneMKL dense-FP16 GEMM at decode batch vs native_mmvq (P0b #2+#3) | GEMM loses the engine's real decode ncols (ncols=1..4: 0.54-0.86x) and only crosses at the fat drafter window (ncols=6: 1.33x, ncols=8: 2.39x); persistent-FP16 costs 2x dense VRAM + ~12 us materialization | dequant-then-XMX-GEMM is a no-win for decode; `native_mmvq` stays; P0b #2+#3 closed, P0 #2 XMX avenue closed |
 | [26](sycl-experiments/26-q6k-ncols-loop.md) | Q6_K wide MMVQ NCOLS unroll vs runtime column loop (P0 #2 avenue 2) | loop flattens the register-blow-up tail: ncols 6/7/8 35.9/39.4/55.5 -> 33.5/37.5/40.4 us (1.07x/1.05x/1.37x, 7->8 jump +41%->+8%, bit-identical); ncols 1-4 unchanged, ncols 5 is 0.98x | validated but opt-in (`STRATA_MMVQ_LOOP=1`, NCOLS>=5); a drafter-window lever, not the primary decode - avenue 1 stays the P0 #2 lever |
 | [27](sycl-experiments/27-q6k-preunpack-decode.md) | Q6_K decode pre-unpack ceiling (P0 #2 avenue 1) | the 6-bit unpack/gather IS the pipe cost (dp4a 32 of 985 instr, same ALU pipe); a signed-byte no-unpack decode (Q8_0 wide32) is 2.06x at ncols=1 (19.1->9.3 us) and 1.6-2.1x across the curve, stable | VALIDATED: pre-unpack Q6_K once to signed bytes, decode with load+dp4a; wiring is the next step (persistent ~1.30x buffer) |
+| [28](sycl-experiments/28-q6k-preunpack-engine.md) | pre-unpacked Q6_K decode wired opt-in (P0 #2 avenue 1) | `STRATA_MMVQ_PREUNPACK=1` pre-unpacks Q6_K to `Q6U` signed-byte blocks once + routes `native_mmvq(14)` (layer.cpp:154, verify/head/expert/PLE) through the no-bit-unpack kernel; parity ~1e-7 vs packed (q6k_preunpack_parity all shapes PASS); deployed path 2.05x at ncols=1, 1.58-2.10x across; default packed path unchanged | WIRED opt-in; persistent ~1.25x weight buffer; end-to-end decode to confirm on the runtime box |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)

@@ -39,6 +39,7 @@
 #include <type_traits>
 #include <string>
 #include <cmath>
+#include <unordered_map>
 
 namespace strata::kernels {
 namespace {
@@ -2494,8 +2495,108 @@ void native_q4_k_f32(const void* weights, const float* x, void* scratch_q8_1,
     native_q4_k_mmvq(weights, scratch_q8_1, y, n_in, n_out, ncols, stream);
 }
 
+// ---------------------------------------------------------------------- exp 27/28 (P0 #2 avenue 1)
+// pre-unpacked Q6_K decode: the one-time Q6K->Q6U transform removes the per-token 6-bit unpack/gather, which the
+// ISA showed is the pipe cost (dp4a is 32 of 985 instr on the same ALU int pipe as the bfn/xor/mov unpack).  The
+// unpacked Q6U blocks are decoded by the identical load+dp4a path the Q8_0 wide32 kernel uses (Wide32Q6U mirrors
+// Wide32Q8 with the two per-16 scales Q6_K keeps), so the decode land at the measured ~2x ceiling.
+namespace {
+    // register once at weight load (single-threaded), read per decode call.
+    std::unordered_map<const void*, const void*> g_q6k_preunpack;
+    int g_q6k_preunpack_enabled = 0;
+}
+
+void native_mmvq_set_q6k_preunpack(bool enabled) { g_q6k_preunpack_enabled = enabled ? 1 : 0; }
+void native_mmvq_register_q6k_preunpack(const void* packed, const void* unpacked) { g_q6k_preunpack[packed] = unpacked; }
+void native_mmvq_unregister_q6k_preunpack(const void* packed) { g_q6k_preunpack.erase(packed); }
+void native_mmvq_clear_q6k_preunpack() { g_q6k_preunpack.clear(); }
+
+std::size_t native_mmvq_q6k_preunpack_bytes(int n_in, int n_out) {
+    return (std::size_t) n_out * (n_in / 32) * sizeof(Q6UBlock);
+}
+
+void native_q6k_preunpack_kernel(const Q6KBlock* __restrict__ w, Q6UBlock* __restrict__ out, int n_blocks) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<1>();
+    const int blk = int(item.get_global_id(0));
+    if (blk >= n_blocks) return;
+    const Q6KBlock* b = w + blk;                 // row-major (row, 256-block); 8 Q6U per 256-block
+    Q6UBlock* ob = out + (std::size_t) blk * 8;
+    const float d = (float) b->d;
+    const uint8_t* ql = b->ql; const uint8_t* qh = b->qh; const int8_t* sc = b->scales;
+#pragma unroll
+    for (int eb = 0; eb < 8; ++eb) {             // 8 x 32-element groups; per-16 scale g = 2eb, 2eb+1
+        Q6UBlock o;
+        o.d0 = d * (float) sc[2 * eb];
+        o.d1 = d * (float) sc[2 * eb + 1];
+#pragma unroll
+        for (int i = 0; i < 32; ++i) {
+            const int e = 32 * eb + i;
+            const int h = e / 128, e2 = e - 128 * h;
+            const int quad = e2 / 32, l = e2 - 32 * quad;
+            const int qloff = 64 * h + l + (quad & 1 ? 32 : 0);
+            const uint8_t qv = (quad & 2) ? (uint8_t) (ql[qloff] >> 4) : (uint8_t) (ql[qloff] & 0x0F);
+            const int q = (int) qv | (((qh[32 * h + l] >> (2 * quad)) & 3) << 4);
+            o.qs[i] = (int8_t) (q - 32);
+        }
+        ob[eb] = o;
+    }
+}
+void native_q6k_preunpack(const void* weights, void* unpacked, int n_in, int n_out, void* stream) {
+    const auto s = strata::q_of(stream);
+    const int n_blocks = n_out * (n_in / 256);
+    if (n_blocks <= 0) return;
+    const std::size_t local = 128, global = (std::size_t)((n_blocks + (int) local - 1) / (int) local) * local;  // round up so tiny tensors still launch
+    s->parallel_for<dpct_kernel_name<class native_q6k_preunpack_kernel_dpct>>(
+        sycl::nd_range<1>(sycl::range<1>(global), sycl::range<1>(local)),
+        [=](sycl::nd_item<1> it) { native_q6k_preunpack_kernel((const Q6KBlock*) weights, (Q6UBlock*) unpacked, n_blocks); });
+}
+
+// decode the pre-unpacked Q6U blocks through the Q8_0 wide32 path (Wide32Q8's load+dp4a, two per-16 scales).
+struct Wide32Q6U {
+    using Block = Q6UBlock;
+    static constexpr int LPB = 2;
+    struct W { sycl::int4 q; float d; int half; };
+    static W load(const Block* b, int l) {
+        W r; r.half = l; r.q = load16_a2(b->qs + 16 * l); r.d = (l == 0) ? b->d0 : b->d1; return r;
+    }
+    static float apply(const W& r, const Q81Block* xb) {
+        return r.d * (float) xb->ds[0] * (float) dp4a4(r.q, ld_q8_16(xb, r.half), 0);
+    }
+};
+template <int NCOLS>
+void launch_q6k_unpacked(const void* w, const void* xq, float* y, int n_in, int n_out, dpct::queue_ptr s) {
+    const unsigned blocks = unsigned((std::size_t) n_out + WARPS - 1) / WARPS;
+    s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_unpacked, dpct_kernel_scalar<NCOLS>>>(
+        sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]]
+            { native_mmvq_wide32_kernel<Wide32Q6U, NCOLS>((const Q6UBlock*) w, (const Q81Block*) xq, y, n_in, n_out); });
+}
+void native_mmvq_q6k_unpacked(const void* weights, const void* x_q8_1, float* y,
+                              int n_in, int n_out, int ncols, void* stream) {
+    if (ncols < 1 || ncols > 8 || n_in % 32 != 0) return;   // routing only dispatches valid shapes
+    const auto s = strata::q_of(stream);
+    switch (ncols) {
+        case 1: launch_q6k_unpacked<1>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 2: launch_q6k_unpacked<2>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 3: launch_q6k_unpacked<3>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 4: launch_q6k_unpacked<4>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 5: launch_q6k_unpacked<5>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 6: launch_q6k_unpacked<6>(weights, x_q8_1, y, n_in, n_out, s); return;
+        case 7: launch_q6k_unpacked<7>(weights, x_q8_1, y, n_in, n_out, s); return;
+        default: launch_q6k_unpacked<8>(weights, x_q8_1, y, n_in, n_out, s); return;
+    }
+}
+
 void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream) {
+    // OPT-IN P0 #2 avenue 1 (exp 27/28): a registered pre-unpacked Q6U buffer decodes through the no-bit-unpack path.
+    if (g_q6k_preunpack_enabled && ncols >= 1 && ncols <= 8) {
+        auto it = g_q6k_preunpack.find(weights);
+        if (it != g_q6k_preunpack.end() && n_in % 32 == 0) {
+            native_mmvq_q6k_unpacked(it->second, x_q8_1, y, n_in, n_out, ncols, stream);
+            return;
+        }
+    }
     // SYCL port: 16-byte-load kernel for the decode shapes (ncols <= 4)
     // With the aligned loads (load16_a2) the wide kernel wins on every Q6_K shape and window width: 2.6-3.4x the
     // misaligned-load kernels in q6k_align_bench, decode 44.9 -> 54 tok/s on the Coder, output tokens identical.

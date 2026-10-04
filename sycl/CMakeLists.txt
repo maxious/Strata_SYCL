@@ -307,6 +307,11 @@ if(STRATA_SYCL_PARITY)
   # ncols; if pre-unpacking the Q6_K rows to signed bytes is much faster, that is the avenue-1 win.
   add_executable(q6k_preunpack_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_bench.cpp)
   target_link_libraries(q6k_preunpack_bench PRIVATE strata_kernels)
+  # the Q6K->Q6U pre-unpack + routed-decode correctness gate (P0 #2 avenue 1, exp 27/28): the no-bit-unpack decode
+  # and the routing must reproduce the packed Q6_K path within fp32 rounding.
+  add_executable(q6k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_parity.cpp)
+  target_link_libraries(q6k_preunpack_parity PRIVATE strata_kernels)
+  add_test(NAME q6k_preunpack_parity COMMAND q6k_preunpack_parity)
   # the P0b #2/#3 A/B: oneMKL dense-FP16 GEMM on a persistent weight copy vs native_mmvq at the decode batch (ncols
   # 1..8). Links oneMKL BLAS directly (like onednn_gemm_bench) so building the bench never pulls the whole engine.
   find_package(MKL CONFIG QUIET)
