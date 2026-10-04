@@ -42,6 +42,10 @@ bool conversation_session_sizes(const ModelGeometry& g, const SessionState& sess
                                 std::string& error);
 bool conversation_checkpoint_validate(const ConversationCheckpoint& checkpoint, const SessionState& session,
                                       const ModelGeometry& g, std::string& error);
+// The payload conversation_checkpoint_save would write, without writing it: the estimate a split's per-stage
+// parking needs before it admits the RAM (one card per stage, so each stage's own state is costed separately).
+bool conversation_checkpoint_bytes(const ConversationCheckpoint& checkpoint, const SessionState& session,
+                                   const ModelGeometry& g, size_t& bytes, std::string& error);
 bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const SessionState& session,
                                   const ModelGeometry& g, std::string& error);
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
@@ -53,11 +57,16 @@ struct ConversationView {
     const std::vector<ConversationCheckpoint>& checkpoints;
     bool cvec;
 };
+// `with_draft` is false for a layer split's non-final images: the drafter is bound to the LAST stage, so only that
+// stage's image carries the draft layer and every earlier one holds its own layers alone. With no split it stays
+// true and these functions behave exactly as before.
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& session,
-                                 const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error);
+                                 const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error,
+                                 bool with_draft = true, bool allow_stage_parts = false);
 bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const ConversationView& view,
                                          const SessionState& session, const ModelGeometry& g,
-                                         const QsaState& draft, size_t& bytes, std::string& error);
+                                         const QsaState& draft, size_t& bytes, std::string& error,
+                                         bool with_draft = true, bool allow_stage_parts = false);
 // The capture estimate includes retained capacity and transient segment directories;
 // only estimate - reuse.bytes() requires additional physical RAM. Capture consumes
 // the uniquely owned reusable buffers, including on failure.
@@ -66,14 +75,38 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
 bool conversation_snapshot_save(SavedConversation& image, const ConversationView& view,
                                 const SessionState& session, const ModelGeometry& g,
                                 const QsaState& draft, std::string& error,
-                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+                                ConversationKvReuse reuse = {}, size_t* reused_bytes = nullptr,
+                                bool with_draft = true, bool allow_stage_parts = false);
 bool conversation_snapshot_validate(const SavedConversation& image, const SessionState& session,
-                                    const ModelGeometry& g, const QsaState& draft, std::string& error);
+                                    const ModelGeometry& g, const QsaState& draft, std::string& error,
+                                    bool with_draft = true);
 enum class ConversationRestore { restored, invalid, transfer_failed };
 // Invalid images are rejected before any CUDA call/write. Transfer failure may
 // leave partial state: caller MUST NOT continue inference from that session.
 ConversationRestore conversation_snapshot_restore(const SavedConversation& image, SessionState& session,
                                                    const ModelGeometry& g, const QsaState& draft,
-                                                   std::string& error);
+                                                   std::string& error, bool with_draft = true);
+
+// ---- layer-split parking: one stage at a time, each on its own card (README item 3)
+// Under a split every layer's K/V and running state lives on exactly one GPU, so the park is one image per stage.
+// The caller runs these inside an OnDevice scope for that stage, exactly as the mid-prompt per-stage checkpoint
+// path already does (generate.cpp's checkpoint_at), and passes `draft` only for the stage that owns the drafter
+// (the last one). The conversation's ids and image keys are NOT part of a stage image: they belong to the primary
+// SavedConversation and every stage's `live` carries the same ids for validation.
+bool stage_bytes(size_t& bytes, const SessionState& stage, const ModelGeometry& g, const QsaState* draft,
+                 int64_t upto, std::string& error);
+// `reuse` is this stage's retained K/V from a previous park (empty on a first park); its unchanged prefix is
+// kept and only the cells past `unchanged_tokens` are re-copied, exactly as the primary's path does.
+bool stage_save(SavedStage& out, const std::vector<int32_t>& ids, const SessionState& stage,
+                const ModelGeometry& g, const QsaState* draft, int64_t upto, std::string& error,
+                StageKvReuse reuse = {}, size_t* reused_bytes = nullptr);
+// The retained-K/V accounting: replaces a stage's fresh K/V estimate in stage_bytes with what a reused
+// capture actually costs, so make_room is not charged for pages that are not copied.
+bool stage_capture_bytes(StageKvReuse& reuse, const SessionState& stage, const ModelGeometry& g,
+                         const QsaState* draft, int64_t upto, size_t& bytes, std::string& error);
+bool stage_validate(const SavedStage& image, const SessionState& stage, const ModelGeometry& g,
+                    const QsaState* draft, int64_t upto, std::string& error);
+ConversationRestore stage_restore(const SavedStage& image, SessionState& stage, const ModelGeometry& g,
+                                  const QsaState* draft, int64_t upto, std::string& error);
 
 } // namespace strata::core

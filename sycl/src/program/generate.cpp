@@ -1398,10 +1398,9 @@ int main(int argc, char **argv) try {
     if (o.serve && o.conversation_cache_mib > 0 && (o.prompt_cache == 0 || o.conversation_cache_slots == 0))
         std::fprintf(stderr, "strata serve: warning: conversation caching is disabled by %s\n",
                      o.prompt_cache == 0 ? "--prompt-cache 0" : "--conversation-cache-slots 0");
-    if (o.conversation_cache_mib > 0 && o.conversation_cache_slots > 0 && o.prompt_cache > 0 && !o.layer_split.empty()) {
-        std::fprintf(stderr, "strata serve: conversation parking does not yet support --layer-split; disable parking with --conversation-cache-mib 0\n");
-        return 2;
-    }
+    // A layer split parks each stage as its own image (README item 3): every layer's K/V and running state lives on
+    // exactly one GPU, so the park walks the stages on their own devices, and the drafter's image rides with the last
+    // stage (the drafter is bound there). With no split this is the single-image path, unchanged.
     // Layer split (multi-GPU): the later stages run layers [K_i, K_i+1) on their own GPUs (--split-device, default
     // the next visible ones); "auto" places the K from each GPU's free VRAM once the weights are in (below).  Across
     // GPUs, not yet: KV streaming, images, control vectors, the helper caches (--expert-cache-remote), and lending
@@ -5068,17 +5067,45 @@ int main(int argc, char **argv) try {
         // addresses change: all parked images live in ordinary host vectors.
         auto park_current = [&](size_t held) -> bool {
             if (!conversations.enabled() || !live_ok || live.empty()) return true;
+            const bool split_park = !stages.empty();
+            // A split's checkpoints carry per-stage parts (checkpoint_at saves every stage's state at the capture
+            // point), and view_validate rejects any view containing one - it was written for the single-session
+            // image. The stage state a park needs is captured fresh per stage below, so the parked checkpoints are
+            // the primary's alone; leaving stage_parts in makes every split park skip on
+            // "checkpoint is not a live token prefix".
             const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
             auto reuse = conversations.take_reuse();
             size_t estimate = 0;
-            if (!strata::core::conversation_snapshot_bytes(view, ss, g, mtp.kv_state(), estimate, err)) {
+            if (!strata::core::conversation_snapshot_bytes(view, ss, g, mtp.kv_state(), estimate, err,
+                                                            /*with_draft=*/!split_park,
+                                                            /*allow_stage_parts=*/split_park)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (%s)\n", err.c_str());
                 err.clear(); // A recoverable miss must not poison the batched draft prefill's error channel.
                 return true;
             }
+            // A split's later stages cost their own RAM, on top of the primary's: one image per stage (README item 3).
+            // A stage with a retained K/V prefix pays only for what it actually copies, so a rewrite of a live
+            // conversation does not re-copy every stage in full.
+            for (size_t i = 0; i < stages.size(); ++i) {
+                const bool owns_draft = (i + 1 == stages.size());
+                strata::core::StageKvReuse stage_reuse =
+                    (i < reuse.stages.size()) ? std::move(reuse.stages[i]) : strata::core::StageKvReuse{};
+                if (!strata::core::stage_bytes(estimate, stages[i]->ss, g,
+                                               owns_draft ? &mtp.kv_state() : nullptr,
+                                               int64_t(view.ids.size()), err) ||
+                    !strata::core::stage_capture_bytes(stage_reuse, stages[i]->ss, g,
+                                                       owns_draft ? &mtp.kv_state() : nullptr,
+                                                       int64_t(view.ids.size()), estimate, err)) {
+                    std::fprintf(stderr, "strata serve: conversation cache: skip parking (%s)\n", err.c_str());
+                    err.clear();
+                    return true;
+                }
+                reuse.stages.push_back(std::move(stage_reuse));
+            }
             const size_t fresh_estimate = estimate;
             if (!reuse.kv.empty() && !strata::core::conversation_snapshot_capture_bytes(
-                    reuse, view, ss, g, mtp.kv_state(), estimate, err)) {
+                    reuse, view, ss, g, mtp.kv_state(), estimate, err, /*with_draft=*/!split_park,
+                    /*allow_stage_parts=*/split_park)) {
                 reuse = {};
                 estimate = fresh_estimate;
                 err.clear();
@@ -5111,8 +5138,23 @@ int main(int argc, char **argv) try {
                 }
                 strata::core::SavedConversation image;
                 size_t reused_bytes = 0;
+                const bool split_park = !stages.empty();
                 if (!strata::core::conversation_snapshot_save(image, view, ss, g, mtp.kv_state(), err,
-                        std::move(reuse), &reused_bytes)) return false;
+                        std::move(reuse), &reused_bytes, /*with_draft=*/!split_park,
+                        /*allow_stage_parts=*/split_park)) return false;
+                // The later stages, each on its own card. The last one carries the drafter's K/V.
+                for (size_t i = 0; i < stages.size(); ++i) {
+                    const strata::core::OnDevice on(stages[i]->dev);
+                    strata::core::SavedStage st;
+                    const bool owns_draft = (i + 1 == stages.size());
+                    strata::core::StageKvReuse stage_reuse =
+                        reuse.stages.empty() ? strata::core::StageKvReuse{} : std::move(reuse.stages[i]);
+                    if (!strata::core::stage_save(st, view.ids, stages[i]->ss, g,
+                                                  owns_draft ? &mtp.kv_state() : nullptr,
+                                                  int64_t(view.ids.size()), err,
+                                                  std::move(stage_reuse), &reused_bytes)) return false;
+                    image.stages.push_back(std::move(st));
+                }
                 if (!strata::core::conversation_memory_admit(strata::core::conversation_available_memory(), 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM floor after capture, or telemetry unavailable)\n");
                     return true;
@@ -5843,12 +5885,37 @@ int main(int argc, char **argv) try {
             const auto parked = conversations.best(ids, req_imgs, want_cvec);
             std::optional<strata::core::SavedConversation> incoming;
             if (parked.tokens > resume) incoming.emplace(conversations.take(parked.index));
+            const bool split_restore = !stages.empty();
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
-            if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g, mtp.kv_state(), err)) {
+            if (incoming && !strata::core::conversation_snapshot_validate(*incoming, ss, g, mtp.kv_state(), err,
+                                                                        /*with_draft=*/!split_restore)) {
                 std::fprintf(stderr, "strata serve: conversation cache: discard invalid snapshot (%s)\n", err.c_str());
                 incoming.reset();
                 err.clear();
+            }
+            // Every stage's own image, on its own card, before anything is restored: a half-valid split image must
+            // fall back to a full re-read rather than leave one stage holding another conversation's state.
+            if (incoming && split_restore) {
+                if (incoming->stages.size() != stages.size()) {
+                    std::fprintf(stderr, "strata serve: conversation cache: discard split snapshot (%zu stages, %zu live)\n",
+                                 incoming->stages.size(), stages.size());
+                    incoming.reset();
+                    err.clear();
+                } else {
+                    for (size_t i = 0; i < stages.size() && incoming; ++i) {
+                        const strata::core::OnDevice on(stages[i]->dev);
+                        const bool owns_draft = (i + 1 == stages.size());
+                        if (!strata::core::stage_validate(incoming->stages[i], stages[i]->ss, g,
+                                                          owns_draft ? &mtp.kv_state() : nullptr,
+                                                          int64_t(incoming->live.ids.size()), err)) {
+                            std::fprintf(stderr, "strata serve: conversation cache: discard invalid stage %zu (%s)\n",
+                                         i, err.c_str());
+                            incoming.reset();
+                            err.clear();
+                        }
+                    }
+                }
             }
             // Preserve the outgoing branch before any checkpoint rewind, reset,
             // or incoming restore overwrites the positional state it requires.
@@ -5858,12 +5925,25 @@ int main(int argc, char **argv) try {
             }
             if (incoming) {
                 const auto t0 = Clock::now();
-                if (strata::core::conversation_snapshot_restore(*incoming, ss, g, mtp.kv_state(), err) !=
+                if (strata::core::conversation_snapshot_restore(*incoming, ss, g, mtp.kv_state(), err,
+                                                             /*with_draft=*/!split_restore) !=
                     strata::core::ConversationRestore::restored) {
                     // Already prevalidated above: a failure here is fatal, never
                     // permission to decode from a partially restored session.
                     std::printf("ERR restoring parked conversation: %s\n", err.c_str());
                     return 1;
+                }
+                // The later stages, each restored on its own card. The drafter's K/V goes to the stage that owns it.
+                for (size_t i = 0; i < stages.size(); ++i) {
+                    const strata::core::OnDevice on(stages[i]->dev);
+                    const bool owns_draft = (i + 1 == stages.size());
+                    if (strata::core::stage_restore(incoming->stages[i], stages[i]->ss, g,
+                                                    owns_draft ? &mtp.kv_state() : nullptr,
+                                                    int64_t(incoming->live.ids.size()), err) !=
+                        strata::core::ConversationRestore::restored) {
+                        std::printf("ERR restoring parked conversation (stage %zu): %s\n", i, err.c_str());
+                        return 1;
+                    }
                 }
                 if (std::getenv("STRATA_SNAPSHOT_VERIFY") != nullptr) {
                     uint64_t draft_hash = 0;
@@ -5883,8 +5963,18 @@ int main(int argc, char **argv) try {
                 cvec_cached = incoming->cvec;
                 resume = parked.tokens;
                 from_live = parked.live;
-                if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr)
-                    conversations.retain(std::move(incoming->kv), int64_t(live.size()));
+                if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr) {
+                    // Every stage's K/V goes back, not just the primary's: otherwise the next park re-copies
+                    // stages 1..N in full and a repeated rewrite loop never gets cheaper (README item 3).
+                    std::vector<strata::core::StageKvReuse> stage_reuse;
+                    stage_reuse.reserve(incoming->stages.size());
+                    for (auto& st : incoming->stages) {
+                        stage_reuse.push_back(strata::core::StageKvReuse{std::move(st.kv),
+                                                                          int64_t(live.size()),
+                                                                          int64_t(live.size())});
+                    }
+                    conversations.retain(std::move(incoming->kv), std::move(stage_reuse), int64_t(live.size()));
+                }
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
                              (long long) resume, from_live ? "live" : "checkpoint",
