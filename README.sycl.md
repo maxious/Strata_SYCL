@@ -458,18 +458,26 @@ Every document under `~/llvm/sycl/doc/extensions/` (50 supported, 63 experimenta
 deprecated/removed sets) was listed by name and the port searched for each area's API. The named areas are P0d;
 these are the ones that pass adds, grouped by the problem they would touch, and the ones the pass closed.
 
-- [ ] **F1 - `sycl_ext_oneapi_usm_device_read_only` (supported): mark the weights read-only to the device.** The
+- [x] **F1 - `sycl_ext_oneapi_usm_device_read_only` (supported): mark the weights read-only to the device.** The
   property says an allocation is host-written and "read-only in all device code" - true of every dense weight and
   every expert slot we hold. Of the port's 455 `malloc_device` sites, none sets it; dpct's own allocator does
-  (`sycl/include/dpct/detail/memory_detail.hpp:922`), so the gap is only in our own allocations. **Test**: set it
-  on the expert cache and the dense weights in one config, A/B decode at 2,185 and a 32K prompt. Cheap and low
-  risk; the question is whether the driver's caching changes at all.
-- [ ] **F2 - `sycl_ext_oneapi_prefetch` (experimental): prefetch into a chosen cache level from inside a
-  kernel.** Cooperative group prefetches with compile-time cache-level properties, for latency hiding. We
-  prefetch only on the host (`FileExpertSource::prefetch` fills the arena); nothing prefetches into device caches
-  while a layer runs. **Test**: on the *expert* path and the i-quant dense types first - exp 22/23 put the Q6_K
-  wide kernel at Pipe 16.8% / Send 0.0%, i.e. PIPE-bound, where a prefetch has nothing to win, so the Q6_K arena
-  is not the place to try it.
+  (`sycl/include/dpct/detail/memory_detail.hpp:922`), so the gap is only in our own allocations. **MEASURED
+  (exp 33): NULL - parked.** The toolchain has the extension (macro = 1 on the B60) and the property is
+  semantically true of both targets, but it moves nothing: `mmvq_bench` times the same Q6_K wide kernel over a
+  plain and a read-only allocation in one process at **1.000x (ncols=4) and 1.001x (ncols=1)** with **0 of 10,240
+  and 0 of 2,560 results different**, and the load path showed no gain either. The engine A/B cannot see an effect
+  of this size - three runs of the same config offered 142/145/148 drafts and accepted 121/120/121, so this
+  decode's run-to-run noise floor is ~+-1.5% TG (a useful number by itself, for every later engine A/B). Reverted
+  from the engine's allocations; the bench keeps the A/B so a new driver is one command away.
+- [x] **F2 - `sycl_ext_oneapi_prefetch` (experimental): prefetch into a chosen cache level from inside a
+  kernel. MEASURED (exp 33): no target in the decode set - closed, not implemented.** Cooperative group
+  prefetches with compile-time cache-level properties, for latency hiding. We prefetch only on the host
+  (`FileExpertSource::prefetch` fills the arena), and the profile says there is no latency-bound kernel to hide it
+  in: the decode's top GPU consumer is **pipe**-bound (`Pipe` 16.8%, **`Send` 0.0%**, exp 23) at 281 GB/s of the
+  card's 608 (exp 22); the second is the device spin on the host's plan (`wait_flag_ge_kernel`, 2.510 s, exp 20);
+  the third is ALU-bound (INTEL.md, 77% XVE active). The card's `XVE Array Stalled/Idle 92.3%` sits *between*
+  kernels and in that spin, which is D1/E2's ground, not an instruction's. Reopen only if a stall report shows a
+  top kernel with a non-zero `Send` share.
 - [ ] **F3 - `sycl_ext_oneapi_dot_accumulate` (supported): the built-in for the dp4a we hand-write.** It exposes
   "specialized hardware instructions" for dot-product-plus-accumulate; the port has its own
   `strata/kernels/dp4a.hpp` with 136 call sites. **Test**: A/B one kernel against the built-in (the Q6_K wide or
