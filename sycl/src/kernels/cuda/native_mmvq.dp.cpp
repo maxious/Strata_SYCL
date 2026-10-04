@@ -1368,6 +1368,68 @@ void native_mmvq_q6k_wide_kernel(const Q6KBlock* __restrict__ w, const Q81Block*
             if (lane == 0 && row0 + r < n_out) y[std::size_t(j) * n_out + row0 + r] = v;
         }
 }
+// SYCL port: experiment, README P0 #2 avenue 2 (exp 26) - the wide Q6_K kernel with NCOLS as a *runtime* column
+// loop instead of the full `#pragma unroll`.  The unrolled kernel keeps all NCOLS columns' activations (u0/u1/ds)
+// and accumulators live in one work-item, which blows registers at NCOLS>=5 (NCOLS=8 spills 6272 B vs 384 B at
+// NCOLS=4, exp 22).  Here the activation load and its dot are fused per-j so only one column is live at a time;
+// acc[NCOLS] stays live (each column accumulates independently).  `#pragma unroll 1` forces the loop to stay a
+// loop even though NCOLS is a compile-time template constant.
+template <int NCOLS>
+void native_mmvq_q6k_wide_loop_kernel(const Q6KBlock* __restrict__ w, const Q81Block* __restrict__ x,
+                                      float* __restrict__ y, int n_in, int n_out) {
+    auto item = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int lane = int(item.get_local_id(2)), warp = int(item.get_local_id(1));
+    const int row = int(item.get_group(2)) * WARPS + warp;
+    if (row >= n_out) return;
+    const int blocks_per_row = n_in / QK, x_stride = n_in / Q8K;
+    const int g = lane & 7, sub = lane >> 3;
+    const int vh_shift = 2 * ((g & 3) >> 1);
+    const int qh4_idx = 2 * (g >> 2) + (g & 1);
+    const int scale_offset = 8 * (g >> 2) + (g & 3);
+    const int bq8_offset = 4 * (g >> 2) + ((g & 3) >> 1);
+    const int u_int4 = g & 1;
+    const Q6KBlock* wr = w + std::size_t(row) * blocks_per_row;
+    float acc[NCOLS] = {};
+    for (int kbx = sub; kbx < blocks_per_row; kbx += WARP / 8) {
+        const int kby = kbx * (QK / Q8K);
+        const Q6KBlock* b = wr + kbx;
+        const sycl::int4 ql4 = load16_a2(b->ql + 16 * g);
+        const sycl::int4 qh4 = load16_a2(b->qh + 16 * qh4_idx);
+        const float d = b->d;
+        const float dsc0 = d * (float) b->scales[scale_offset];
+        const float dsc1 = d * (float) b->scales[scale_offset + 4];
+        const int vl[4] = {ql4.x(), ql4.y(), ql4.z(), ql4.w()};
+        const int vh[4] = {qh4.x() >> vh_shift, qh4.y() >> vh_shift, qh4.z() >> vh_shift, qh4.w() >> vh_shift};
+        int vi0[4], vi1[4];
+#pragma unroll
+        for (int p = 0; p < 4; ++p) {
+            vi0[p] = dpct::vectorized_binary<sycl::char4>((vl[p] & 0x0f0f0f0f) | ((vh[p] << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
+            vi1[p] = dpct::vectorized_binary<sycl::char4>(((vl[p] >> 4) & 0x0f0f0f0f) | (((vh[p] >> 4) << 4) & 0x30303030), 0x20202020, dpct::sub_sat());
+        }
+#pragma unroll 1
+        for (int j = 0; j < NCOLS; ++j) {          // one column's activation live at a time
+            const Q81Block* xb = x + std::size_t(j) * x_stride + kby + bq8_offset;
+            const int* p0 = reinterpret_cast<const int*>(xb[0].qs) + 4 * u_int4;
+            const int* p1 = reinterpret_cast<const int*>(xb[2].qs) + 4 * u_int4;
+            const sycl::int4 u0 = sycl::int4(p0[0], p0[1], p0[2], p0[3]);
+            const sycl::int4 u1 = sycl::int4(p1[0], p1[1], p1[2], p1[3]);
+            const float ds0 = xb[0].ds[0], ds1 = xb[2].ds[0];
+            int s0 = 0, s1 = 0;
+            s0 = strata::dp4a(vi0[0], u0.x(), s0); s0 = strata::dp4a(vi0[1], u0.y(), s0);
+            s0 = strata::dp4a(vi0[2], u0.z(), s0); s0 = strata::dp4a(vi0[3], u0.w(), s0);
+            s1 = strata::dp4a(vi1[0], u1.x(), s1); s1 = strata::dp4a(vi1[1], u1.y(), s1);
+            s1 = strata::dp4a(vi1[2], u1.z(), s1); s1 = strata::dp4a(vi1[3], u1.w(), s1);
+            acc[j] += (float) ds0 * dsc0 * (float) s0 + (float) ds1 * dsc1 * (float) s1;
+        }
+    }
+    auto sg = item.get_sub_group();
+    for (int j = 0; j < NCOLS; ++j) {
+        float v = acc[j];
+#pragma unroll
+        for (int o = WARP / 2; o > 0; o >>= 1) v += sycl::permute_group_by_xor(sg, v, o);
+        if (lane == 0 && row < n_out) y[std::size_t(j) * n_out + row] = v;
+    }
+}
 // SYCL port: the wide Q6_K kernel with its weight loads issued U steps ahead. The wide kernel's 2560-wide rows
 // are ~3 steps of load -> wait -> dot per sub-group, so each sub-group has one 16-byte load per lane in flight
 // at a time and the kernel is latency-bound (~146 GB/s). Here a sub-group first issues the ql/qh/scale loads
@@ -1444,6 +1506,10 @@ inline int q6k_wide_rpw() {
     static const int v = std::getenv("STRATA_MMVQ_WIDE_RPW") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_RPW")) : 1;
     return v;
 }
+inline bool q6k_loop() {   // STRATA_MMVQ_LOOP=1: exp 26 - the wide Q6_K kernel runs NCOLS>=5 as a runtime column loop (opt-in)
+    static const bool v = std::getenv("STRATA_MMVQ_LOOP") != nullptr && std::atoi(std::getenv("STRATA_MMVQ_LOOP")) != 0;
+    return v;
+}
 template <int NCOLS>
 void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     const auto* w = static_cast<const Q6KBlock*>(weights);
@@ -1459,6 +1525,15 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
             return; }
         STRATA_Q6PF(2) STRATA_Q6PF(3) STRATA_Q6PF(4) STRATA_Q6PF(6)
 #undef STRATA_Q6PF
+    }
+    if (rpw == 1 && q6k_a2() && NCOLS >= 5 && q6k_loop()) {   // exp 26: the runtime-NCOLS column loop for NCOLS>=5 (opt-in)
+        const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
+        s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_loop, dpct_kernel_scalar<NCOLS>>>(
+            sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+                native_mmvq_q6k_wide_loop_kernel<NCOLS>(w, x, y, n_in, n_out);
+            });
+        return;
     }
     if (rpw == 1 && q6k_a2()) {
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);

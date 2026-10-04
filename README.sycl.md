@@ -184,11 +184,12 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   1. **Decode slimming on the pipe.** The currency is ops on the bottleneck pipe *per weight byte* - a lighter
      Q6_K unpack/scale sequence - **not** instruction count: exp 21 removed 23 instructions (2.3%) for 0% change.
      Gate: `mmvq_bench` (26.1 us) plus its `wide vs shared rel 5.449e-08` correctness line.
-  2. **The `NCOLS>=5` unroll.** Cost per added pair of columns roughly doubles (2->4 -> 4->6 -> 6->8), and
-     `NCOLS=8` spills 6272 B in 1631 instructions against 384 B / 985 at `NCOLS=4` - the register blow-up is a
-     symptom of unrolling all columns into one work-item. A small column *loop* instead of a full unroll is the
-     thing to try, measured against the curve above; llama.cpp's `Q4_K multi-column MMVQ redundant-work cut`
-     (#27062, in the mined list below) is the same shape of change for a sibling type.
+  2. **The `NCOLS>=5` unroll. MEASURED (exp 26): the column loop fixes the blow-up but it is a drafter-window lever,
+     not the primary decode.** A runtime column loop (activation fused into the dot, `#pragma unroll 1`) behind
+     `STRATA_MMVQ_LOOP=1` (default off, applied for NCOLS>=5) flattens the superlinear tail - ncols 6/7/8 go
+     35.9/39.4/55.5 -> 33.5/37.5/40.4 us (1.07x/1.05x/1.37x), the 7->8 jump drops from +41% to +8%, bit-identical
+     output - while the ncols=1-4 unroll is untouched (1.00x). ncols=5 is a 0.98x regression, and the engine's
+     dominant ncols=1 decode is unchanged, so the primary lever stays avenue 1. Keep opt-in for a wide-MTP drafter.
   3. **XMX / oneMKL** - CLOSED by exp 25 (see the library tier below): a persistent-FP16 dense GEMM loses the
      engine's real decode ncols (0.54-0.86x at ncols=1..4), so XMX stays a prompt-only lever.
   Do not redo: the 384 B spill (exp 21: free) and the cache policy (exp 22: the sweep was null because the option
@@ -328,6 +329,7 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | [23](sycl-experiments/23-q6k-mmvq-stall-reasons.md) | Q6_K MMVQ stall reasons | 8,061 instances, 27 us average (matches the bench); stalls **Pipe 16.8%, Send 0.0%**, Dist or Acc 2.1% | **PIPE-bound, not memory-bound** - the lever is arithmetic per weight byte |
 | [24](sycl-experiments/24-onednn-dense-f16-ab.md) | oneDNN dense-F16 A/B (reframed P0b #1) | fusion blocked: oneDNN's `Dequantize` reads s8/u8, not ggml blocks; dense F16 is numerics-identical to oneMKL, faster only at large batch (gu T>=64, 1.76x), slower where the engine's per-expert routed `ne` lives (T=16-32, 0.73-0.78x) | oneMKL default; oneDNN linked opt-in `STRATA_SYCL_DNNL=1` with `onednn_probe`+`onednn_gemm_bench` |
 | [25](sycl-experiments/25-decode-xmx-gemm.md) | oneMKL dense-FP16 GEMM at decode batch vs native_mmvq (P0b #2+#3) | GEMM loses the engine's real decode ncols (ncols=1..4: 0.54-0.86x) and only crosses at the fat drafter window (ncols=6: 1.33x, ncols=8: 2.39x); persistent-FP16 costs 2x dense VRAM + ~12 us materialization | dequant-then-XMX-GEMM is a no-win for decode; `native_mmvq` stays; P0b #2+#3 closed, P0 #2 XMX avenue closed |
+| [26](sycl-experiments/26-q6k-ncols-loop.md) | Q6_K wide MMVQ NCOLS unroll vs runtime column loop (P0 #2 avenue 2) | loop flattens the register-blow-up tail: ncols 6/7/8 35.9/39.4/55.5 -> 33.5/37.5/40.4 us (1.07x/1.05x/1.37x, 7->8 jump +41%->+8%, bit-identical); ncols 1-4 unchanged, ncols 5 is 0.98x | validated but opt-in (`STRATA_MMVQ_LOOP=1`, NCOLS>=5); a drafter-window lever, not the primary decode - avenue 1 stays the P0 #2 lever |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)

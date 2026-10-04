@@ -310,6 +310,15 @@ overhead dwarfs a single-column matvec - and only crosses over at the fat drafte
 avenue is closed, leaving the pipe-arithmetic slimming (P0 #2 avenue 1) and the NCOLS-unroll-to-loop (avenue 2) as
 the open decode levers. `decode_xmx_gemm_bench` stays in the tree. docs/sycl-experiments/25.
 
+**Q6_K NCOLS-unroll -> column loop (2026-10-04, B60): the loop fixes the register blow-up but is a drafter-window
+lever, not the primary decode (README P0 #2 avenue 2, exp 26).** `native_mmvq_q6k_wide_loop_kernel` (activation
+fused into the dot, `#pragma unroll 1`) behind opt-in `STRATA_MMVQ_LOOP=1` for NCOLS>=5 flattens the superlinear
+columns tail - ncols 6/7/8 go 35.9/39.4/55.5 -> 33.5/37.5/40.4 us (1.07x/1.05x/1.37x; the 7->8 jump drops from +41%
+to +8%, which is exp 22's 6272 B spill disappearing) with bit-identical output. ncols=1-4 are untouched by the
+NCOLS>=5 gate (1.00x), ncols=5 is a 0.98x regression, and the engine's dominant ncols=1 decode is unchanged - so it
+stays opt-in for a wide-MTP drafter and the primary P0 #2 decode lever remains avenue 1 (lighter Q6_K unpack/scale
+= ops per weight byte on the pipe). docs/sycl-experiments/26.
+
 ### Serving the port
 
 `serve/server.py --engine strata` runs the SYCL engine unchanged through `sycl/serve/strata-sycl.sh`. That script
