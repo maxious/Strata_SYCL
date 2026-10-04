@@ -105,6 +105,29 @@ answer.
 A cold split run measured 14.2 tok/s initially - the GPU clock/graph-capture ramp (INTEL.md's "warm the clocks"
 rule). Warm runs are the number to keep.
 
+### Q2_0, expert profile resident: decode parity, the win is the prompt (2026-10-04)
+
+The 1.4x decode is the Coder IQ1_M's number, not the split's in general. Q2_0 on the same two B60s, both paths
+measured in serve (one GEN request each, cold page cache, 256 greedy new tokens, the real 2,185-token v1 long
+prompt), gives:
+
+| path | TG (tok/s) | PP (tok/s) | TTFT (s) | resident experts | decode cache hit rate | peak VRAM |
+|---|---:|---:|---:|---:|---:|---:|
+| single B60 | 32.0 | 445.3 | 4.9 | 12,996 (16.7 GiB) | 95.5% | 22.2 GB |
+| dual B60 split (K=22) | 33.1 | 576.4 | 3.8 | 24,492 (31.5 GiB) | 100.0% | 41.9 GB |
+
+**On Q2_0 the split's decode is parity (1.03x) and its win is the prompt (1.29x).** The hit rate says why: the
+single card's hottest-first profile already serves 95.5% of the routed experts from VRAM, so the dual config's
+near-2x resident experts add ~4.5% of hits and ~3% of TG. Decode at this config is not expert-bandwidth-bound,
+while prefill is - the same benchy widens the prompt gap with length (PP 668 -> 945 tok/s at 40,000, 583 -> 938
+at 128,000, 485 -> 794 at 256,000), and TTFT follows it (60.1 -> 42.5 s, 219.8 -> 136.7 s, 528.7 -> 322.8 s).
+Those long-prompt PP figures are the benchy's single one-shot against dual serve (the 2,185 pair above is
+mode-matched); the modes differ ~2% on PP (single serve 445 vs single one-shot 455 at 2,185), well below the gap.
+
+So the split's decode gain depends on whether one card's decode work is the constraint: it is on the IQ1_M
+(1.4x), it is not on Q2_0. What would move Q2_0's decode is overlapping the cards instead of alternating them
+per verify window (README.sycl.md's P0 item on the Hardin22 fork).
+
 ## Validity
 
 - P2P round-trip bytes are **identical in both directions** (0 mismatches at 256 KiB and 1 MiB), the bit-exactness
@@ -123,4 +146,6 @@ content. A real dual-B60 layer split now works and decodes faster than one card:
 one-line migration bug (dropped `get_memory_info` in `stage_room`, which made every second-card split stage
 report "no room" and crash), the split configures both cards (CUDA0 layers 0-23, CUDA1 layers 24-47, 12,288
 resident experts) and, with the MTP draft layer, decodes at 35.5 tok/s vs 25.4 single-card on the Coder IQ1_M
-(~1.4x) with identical outputs. P2P transfer and the split hand-off are both validated.
+(~1.4x) with identical outputs. P2P transfer and the split hand-off are both validated. **The decode gain is
+model-dependent**: 1.4x on the IQ1_M, decode parity on Q2_0, whose single-card decode is already expert-resident
+(95.5% hit rate) so the split's second card pays for itself in prefill instead (Q2_0 section above).
