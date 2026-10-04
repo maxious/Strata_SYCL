@@ -42,11 +42,14 @@ struct Pending {
     uint64_t bytes;
     DevicePtr data;
 };
-// exp 27/28 (P0 #2 avenue 1): pre-unpack each Q6_K tensor once so the decode skips the per-token 6-bit
-// unpack/gather (measured ~2x on the dense decode).  DEFAULT ON (parity-gated, ~1e-7 vs the packed path);
-// STRATA_MMVQ_PREUNPACK=0 opts out and the packed path takes over.
+// exp 27/28 (P0 #2 avenue 1): pre-unpack each Q6_K/Q5_K tensor once so the decode skips the per-token 6-bit
+// unpack/gather.  The kernel is faster in isolation - 1.04-2.27x on the shapes this model actually decodes, at
+// ncols=1..8 (exp 36) - but the pre-unpacked copies cost 2.53 GiB of extra dense VRAM (300 -> 463 matrices on the
+// Coder IQ1_M), and on a 32 GB card the expert cache is what that VRAM buys: 9,478 -> 8,152 slots, 5.37 -> 7.90 GiB
+// RAM mirror.  End to end that is a 12.4% decode LOSS (42.2 -> 38.0 tok/s); at matched slot counts the two arms are
+// within 1% (38.4/38.4 vs 38.0).  So DEFAULT OFF, opt-in: STRATA_MMVQ_PREUNPACK=1 pre-unpacks.
 bool q6k_preunpack_enabled() {
-    static const bool v = std::getenv("STRATA_MMVQ_PREUNPACK") == nullptr || std::atol(std::getenv("STRATA_MMVQ_PREUNPACK")) != 0;
+    static const bool v = std::getenv("STRATA_MMVQ_PREUNPACK") != nullptr && std::atol(std::getenv("STRATA_MMVQ_PREUNPACK")) != 0;
     return v;
 }
 }
