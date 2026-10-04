@@ -217,6 +217,12 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   1-2.4% lossy, so the dequant+oneMKL FP16 path stands. What is left of this item is the faster *dequant* feeding
   FP16 - and `dequant_bench` says Q2_0's is already bandwidth-bound (419-473 GB/s), so the headroom is in the
   i-quants, not in the size the port tells people to pick.
+  **Outcome (exp 31): the i-quant dequant half is measured-bounded - resist-optimization.** A register-table hoist of
+  `d*codebook` (removing the per-value convert/mul) is bit-identical (check=unchanged) but NULL (~75 GB/s unchanged):
+  the i-quant dequant is codebook-*select*-bound over the compile-time int8 codebook (the "LUT" is a register
+  select-tree, not a memory gather), so neither that nor a wider-chunk / `iq4nl_lut4`-style bucket rewrite offers real
+  headroom. Q2_0 (bandwidth-bound at ~472) stays the prompt dequant pick; the i-quant dequant half is parked as
+  resist-optimization (confirms exp 04/11).
 - [~] **Host-pinned memory for host-to-device (#26789) and dev2dev memcpy by SYCL API (#24476/#26234/#27550
   P2P).** REFUTED-AS-GAIN in research (exp 03 + close read of the blob-fused weights): Strata runs each
   GpuStage in its own SYCL context, where raw peer-USM `memcpy` is a silent no-op (llama.cpp's own warning,
@@ -349,6 +355,7 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | [27](sycl-experiments/27-q6k-preunpack-decode.md) | Q6_K decode pre-unpack ceiling (P0 #2 avenue 1) | the 6-bit unpack/gather IS the pipe cost (dp4a 32 of 985 instr, same ALU pipe); a signed-byte no-unpack decode (Q8_0 wide32) is 2.06x at ncols=1 (19.1->9.3 us) and 1.6-2.1x across the curve, stable | VALIDATED: pre-unpack Q6_K once to signed bytes, decode with load+dp4a; wiring is the next step (persistent ~1.30x buffer) |
 | [28](sycl-experiments/28-q6k-preunpack-engine.md) | pre-unpacked Q6_K decode wired (P0 #2 avenue 1) | Q6_K pre-unpacked to `Q6U` signed-byte blocks once + routes `native_mmvq(14)` (layer.cpp:154, verify/head/expert/PLE) through the no-bit-unpack kernel; parity ~1e-7 vs packed (q6k_preunpack_parity all shapes PASS); deployed path 2.05x at ncols=1, 1.58-2.10x across | WIRED; now DEFAULT ON (`STRATA_MMVQ_PREUNPACK=0` opts out to the packed path); persistent ~1.25x weight buffer; end-to-end decode to confirm on the runtime box |
 | [30](sycl-experiments/30-q5k-preunpack.md) | pre-unpacked Q5_K decode, default-on (P0 #5) | Q5_K pre-unpacked to `Q5U {dsc,mn1,code5 qs[32]}` once + routes `native_mmvq(13)` through the no-bit-unpack decode (min-term ones-dp4a; the float-sum ds[1] is not usable); parity ~1e-7 (q5k_preunpack_parity all shapes PASS); 1.29x at ncols=1, 1.12-1.29x across | WIRED DEFAULT ON; Q4_K/Q3_K/Q2_0/IQ4_XS parked with verdicts (Q8_0 already byte); analysis reports in sycl/bench/reports/p05/ |
+| [31](sycl-experiments/31-iq4nl-dequant-null.md) | i-quant dequant speed half (P0 #3, measured null) | baseline IQ4_NL 75 / IQ4_XS 76 / IQ3_XXS 87 GB/s (~4-6x below Q2_0's 472); a register-table hoist of `d*codebook` is bit-identical (checksum unchanged) but NULL (~75 GB/s) - the i-quant dequant is codebook-select-bound (constexpr int8 codebook = register select-tree, not a memory gather) | P0 #3's dequant half parked as resist-optimization; Q2_0 stays the prompt pick |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)

@@ -353,6 +353,15 @@ trap: Q81Block.ds[1] is the FLOAT sum, NOT the int8-code sum the m*sum(a) term n
 reports + a GGUF dense-usage counter: sycl/bench/reports/p05/ + sycl/tools/gguf_count_dense_usage.py.
 docs/sycl-experiments/30.
 
+**i-quant dequant speed half (2026-10-04, B60): measured null - P0 #3's dequant half parked (exp 31).** Baseline
+(2560x1280): IQ4_NL 75, IQ4_XS 76, IQ3_XXS 87, IQ2_S 183, IQ2_XS 246, Q2_0 472 GB/s - the i-quants ~4-6x below Q2_0
+(bandwidth-bound). The bottleneck is the codebook *select* over the compile-time constexpr int8 `kvalues_iq4nl` (a
+register select-tree, NOT a memory gather - so "put the LUT in registers" is already true). A register-table hoist of
+`d*codebook[16]` (removing per-value convert+mul) is bit-identical (dequant_bench checksum unchanged) but NULL (~75
+GB/s). `iq4nl_lut4`-style 4-way-bucket magic is ~comparable in compares to a 16-entry select-tree, so no headroom
+there either. Reverted; Q2_0 stays the prompt dequant pick. Confirms exp 04/11's LUT-bound finding at source level.
+docs/sycl-experiments/31.
+
 ### Serving the port
 
 `serve/server.py --engine strata` runs the SYCL engine unchanged through `sycl/serve/strata-sycl.sh`. That script
