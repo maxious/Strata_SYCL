@@ -303,6 +303,10 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(dequant_bench PRIVATE strata_kernels)
   add_executable(mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_bench.cpp)   # dense mmvq timing
   target_link_libraries(mmvq_bench PRIVATE strata_kernels)
+  # P0 #2 avenue 1: time the *no-unpack* ceiling (Q8_0 wide32 byte decode) vs Q6_K unpack-in-kernel at the engine's
+  # ncols; if pre-unpacking the Q6_K rows to signed bytes is much faster, that is the avenue-1 win.
+  add_executable(q6k_preunpack_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_bench.cpp)
+  target_link_libraries(q6k_preunpack_bench PRIVATE strata_kernels)
   # the P0b #2/#3 A/B: oneMKL dense-FP16 GEMM on a persistent weight copy vs native_mmvq at the decode batch (ncols
   # 1..8). Links oneMKL BLAS directly (like onednn_gemm_bench) so building the bench never pulls the whole engine.
   find_package(MKL CONFIG QUIET)

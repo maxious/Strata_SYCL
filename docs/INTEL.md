@@ -319,6 +319,17 @@ NCOLS>=5 gate (1.00x), ncols=5 is a 0.98x regression, and the engine's dominant 
 stays opt-in for a wide-MTP drafter and the primary P0 #2 decode lever remains avenue 1 (lighter Q6_K unpack/scale
 = ops per weight byte on the pipe). docs/sycl-experiments/26.
 
+**Q6_K decode pre-unpack (2026-10-04, B60): the 6-bit unpack IS the pipe cost - pre-unpacking once to signed bytes is
+~2x and VALIDATED as avenue 1 (exp 27).** The a2 Q6_K wide kernel's ISA has dp4a at only 32 of 985 instr on the SAME
+ALU int pipe as the bfn/xor/shl + per-byte-mov unpack (~4x its count), because ql/qh's mismatched byte alignment
+forces the per-byte gather. Timing the no-unpack ceiling - signed-byte weights through the shipped Q8_0 `wide32`
+kernel, the exact decode shape of a pre-unpacked Q6_K - against native_mmvq_q6k is 2.06x at ncols=1 (19.1 -> 9.3
+us, the engine's primary decode) and 1.6-2.1x across the curve (memory not the limit: byte path at 749 GB/s, Send
+0%). The lighter formulation is to NOT unpack per token: pre-unpack Q6_K to `{d'=d*scale, 32 int8}` at weight load
+and decode with the existing load+dp4a path, at a persistent ~1.30x weight buffer. This is not the parked
+memory-reorder (exp 12/22); it removes the ALU unpack, not a memory stall. WIRING is the next step.
+q6k_preunpack_bench stays as the regression measure. docs/sycl-experiments/27.
+
 ### Serving the port
 
 `serve/server.py --engine strata` runs the SYCL engine unchanged through `sycl/serve/strata-sycl.sh`. That script
