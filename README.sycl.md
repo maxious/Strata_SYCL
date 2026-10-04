@@ -244,7 +244,8 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   CUDA graph for the draft chain, commits batched. None is ported to SYCL yet; each needs the SYCL split's own
   parity-first verification (INTEL.md "How to verify any of these"): a real-model 256-token decode on 2x B60,
   accept/exit-time unchanged, before calling it a win. The current SYCL split (exp 03/dual-B60) keeps every
-  dense weight on every card and lets the cards alternate; this is the order to close that gap.
+  dense weight on every card and lets the cards alternate; this is the order to close that gap. **Re-reviewed
+  2026-10-04 against two more forks, with the first measurement named for each change: P0c below.**
 - [x] **Q8_0/Q8_1 wide-load + DMMV ESIMD (#29186), Q2_K/Q5_K reordered ESIMD (#27490/#26376). MEASURED (exp 30): the
   byte pre-unpack is extended to Q5_K; the other K-quants are parked with verdicts.** An analysis run counted the
   real GGUF shards (sycl/bench/reports/p05/usage.md): the Flash-Next dense decode is Q6_K x128 (shipped), Q4_K x47,
@@ -300,6 +301,80 @@ Ranked by how directly the library replaces work the port currently hand-writes.
   1.2-1.9x slower (ncols=1..4), and its fat-window cross-over (ncols>=6) does not repay the 2x dense-VRAM residency
   (`decode_xmx_gemm_bench`, exp 25). The matrix units were idle because XMX's backend cost only repays at
   GEMM-shaped batch, which decode is not. Parked with the other fused-XMX losers.
+
+### P0c - dual-GPU: the tests behind the P0 fork item (reviewed 2026-10-04)
+
+Three forks were read against our split: [anon761/strata](https://github.com/anon761/strata) (a sync fork on a
+0.1.32 base whose only dual-GPU content is the `SECOND_GPU.md` doc we already ship - nothing to take),
+[ExTV/strata-5090-4070](https://github.com/ExTV/strata-5090-4070) (a 5090 + 4070 Ti SUPER in a chipset x1 slot
+on Hardin22's fork plus ten patches, every change measured) and
+[Hardin22/Strata-DualGPU](https://github.com/Hardin22/Strata-DualGPU) (`docs/DUAL_GPU.md`, the source of most of
+it). The target is our own gap: on Q2_0 the two B60s **decode at parity** (32.0 -> 33.1 tok/s) and prefill 1.29x
+(445 -> 576 tok/s) because the cards alternate a window at a time (exp 03 + the 2026-10-04 matrix). Each item is a
+theory about that gap with its first measurement named. Nothing here is called a win before the SYCL split's own
+parity-first verification (INTEL.md "How to verify any of these").
+
+- [ ] **D1 - measure the window before porting anything: is there a host gap between the two stages?** The fork
+  launches both stage graphs at once and lets a **flag in mapped pinned memory** order them (`STRATA_XSTAGE=0`
+  reverts to host-synchronizing each stage); commits are queued per stream and waited once per request
+  (`STRATA_COMMIT_ASYNC=0` reverts); the draft round is one graph. Neither switch is in our tree, but
+  `STRATA_DECODE_TIMING=1` **is** (in `src/` and `sycl/`) and prints the per-window host and per-stage GPU timings,
+  and `STRATA_COMMIT_SYNC` (`src/core/verify.cpp`) is the existing async-commit gate. **Test**: Q2_0 at 2,185
+  tokens, 256 greedy, 2x B60, `STRATA_DECODE_TIMING=1`; read the timeline for a host wait on stage 0 before stage
+  1 launches and for the per-stage GPU busy time. **A win looks like**: the gap leaves the timeline and TG rises.
+  If the timeline is already back to back, the parity is not a host-wait problem and this closes for the cost of
+  one run.
+- [ ] **D2 - pipelined windows, from behind D1** (P0's item 1: the fork's x1.17/x1.09/x1.06/x1.30, default on for
+  exactly two GPUs). Our alternating window is the shape it attacks, and our split is balanced (K=22 of 48), so
+  the x1.17 *code* case is the comparable one - not the x1.30 lookup case our synthetic prompts do not have. One
+  design point to carry over: **the auto split must be priced by the pipelined slower stage, not the sum of the
+  stages** (the fork's stock search put 2 of 48 layers on the small card and decoded at 29 tok/s; repriced it
+  picks K=19 against 158 for a hand-tuned K=20). Our search picked K=4 under the exp-03 bug and we hand-fixed
+  K=22/24, so the search has an item of its own here. The fork's parity bar is ours too: `STRATA_IQ_MT_MIN=1
+  --adapt-every 0` made serial and pipelined write the same text in 45 of 45 requests. **Test**: Q2_0 at 2,185 with
+  `--spec 4`, serial vs pipelined: TG, accept rate, rollback count. **Expected**: ~1.1x on decode (the stages stay
+  dependent), not 2x.
+- [ ] **D3 - at 262,144 context our QSA top-k is past the register kernel's fit on the B60** (a decode lever none
+  of the other items touch). The register kernel holds `4 * 1024 * TK_PER` cells and `TK_PER_MAX` is **66 under HIP
+  (270,336 cells) but 33 on every other build (135,168 cells)**, so the 262K context we ship stays
+  register-resident on AMD and falls to the wide kernel - every key re-read from memory on each radix pass, one
+  block per query, the rest of the card idle - on our Intel card. The CUDA side replaced that shape with a block
+  cluster: **200 -> 22 us per call at 262K** (`decode_cluster_parity --bench`; 58 -> 18 at 128K), and ExTV's patch
+  01 is upstream's PR #603 - the same fix arrived at independently for NVIDIA's 64-register fit. **Test**:
+  `sycl/src/kernels/qsa_select_bench.cpp` already exists and is not yet a CMake target - build it, measure the
+  top-k at 135K / 200K / 262K cells on the B60, and try a higher `TK_PER_MAX` for the Intel branch (Xe2's register
+  file is what lets the HIP branch hold 66) before writing a new kernel. **Only shows on a real prompt past ~135K
+  cells that keeps generating** - exp 32's synthetic long prompts stop, so use a real document.
+- [ ] **D4 - prefill is 1.29x, not 2x: do the two stages overlap on adjacent prompt chunks?** Decode parity has
+  the alternating-window explanation; the prompt path has the same shape one chunk at a time (stage 0's layers,
+  then stage 1's), so adjacent chunks could overlap exactly as D2's windows do. **Test**: read
+  `STRATA_DECODE_TIMING` / `--stats` over a prompt for a stage 0 idle while stage 1 runs. **A win looks like**:
+  prompt tok/s toward 1.8-2x of single (445 -> ~800 at 2,185), which is also the 256K prompt's 322.8 s TTFT. If the
+  stages already overlap, the 1.29x is the prompt's own two-stage dependency and this item closes with that number
+  recorded.
+- [ ] **D5 - conversation parking is refused with a split** (not decode, but the split's largest user-visible
+  cost once a chat holds two long conversations). ExTV's patch 07 parks the main card's session and copies the
+  stage's layers back on restore, only the cells written since the last copy: switching between two conversations
+  (30K and 15K) went from **20-48 s to 0.4-0.5 s**, with 0.8-1.7 GB snapshots per 30K tokens. Ours returns
+  "layer-split parking is not supported" (`sycl/src/core/conversation_state.cpp`). **Test**: two parked
+  conversations alternating on 2x B60, switch timed with the conversation cache on and off; it needs no new
+  kernel, only the state copy the port already does for a stage.
+- [ ] **D6 - each card keeps only its own layers' dense weights** (P0's item 2; upstream #559/#639). **On our
+  Q2_0 the dual decode win is nil** - its cache already hits 100.0% over 24,492 slots - so the slot gain is for the
+  **single** card (12,996 slots, 95.5% hit) and for the prompt, which is where the fork measured it (IQ2_XS code
+  162 -> 172, 32K prompt 1,899 -> 2,201; IQ3_XXS prompt 1,006 -> 1,978 once the last ~2,400 SSD-read experts
+  entered VRAM). **Test**: measure the per-card dense footprint and the slots gained on 2x B60, then re-run the
+  matrix's hit rate and PP at 2,185 and 32K.
+- **Checked, not ours to port.** `--pread-expert-blobs` (ExTV patch 08): `sycl/src/core/gguf_expert_source.cpp`
+  already reads expert slices with a vectored `pread` - one call for many slices - so the page-fault storm it fixes
+  is not ours. `--resident-experts` across a split (fork item 1): already ours; the dual run's log shows the RAM
+  copy at 13,312 slots / 17.1 GiB. P-core/E-core pool policy (fork item 7): no E-cores on a 5700X3D, and the
+  default is already "every physical core minus the host's" (7 of 8), so a `--pool-workers` sweep is a constant,
+  not a lever. Programmatic dependent launch (fork item 5, sm_90 `STRATA_DF_PDL`) has no SYCL equivalent. Card
+  order fastest-last (fork item 2) has no counterpart on two identical cards - what matters is that the last stage
+  runs the head and the draft, which our split already does (`mtp.bind(last_st ...)`, `generate.cpp`). The fork's
+  remaining dense-kernel items (side streams, batched post-ops, Q4_0 KV) belong with the kernel items above, not
+  here.
 
 ### P1 - attention A/Bs and fusion (mostly gated on P0, or low measured headroom)
 
