@@ -192,6 +192,23 @@ if(STRATA_NATIVE_EXPERTS)
   target_compile_definitions(strata_prefill PRIVATE GGML_COMMON_DECL_SYCL)
 endif()
 
+# --- oneDNN (optional, opt-in): the fused Dequantize->MatMul graph for the prompt path (README P0b #1) -------
+# Default OFF so the base build is untouched; STRATA_SYCL_DNNL=1 links it on.  oneDNN 3.11.4 ships in
+# /opt/intel/oneapi/dnnl/2026.0 (its CMake package is picked up once /opt/intel/oneapi/setvars.sh is sourced).
+# Strata's SYCL port targets Intel only, so the llama.cpp vendor-matching dance is unnecessary.
+# The fused path lives in strata_prefill (which already owns the prompt GEMM path and the -qmkl oneMKL link).
+option(STRATA_SYCL_DNNL "Link oneDNN for the fused dequant+matmul prompt-path experiment" OFF)
+if(STRATA_SYCL_DNNL)
+  find_package(dnnl CONFIG QUIET)
+  if(dnnl_FOUND)
+    target_link_libraries(strata_prefill PRIVATE DNNL::dnnl)
+    target_compile_definitions(strata_prefill PRIVATE STRATA_SYCL_DNNL=1)
+    message(STATUS "Strata SYCL: linked oneDNN ${dnnl_VERSION}")
+  else()
+    message(WARNING "STRATA_SYCL_DNNL=1 but no oneDNN found on PATH/LD_LIBRARY_PATH (source /opt/intel/oneapi/setvars.sh); building without it")
+  endif()
+endif()
+
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
@@ -319,6 +336,20 @@ if(STRATA_SYCL_PARITY)
   # device-to-device (P2P) transfer between two Intel cards, the handoff Strata's layer split uses
   add_executable(p2p_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/p2p_bench.cpp)
   target_link_libraries(p2p_bench PRIVATE strata_includes)
+  # oneDNN feasibility probe (README P0b #1): what matmul impl / Dequantize->MatMul partition does oneDNN pick
+  # on this device?  Prints impl_info_str per GPU; "ref" means oneDNN has no JIT kernel here (llama.cpp #28985
+  # disables oneDNN in that case).  Only builds under the STRATA_SYCL_DNNL opt-in, which links DNNL::dnnl.
+  if(STRATA_SYCL_DNNL AND TARGET DNNL::dnnl)
+    add_executable(onednn_probe ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/onednn_probe.cpp)
+    target_link_libraries(onednn_probe PRIVATE strata_includes DNNL::dnnl)
+    add_test(NAME onednn_probe COMMAND onednn_probe --allow-none)
+    # the dense-F16 library A/B (reframed P0b #1): oneDNN matmul vs the oneMKL GEMM the prompt path uses (Gemm::f16).
+    # Links oneMKL BLAS directly (dpct::blas::gemm) + DNNL::dnnl; deliberately not strata_prefill, so building the
+    # bench never pulls in the whole engine compile.
+    find_package(MKL REQUIRED)
+    add_executable(onednn_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/onednn_gemm_bench.cpp)
+    target_link_libraries(onednn_gemm_bench PRIVATE strata_includes MKL::MKL_SYCL::BLAS DNNL::dnnl)
+  endif()
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):
   #   native_expert_parity <shard1.gguf> [layer ...]
   if(STRATA_NATIVE_EXPERTS)

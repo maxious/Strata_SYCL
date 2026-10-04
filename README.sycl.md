@@ -216,13 +216,14 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   decode work adds wide-load MMVQ and ESIMD DMMV for Q8_0, and completes reordered-ESIMD for the K-quants.
   Extends the L1 reorder/ESIMD fast path to the remaining dense types; a decode follow-on to the item above.
 
-### P0b - library avenues: XMX, oneMKL, oneDNN (oneDNN is not linked at all today)
+### P0b - library avenues: XMX, oneMKL, oneDNN (oneDNN linked opt-in; the fuse premise measured no-win, exp 24)
 
 Ranked by how directly the library replaces work the port currently hand-writes.
 
-- [ ] **oneDNN: `Dequantize` -> `MatMul` as one graph, for the dequant-bound prompt path.** Verified on this box:
-  oneDNN **3.11.4**, `libdnnl.so.3.11`, a CMake package dir, SYCL in the same library, and the port links none of
-  it. Its graph API's op kinds include **`MatMul`, `Dequantize`, `DynamicDequantize`, `Quantize`, `RMSNorm`,
+- [x] **oneDNN: `Dequantize` -> `MatMul` as one graph, for the dequant-bound prompt path. MEASURED (exp 24): the
+  fusion premise is blocked; oneDNN stays linked opt-in only.** Verified on this box:
+  oneDNN **3.11.4**, `libdnnl.so.3.11`, a CMake package dir, SYCL in the same library, and the port now links it
+  behind `STRATA_SYCL_DNNL=1` (default off). Its graph API's op kinds include **`MatMul`, `Dequantize`, `DynamicDequantize`, `Quantize`, `RMSNorm`,
   `GroupNorm`, `LayerNorm`, `SoftMax`, `Reorder`** - and **no SDPA and no grouped-matmul op**, so llama.cpp's
   "fused-XMX SDPA" is a *composed* MatMul/SoftMax/MatMul subgraph that oneDNN's graph compiler fuses, not a
   primitive we can call. The fits, best first:
@@ -237,6 +238,14 @@ Ranked by how directly the library replaces work the port currently hand-writes.
   3. **`RMSNorm`/`SoftMax` fusion and `Reorder`** for the P1 fusion items and the L1 reorder item respectively.
   Every one of these is subject to the **P2 caveat below**: a oneDNN/MKL call must not fight graph capture, so
   each A/B runs with `STRATA_WARM_GRAPHS` on AND off, and each stays opt-in until it is measured faster.
+  **Outcome (exp 24, B60): the `Dequantize`+`MatMul` fusion is structurally blocked** - oneDNN's `Dequantize` reads
+  only standard s8/u8 tensors, not ggml block formats (Q2_0/i-quants), and llama.cpp never fuses a block dequant
+  into oneDNN (it converts to F16 first). The honest dense-F16 A/B (`onednn_gemm_bench`) is numerically a wash vs
+  oneMKL (~2-6e-7 against an fp64 ref, exact on an integer grid) and faster only at large batch (gu T>=64, up to
+  1.76x), while the engine's real call is per-expert routed `ne` (small, tail-heavy) where oneDNN loses (gu
+  T=16-32: 0.73-0.78x). OneMKL stays default; oneDNN is linked opt-in (`STRATA_SYCL_DNNL=1`) with `onednn_probe`
+  (reports `jit:gemm:any` on the B60) parked for a future large-batch dense path. Full numbers plus the
+  column-major-layout trap: docs/sycl-experiments/24.
 - [ ] **oneMKL: the FP16 XMX GEMM is the prompt path already; the untested shape is the decode batch.**
   `xmx_gemm_bench` measures 30-60 TFLOP/s at prompt shapes and `int8_gemm_bench` measures INT8 at 1.4-2.2x FP16.
   Nobody has measured a oneMKL GEMM at **M=1..6** - the decode/verify window - against `native_mmvq`. The traffic
@@ -313,6 +322,7 @@ Reports live in `docs/sycl-experiments/`; these are the read-outs that set the p
 | [21](sycl-experiments/21-q6k-mmvq-isa-dump.md) | the Q6_K MMVQ ISA dump | the 384 B spill is 4 of 985 instructions with **no loop**; `IGC_ExtraOCLOptions=-ze-opt-large-register-file` removes it entirely (spill 0, 962 instructions) and 26.1 us is unchanged, 4 runs of 4 | the spill is free; do not chase it |
 | [22](sycl-experiments/22-q6k-mmvq-shape-curves.md) | Q6_K MMVQ shape curves | cols 1/2/4/6/8 = 19.1/21.5/26.2/35.9/55.4 us (281 -> 97 GB/s); rows 2560 -> 20480 = 205.7 -> 205.3 GB/s; 256 GRF identical at every point; a `-cl-load-cache-default` sweep was **null** (the option never reached the compiler) | not bandwidth- or parallelism-bound; the cache policy is untested, not refuted |
 | [23](sycl-experiments/23-q6k-mmvq-stall-reasons.md) | Q6_K MMVQ stall reasons | 8,061 instances, 27 us average (matches the bench); stalls **Pipe 16.8%, Send 0.0%**, Dist or Acc 2.1% | **PIPE-bound, not memory-bound** - the lever is arithmetic per weight byte |
+| [24](sycl-experiments/24-onednn-dense-f16-ab.md) | oneDNN dense-F16 A/B (reframed P0b #1) | fusion blocked: oneDNN's `Dequantize` reads s8/u8, not ggml blocks; dense F16 is numerics-identical to oneMKL, faster only at large batch (gu T>=64, 1.76x), slower where the engine's per-expert routed `ne` lives (T=16-32, 0.73-0.78x) | oneMKL default; oneDNN linked opt-in `STRATA_SYCL_DNNL=1` with `onednn_probe`+`onednn_gemm_bench` |
 
 
 ### Mined from the llama.cpp ggml-sycl git history (2026-10-03)

@@ -292,6 +292,14 @@ the products. Every hand-written joint_matrix kernel so far is correct but loses
   - The dequant it would save is small at expert size.
   - Not ported.
 
+**OneDNN (2026-10-04, B60): linked opt-in, dense-F16 A/B is a no-win.** The README P0b #1 fusion premise is
+blocked - oneDNN's `Dequantize` reads only standard s8/u8 tensors, not ggml block types, and llama.cpp never fuses
+a block dequant into oneDNN (it converts to F16 first). `STRATA_SYCL_DNNL=1` links `DNNL::dnnl` (default off) with
+`onednn_probe` (oneDNN reports `jit:gemm:any` on the B60) and `onednn_gemm_bench`: dense FP16 oneDNN matmul is
+numerically identical to oneMKL (~2-6e-7 vs fp64 ref, exact on integer grid) and faster at large batch (gu T=512
+1.76x) but slower at the engine's real per-expert routed `ne` (gu T=16-32: 0.73-0.78x). OneMKL stays. Full numbers
+to the plan's P0b item and the column-major-layout trap: docs/sycl-experiments/24.
+
 ### Serving the port
 
 `serve/server.py --engine strata` runs the SYCL engine unchanged through `sycl/serve/strata-sycl.sh`. That script
