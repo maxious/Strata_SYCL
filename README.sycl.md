@@ -325,16 +325,36 @@ parity-first verification (INTEL.md "How to verify any of these").
   from the host (`verify.cpp:1278`, `1395-1397`), so the stages are host-chained - but they are *dependent*
   (stage 1 reads stage 0's residual from the mapped hand-off buffer), so the chaining costs a launch round trip,
   not a removable wait. **The parity is not a host-wait problem.**
-- [ ] **D2 - pipelined windows, from behind D1** (P0's item 1: the fork's x1.17/x1.09/x1.06/x1.30, default on for
-  exactly two GPUs). Our alternating window is the shape it attacks, and our split is balanced (K=22 of 48), so
-  the x1.17 *code* case is the comparable one - not the x1.30 lookup case our synthetic prompts do not have. One
-  design point to carry over: **the auto split must be priced by the pipelined slower stage, not the sum of the
-  stages** (the fork's stock search put 2 of 48 layers on the small card and decoded at 29 tok/s; repriced it
-  picks K=19 against 158 for a hand-tuned K=20). Our search picked K=4 under the exp-03 bug and we hand-fixed
-  K=22/24, so the search has an item of its own here. The fork's parity bar is ours too: `STRATA_IQ_MT_MIN=1
-  --adapt-every 0` made serial and pipelined write the same text in 45 of 45 requests. **Test**: Q2_0 at 2,185 with
-  `--spec 4`, serial vs pipelined: TG, accept rate, rollback count. **Expected**: ~1.1x on decode (the stages stay
-  dependent), not 2x.
+- [ ] **D2 - pipelined windows: run window n on stage 0 while stage 1 still verifies n-1** (P0's item 1; the fork's
+  x1.17 code / x1.06-x1.30 across its four workloads; default on for exactly two GPUs). This is the one remaining
+  dual-GPU lever exp 34 measured: a split window is **89% device time across two dependent stages** (51% execution
+  plus 39% of the host waiting on the device), so overlapping the stages is worth far more than the 8.5% of the
+  window the host accounts for commit/emit plus draft - and even that 8.5% is an upper bound, since the last
+  stage's commit is already left running for the drafter to overlap (`verify.cpp:1578`, `wait = !use_mtp` at
+  `generate.cpp:7314`). **The ceiling from measured numbers**: the split's window is 53.8 ms at 1.78
+  tokens/window and the same work on one card is ~55-59 ms, so the ~48 ms of device time splits by layers - K=22/48
+  is ~22 ms and 26/48 plus the head and draft is ~26 ms - and a perfect window pipeline would approach the slower
+  stage, **~1.8x**. The gate on that is the speculative hold rate, which the port already measures: **88% of drafted
+  tokens are accepted** (113 of 129 at dual 2,185), better than the fork's 6 of 9.
+  **What the port already has**: the commit is asynchronous and the drafter already overlaps it - `commit(...,
+  wait=false)` says "left running: commit_finish() collects it (the drafter overlaps it)" (`verify.cpp:1578`); the
+  ring rewinds by position ("rewinding to a position just means writing from there again", `generate.cpp:895`);
+  each stage has its own session and the `next_` chain; the MTP chain has per-T graphs (`mtp.cpp` `round_exec_`,
+  `step_exec_`); and `--spec-min-p` is the confidence gate the fork's "guarded spec launch" corresponds to.
+  **What is missing**: the pipeline itself (stage 0 on window n while stage 1 runs n-1, with the chain's prediction
+  bridging the dependency) and the mispredict path (roll stage 0's GDN state and ring positions back, then re-run
+  window n with the real tokens).
+  **Order, each step with its own parity check**: (1) instrumentation only - log per window whether the chain's
+  prediction for the next window would have matched the tokens that window committed, i.e. the hold rate the
+  pipeline needs, with a 256-token greedy decode required to be token-identical to today's; (2) the pipeline
+  plumbing with the gate closed (never speculate), which must be inert; (3) open the gate. The fork's parity bar is
+  ours: `STRATA_IQ_MT_MIN=1 --adapt-every 0` made serial and pipelined write the same text in 45 of 45 requests.
+  **Traps**: the window's device spin is *bounded*, so a stall becomes a wrong window rather than a hang; and exp 19
+  found the eager path is not token-equivalent to the graph path, so every parity check must run the graph path.
+  **Test**: Q2_0 at 2,185 with `--spec 4`, serial vs pipelined: TG, hold rate, rollback count. **Also carry over**:
+  the auto split must be priced by the pipelined *slower* stage, not the sum of the stages (the fork's stock search
+  put 2 of 48 layers on the small card for 29 tok/s; repriced it picks K=19 against 158 for a hand-tuned K=20) -
+  our search picked K=4 under the exp-03 bug and we hand-fixed K=22/24.
 - [ ] **D3 - at 262,144 context our QSA top-k is past the register kernel's fit on the B60** (a decode lever none
   of the other items touch). The register kernel holds `4 * 1024 * TK_PER` cells and `TK_PER_MAX` is **66 under HIP
   (270,336 cells) but 33 on every other build (135,168 cells)**, so the 262K context we ship stays

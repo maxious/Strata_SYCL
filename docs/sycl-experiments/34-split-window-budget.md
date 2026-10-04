@@ -52,11 +52,14 @@ that could be removed. **D1 closes: the split's decode parity is not a host-wait
 
 ## What the budget does point at: D2
 
-`commit/emit 1.64 + draft 2.93` is **4.57 ms, 8.5% of every window**, and it is strictly serial - the phases are
-stamped `verify -> commit/emit -> draft` (`sycl/src/program/generate.cpp:6397`). That is the same order as the
-Hardin22 fork's serial-to-pipelined gain (x1.17 on code, x1.06-x1.30 across its four workloads), and its
-pipelining exists to overlap exactly this round with the next window's verify. **D2 is the next lever, with an
-8.5% floor from the serial draft+commit alone** - and its prerequisite is the device-ordered stage hand-off E2
+The host accounts `commit/emit 1.64 + draft 2.93` = **4.57 ms, 8.5% of every window** (`verify -> commit/emit ->
+draft`, stamped at `sycl/src/program/generate.cpp:6397`). Part of that pair is *already* overlapped on the device
+rather than serial: the last stage's commit is left running so the drafter overlaps it (`verify.cpp:1578`, reached
+with `wait = !use_mtp` from `generate.cpp:7314`) - but 8.5% is still the upper bound on what is not, and the far
+bigger prize is the 89% of the window that is two *dependent* stages' device time. That is the same ground as the
+Hardin22 fork's serial-to-pipelined gain (x1.17 on code, x1.06-x1.30 across its four workloads), whose pipelining
+exists to overlap a window with the *next* one. **D2 is the next lever** - and its prerequisite is the
+device-ordered stage hand-off E2
 declines to build on its own, which is the right way to pay for it.
 
 ## Note: why the per-segment table is empty
