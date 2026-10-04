@@ -376,6 +376,82 @@ parity-first verification (INTEL.md "How to verify any of these").
   remaining dense-kernel items (side streams, batched post-ops, Q4_0 KV) belong with the kernel items above, not
   here.
 
+### P0d - SYCL features from the local LLVM tree the port has not used (reviewed 2026-10-04)
+
+`~/llvm/sycl` (the DPC++ checkout) carries the extension specs in `doc/extensions/`, the graph guide in
+`doc/syclgraph/SYCLGraphUsageGuide.md` and runnable examples in `test-e2e/`. Each named area was probed against
+`sycl/` for actual use; the ones already ours are listed at the end. **Status matters before planning on one of
+these**: `peer_access` and the pinned-host-memory property are *supported* extensions, while `virtual_mem`,
+`register_host_memory`, `memory_export`, `copy_optimize`, `event_mode`, `grf_size` and `maximum_registers` are
+*experimental* - check the toolchain actually enables them before building a plan on one. The gaps, each with the
+measured thing it would touch:
+
+- [ ] **E1 - peer access (`sycl_ext_oneapi_peer_access`): the supported path our split and the peer expert tier
+  do not use.** The port has **zero** `ext_oneapi_can_access_peer` / `enable_peer_access` calls; the reference is
+  `test-e2e/USM/P2P/` (`p2p_access.cpp`, `p2p_copy.cpp`, `p2p_atomics.cpp`, `p2p_usm_residency_new_context.cpp`,
+  the last also naming Level Zero's `SYCL_UR_L0_RESTRICT_USM_RESIDENCY_TO_P2P`). exp 03 found raw peer-USM
+  `memcpy` a silent no-op between our per-stage contexts - exactly the case `enable_peer_access` exists to fix -
+  and our own peer transport is host-staged: `sycl/src/core/remote_experts.cpp` copies each batch through pinned
+  host buffers ("small enough to copy as one pinned buffer per layer", `h_x_`/`h_out_`/`h_meta_`). **Test**: on
+  2x B60, `can_access_peer(dev1, access_supported)` and then a 256 KiB-1 MiB device-to-device copy against the
+  current bounce (`p2p_bench` measures the host-staged 7.7-8.6 GB/s). **Two payoffs, measured separately**: (a)
+  the layer-split hand-off (34 us/window - probably not worth it), (b) the **peer expert tier** (`--peer-device`,
+  which cannot be combined with `--layer-split`), where real expert bytes cross the host every window. A win
+  looks like (b)'s transfer leaving the request log with the tier's output unchanged.
+- [ ] **E2 - the graph guide's two rules for our window: host work belongs in a host-task, and each stage wants
+  its own executable graph** (`SYCLGraphUsageGuide.md`, "Use Host-Tasks For Host Work" and "Graph Execution
+  Concurrency"). The guide is explicit that SYCL Graph cannot capture host work, and that a double-buffered pair
+  of finalized graphs can be in flight together "potentially increasing device occupancy", where one graph
+  updated between runs forces a host synchronization. That is the SYCL-level shape of P0c's D1 and D2: if the
+  split's per-window host work sits outside a host-task, no graph can hide it, and if the two stages share one
+  executable or one implicit ordering, the second cannot start early. The port calls `host_task` in exactly one
+  file (`sycl/src/core/verify.cpp`). **Test**: after D1's timeline, check whether the two stages' graphs are
+  separate executables that can overlap and whether the window's host decisions are inside host-tasks; then
+  `dynamic_command_group` is the graph-native form of the MTP chain's conditional step (the D2 fork used
+  conditional nodes for exactly that).
+- [ ] **E3 - the register/GRF knobs for D3's top-k fit** (`sycl_ext_intel_maximum_registers`,
+  `sycl_ext_intel_grf_size`; the port uses neither in its own kernels - only dpct headers mention
+  `max_registers_per_work_group`). The register top-k kernel's Intel build holds `TK_PER_MAX = 33` blocks per
+  thread against the HIP branch's 66 (D3), and GRF size is the knob that changes registers per thread. **Test**:
+  with D3's `qsa_select_bench`, try the GRF/register hints on the register kernel at 200K/262K cells before
+  writing a new kernel.
+- [ ] **E4 - per-window overhead knobs: event mode, copy hints, native commands.** `sycl_ext_intel_event_mode`
+  (discard events nobody waits on), `sycl_ext_oneapi_copy_optimize` (copy hints) and
+  `ext_codeplay_enqueue_native_command` (the graph guide has its own section on it) are all in the local tree and
+  the port uses **none** (0 hits each), while it submits ~1,300 in-order queue operations and makes events for
+  the split's commits and staging copies. **Test**: gated on D1's timeline - only where the host is the gap,
+  retry those submissions with events discarded. **Expected**: small; a cleanup, not a lever, unless D1 finds
+  host time between windows.
+- [ ] **E5 - `register_host_memory`: hand the runtime the memory we already have**
+  (`sycl_ext_oneapi_register_host_memory`). Our expert paths keep two kinds of host memory the device cannot
+  touch directly: the pinned arena (allocated with `malloc_host`, already fine) and the **mmap'd GGUF shard**
+  (`sycl/src/core/expert_source.cpp` maps the file, `gguf_expert_source.cpp` preads slices into staging).
+  Registering a mapped region would let a kernel read it in place, removing a copy per expert miss. **Caveat**:
+  PCIe reads of a mapped file are slower than the pread-into-pinned path we have, so this is a probe, not an
+  assumption - measure a cold expert both ways before changing anything.
+- [ ] **E6 - virtual memory: reserve, map and remap** (`sycl_ext_oneapi_virtual_mem`; `test-e2e/VirtualMem/`:
+  `extending_virtual_memory_range.cpp`, `remapping_virtual_memory_range.cpp`, `virtual_mem_usm_compatibility.cpp`).
+  The port uses none of it (2 incidental hits). It would let the expert arena grow or remap without a copy, which
+  is what the adaptive tier's swaps approximate today. **Low priority and scoped honestly**: our arena is bounded
+  by RAM rather than address space, so this pays only if a feature needs grow/remap - probe
+  `virtual_mem_usm_compatibility` on the B60 before designing anything on it.
+- Probed and already ours, or with no site: **SYCL graphs** are already the port's capture mechanism
+  (`sycl/src/core/graph.cpp`, `session.cpp`, `verify.cpp`, `mtp.cpp`; 116 sites of
+  `dpct::experimental::command_graph` / `sycl::ext::oneapi::experimental::command_graph`) - the open questions
+  are the guide's rules, E2. **USM** is in use (`malloc_device` 455 sites, `malloc_host` 35, `malloc_shared` 14,
+  `usm_allocator` 13); the one USM API we skip, `aligned_alloc_device`, would only matter for the alignment-bound
+  kernels INTEL.md already parks (exp 21-23). **Pinned host memory** as this tree defines it is
+  `property::buffer::use_pinned_host_memory` (`Basic/alloc_pinned_host_memory.cpp`, `Basic/use_pinned_host_memory.cpp`)
+  - a *buffer* property, and the port is USM with almost no buffers, so it does not apply; what our split needs
+  is that `malloc_host` is truly locked, which the hand-off's 7.7-8.6 GB/s at 34 us/256 KiB already shows.
+  **Atomic fp16**: no site in the port - its `atomic_ref` uses are dpct's wrappers over unsigned/int and a search
+  for a half/fp16 atomic finds none, so there is nothing to switch until a kernel wants one. **IPC / memory
+  export** (`sycl_ext_oneapi_memory_export`): the port's only hits are unused dpct scaffolding
+  (`sycl/include/dpct/ze_utils.hpp`) and the engine is one process, so there is no second process to share an
+  allocation with today. **Cache controls** (`sycl_ext_intel_cache_controls`/`cache_config`, 0 uses) stay where
+  exp 22 left them: parked as *untested rather than refuted* (the option never reached the compiler), not as a
+  new item.
+
 ### P1 - attention A/Bs and fusion (mostly gated on P0, or low measured headroom)
 
 - [ ] **oneDNN fused-XMX SDPA A/B for prompt attention.** llama.cpp has it (`fattn-onednn.hpp`); we have FP32 and
