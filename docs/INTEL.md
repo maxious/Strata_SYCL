@@ -231,7 +231,7 @@ every kernel on first use, which is slow the first time a process runs.
 - `STRATA_PLE_TRACE=1` traces each PLE gather.
 - `STRATA_DBG_NAN=1` reports the first non-finite values per layer, including the experts' fp16 GEMM inputs.
 
-**Two traps worth knowing.**
+**Three traps worth knowing.**
 
 - **`--prefill-until N` with a native pack** does not feed the rest of the prompt through the token loop (that
   loop is skipped for native packs). The tokens after N are dropped and the model free-runs. Compare output tokens
@@ -239,6 +239,10 @@ every kernel on first use, which is slow the first time a process runs.
 - **Identical greedy runs can decode at two speeds.** One PLE read stall lands either in the prompt's PLE wait or
   in the first decode round. It is a once-per-process cost, not lost throughput, so compare runs on time to first
   token plus decode.
+- **Serve stops at the model's end-of-turn token; a one-shot run only with `--stop-eos`.** benchy v1's prompt sizes
+  over 2,185 tokens are `long.ids[:2000]` repeated, and the model ends the turn right away on that text on one and
+  on two cards - the "256 output tokens" of a one-shot row start with `<|im_end|>`, while the same run in serve mode
+  reports 1. Compare rows on time to first token, never on the token count alone: docs/sycl-experiments/32.
 
 ### How the prompt path uses VRAM
 
