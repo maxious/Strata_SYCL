@@ -230,6 +230,21 @@ card's capability) and *adoptability* (how directly llama.cpp's code maps onto o
   ~34 us / 256 KiB (not the decode bottleneck), and the 1.4x decode gain comes from the layer-split compute
   distribution that already ships. Direct dev2dev would need a single-context rebuild that breaks per-stage
   isolation, to recover a ~34 us hand-off. No code; drop.
+- [ ] **Dual-GPU: take the pipelined-window and per-card-weights optimisations from
+  [Hardin22/Strata-DualGPU](https://github.com/Hardin22/Strata-DualGPU) (docs/DUAL_GPU.md).** A maintained CUDA
+  fork of Strata 0.1.38 for two cards that turned a 29 -> 143 tok/s decode on a 5080 + 4060 Ti by making the cards
+  overlap instead of alternate. Its changes, ranked by what they would move on the SYCL split (which already
+  runs the 1.4x layer-split distribution on 2x B60): 1) **pipelined windows** - run window K+1 on stage 0 while
+  stage 1 verifies K (teacher-forced MTP chain, a guarded spec launch, DeltaNet state rollback on reject) - the
+  single biggest lever in that fork (x1.17/x1.09/x1.06/x1.30 over serial); 2) **each card keeps only its own
+  layers' weights**, freeing VRAM for the expert cache (`--no-trim-stage-weights` against; upstream's #559/#639);
+  3) **server orders the cards fastest-last** (the last stage runs the head and the draft), and the auto split
+  is priced by the pipelined slower stage, not the sum; 4) **resident-RAM experts across a split** with
+  `--adapt-async` (swaps never stop a window); 5) fewer host waits - device-side stage hand-off flags, one
+  CUDA graph for the draft chain, commits batched. None is ported to SYCL yet; each needs the SYCL split's own
+  parity-first verification (INTEL.md "How to verify any of these"): a real-model 256-token decode on 2x B60,
+  accept/exit-time unchanged, before calling it a win. The current SYCL split (exp 03/dual-B60) keeps every
+  dense weight on every card and lets the cards alternate; this is the order to close that gap.
 - [x] **Q8_0/Q8_1 wide-load + DMMV ESIMD (#29186), Q2_K/Q5_K reordered ESIMD (#27490/#26376). MEASURED (exp 30): the
   byte pre-unpack is extended to Q5_K; the other K-quants are parked with verdicts.** An analysis run counted the
   real GGUF shards (sycl/bench/reports/p05/usage.md): the Flash-Next dense decode is Q6_K x128 (shipped), Q4_K x47,
