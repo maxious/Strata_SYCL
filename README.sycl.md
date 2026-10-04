@@ -314,16 +314,17 @@ it). The target is our own gap: on Q2_0 the two B60s **decode at parity** (32.0 
 theory about that gap with its first measurement named. Nothing here is called a win before the SYCL split's own
 parity-first verification (INTEL.md "How to verify any of these").
 
-- [ ] **D1 - measure the window before porting anything: is there a host gap between the two stages?** The fork
-  launches both stage graphs at once and lets a **flag in mapped pinned memory** order them (`STRATA_XSTAGE=0`
-  reverts to host-synchronizing each stage); commits are queued per stream and waited once per request
-  (`STRATA_COMMIT_ASYNC=0` reverts); the draft round is one graph. Neither switch is in our tree, but
-  `STRATA_DECODE_TIMING=1` **is** (in `src/` and `sycl/`) and prints the per-window host and per-stage GPU timings,
-  and `STRATA_COMMIT_SYNC` (`src/core/verify.cpp`) is the existing async-commit gate. **Test**: Q2_0 at 2,185
-  tokens, 256 greedy, 2x B60, `STRATA_DECODE_TIMING=1`; read the timeline for a host wait on stage 0 before stage
-  1 launches and for the per-stage GPU busy time. **A win looks like**: the gap leaves the timeline and TG rises.
-  If the timeline is already back to back, the parity is not a host-wait problem and this closes for the cost of
-  one run.
+- [x] **D1 - measure the window before porting anything: is there a host gap between the two stages? MEASURED
+  (exp 34): no host gap - the windows are device-bound.** The fork launches both stage graphs at once and lets a
+  **flag in mapped pinned memory** order them (`STRATA_XSTAGE=0` reverts to host-synchronizing each stage);
+  commits are queued per stream and waited once per request (`STRATA_COMMIT_ASYNC=0` reverts); the draft round is
+  one graph. Neither switch is in our tree, but `STRATA_DECODE_TIMING=1` **is** (in `src/` and `sycl/`). On 2x B60
+  at 2,185 tokens, two runs agreed: a **53.8-54.2 ms window** is GPU-reach wait (the host waiting on the *device*)
+  21.0 ms (39%) + **all of the host's own work 0.96 ms (1.8%)** + device execution 27.3 ms (51%) + commit/emit 1.65
+  + draft 2.94. The code agrees: the earlier stage blocks on `cs_->wait()` and then calls the next stage's `run()`
+  from the host (`verify.cpp:1278`, `1395-1397`), so the stages are host-chained - but they are *dependent*
+  (stage 1 reads stage 0's residual from the mapped hand-off buffer), so the chaining costs a launch round trip,
+  not a removable wait. **The parity is not a host-wait problem.**
 - [ ] **D2 - pipelined windows, from behind D1** (P0's item 1: the fork's x1.17/x1.09/x1.06/x1.30, default on for
   exactly two GPUs). Our alternating window is the shape it attacks, and our split is balanced (K=22 of 48), so
   the x1.17 *code* case is the comparable one - not the x1.30 lookup case our synthetic prompts do not have. One
@@ -398,17 +399,17 @@ measured thing it would touch:
   the layer-split hand-off (34 us/window - probably not worth it), (b) the **peer expert tier** (`--peer-device`,
   which cannot be combined with `--layer-split`), where real expert bytes cross the host every window. A win
   looks like (b)'s transfer leaving the request log with the tier's output unchanged.
-- [ ] **E2 - the graph guide's two rules for our window: host work belongs in a host-task, and each stage wants
-  its own executable graph** (`SYCLGraphUsageGuide.md`, "Use Host-Tasks For Host Work" and "Graph Execution
-  Concurrency"). The guide is explicit that SYCL Graph cannot capture host work, and that a double-buffered pair
-  of finalized graphs can be in flight together "potentially increasing device occupancy", where one graph
-  updated between runs forces a host synchronization. That is the SYCL-level shape of P0c's D1 and D2: if the
-  split's per-window host work sits outside a host-task, no graph can hide it, and if the two stages share one
-  executable or one implicit ordering, the second cannot start early. The port calls `host_task` in exactly one
-  file (`sycl/src/core/verify.cpp`). **Test**: after D1's timeline, check whether the two stages' graphs are
-  separate executables that can overlap and whether the window's host decisions are inside host-tasks; then
-  `dynamic_command_group` is the graph-native form of the MTP chain's conditional step (the D2 fork used
-  conditional nodes for exactly that).
+- [x] **E2 - the graph guide's two rules for our window: host work belongs in a host-task, and each stage wants
+  its own executable graph. MEASURED (exp 34): both are under the noise floor, closed without a change.** The
+  guide (`SYCLGraphUsageGuide.md`, "Use Host-Tasks For Host Work" and "Graph Execution Concurrency") is explicit
+  that SYCL Graph cannot capture host work, and that a double-buffered pair of finalized graphs can be in flight
+  together "potentially increasing device occupancy". Against our measured window: rule one's ceiling is the
+  **1.8% the whole host side costs** (0.96 ms of 53.8 ms), and the work does not vanish when a graph owns it; rule
+  two can only recover the host round trip between stage 0's `cs_->wait()` and stage 1's launch - tens of
+  microseconds, under 0.2% - because the stages are strictly dependent. Both sit under the +-1.5% engine noise
+  floor (exp 33), and the window's bounded device spin makes touching that ordering a correctness risk, so the
+  numbers say leave it alone. `dynamic_command_group` remains the graph-native form of the MTP chain's
+  conditional step if D2 is built.
 - [ ] **E3 - the register/GRF knobs for D3's top-k fit** (`sycl_ext_intel_maximum_registers`,
   `sycl_ext_intel_grf_size`; the port uses neither in its own kernels - only dpct headers mention
   `max_registers_per_work_group`). The register top-k kernel's Intel build holds `TK_PER_MAX = 33` blocks per
