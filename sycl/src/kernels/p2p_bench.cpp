@@ -27,6 +27,14 @@ int main(int argc, char** argv) {
                 cards[1].get_info<sycl::info::device::name>().c_str());
     const size_t n = bytes / 4;
     sycl::queue q0(cards[0]), q1(cards[1]);
+    // sycl_ext_oneapi_peer_access: what the port does NOT do today (zero can_access_peer / enable_peer_access calls),
+    // so this prints both directions' support and, when supported, enables peer access and re-times the identical
+    // copy.  The engine's --peer-device expert tier stages every expert batch through pinned host buffers instead
+    // (remote_experts.cpp), so a win here is the tier's transfer, not the layer hand-off's 34 us.
+    const bool can01 = cards[0].ext_oneapi_can_access_peer(cards[1]);
+    const bool can10 = cards[1].ext_oneapi_can_access_peer(cards[0]);
+    std::printf("peer access: dev0->dev1 %s, dev1->dev0 %s\n", can01 ? "supported" : "NOT supported",
+                can10 ? "supported" : "NOT supported");
     std::vector<uint32_t> h0(n, 0x1234), h1(n, 0);
     uint32_t* d0 = sycl::malloc_device<uint32_t>(n, q0);
     uint32_t* d1 = sycl::malloc_device<uint32_t>(n, q1);
@@ -44,6 +52,20 @@ int main(int argc, char** argv) {
     const double gb01 = bytes / 1e9 / (t01 / 1e3);
     const double gb10 = bytes / 1e9 / (t10 / 1e3);
     std::printf("D0->D1 %.3f ms (%d bytes) %.1f GB/s | D1->D0 %.3f ms %.1f GB/s\n", t01, (int) bytes, gb01, t10, gb10);
+    if (can01 || can10) {
+        try {
+            if (can01) cards[0].ext_oneapi_enable_peer_access(cards[1]);
+            if (can10) cards[1].ext_oneapi_enable_peer_access(cards[0]);
+        } catch (const sycl::exception& e) {
+            std::printf("enable_peer_access threw: %s\n", e.what());
+        }
+        const auto p01 = time([&] { q1.memcpy(d1, d0, bytes); }, reps);
+        const auto p10 = time([&] { q0.memcpy(d0, d1, bytes); }, reps);
+        std::printf("peer enabled: D0->D1 %.3f ms %.1f GB/s (%.2fx) | D1->D0 %.3f ms %.1f GB/s (%.2fx)\n", p01,
+                    bytes / 1e9 / (p01 / 1e3), t01 / p01, p10, bytes / 1e9 / (p10 / 1e3), t10 / p10);
+    } else {
+        std::printf("peer enabled: skipped (unsupported)\n");
+    }
     q1.memcpy(h1.data(), d1, bytes).wait();
     q0.memcpy(h0.data(), d0, bytes).wait();
     size_t bad = 0;

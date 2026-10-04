@@ -1512,10 +1512,57 @@ inline int q6k_wide_rpw() {
     static const int v = std::getenv("STRATA_MMVQ_WIDE_RPW") ? std::atoi(std::getenv("STRATA_MMVQ_WIDE_RPW")) : 1;
     return v;
 }
+// STRATA_MMVQ_CACHE_MODE (item 7, exp 39): the MMVQ cache policy, set IN THE SOURCE as a launch property
+// (sycl_ext_intel_cache_controls) so it actually reaches the compiler - exp 22's sweep was null because
+// -cl-load/store-cache-default never arrived on a SYCL/SPIR-V input.  It is a build-time mode because the property
+// list's type is part of the launch: 0 = no hints (the shipping default), 1 = stream the reads past L1, 2 = uncached
+// L1, 3 = cached at L1.
+//
+// MEASURED, and the answer is that this toolchain cannot express the property at all (exp 39): on icpx 2026.1 EVERY
+// route - read_hint on a launch property with one cache_control entry, with the spec's two-entry L1/L2+L3 form, and
+// sycl::ext::oneapi::experimental::annotated_ptr - compiles and then fails at the SPIR-V DEVICE LINK with
+// "InvalidLlvmModule: Invalid LLVM module: CacheControlLoadINTEL requires exactly 2 extra operands".  The error is per
+// kernel and independent of the spelling, so modes 1-3 are kept for a future compiler but cannot be measured here.
+// Mode 0 compiles and is the shipping path.
+#ifndef STRATA_MMVQ_CACHE_MODE
+#define STRATA_MMVQ_CACHE_MODE 0
+#endif
+constexpr int kMmvqCacheMode = STRATA_MMVQ_CACHE_MODE;
+inline auto mmvq_cache_props() {
+    namespace ce = sycl::ext::intel::experimental;
+    namespace cl = sycl::ext::oneapi::experimental;
+    namespace px = sycl::ext::oneapi::experimental;
+    // The property list is a type, so it has to be spelled out: `properties<detail::properties_type_list<...>>`.
+    if constexpr (kMmvqCacheMode == 1)
+        return px::properties<px::detail::properties_type_list<px::property_value<
+            ce::read_hint_key, ce::cache_control<ce::cache_mode::streaming, cl::cache_level::L1>>>>{};
+    else if constexpr (kMmvqCacheMode == 2)
+        return px::properties<px::detail::properties_type_list<px::property_value<
+            ce::read_hint_key, ce::cache_control<ce::cache_mode::uncached, cl::cache_level::L1>>>>{};
+    else if constexpr (kMmvqCacheMode == 3)
+        return px::properties<px::detail::properties_type_list<px::property_value<
+            ce::read_hint_key, ce::cache_control<ce::cache_mode::cached, cl::cache_level::L1>>>>{};
+    else
+        return px::properties<px::detail::properties_type_list<>>{};
+}
 inline bool q6k_loop() {   // STRATA_MMVQ_LOOP=1: exp 26 - the wide Q6_K kernel runs NCOLS>=5 as a runtime column loop (opt-in)
     static const bool v = std::getenv("STRATA_MMVQ_LOOP") != nullptr && std::atoi(std::getenv("STRATA_MMVQ_LOOP")) != 0;
     return v;
 }
+#ifndef STRATA_MMVQ_RESTRICT_ATTR
+#define STRATA_MMVQ_RESTRICT_ATTR 0
+#endif
+// Item 5 (exp 40): intel::kernel_args_restrict asserts that every pointer/accessor captured as a kernel argument
+// points at a DISJOINT object, which is unchecked - true for the MMVQ (w, x, y never alias) but not for a kernel that
+// accumulates in place.  The decode kernels already declare __restrict__ by hand on w and x; what is left is the
+// compiler not knowing that for the *captured* arguments, and y.  Mode 1 adds the attribute to the Q6_K wide launches.
+// It compiles and links on this toolchain, unlike the cache-control intrinsics (exp 39) - verified with a standalone
+// kernel, with and without a co-located [[sycl::reqd_sub_group_size]].
+#if STRATA_MMVQ_RESTRICT_ATTR
+#define STRATA_MMVQ_RESTRICT [[intel::kernel_args_restrict]]
+#else
+#define STRATA_MMVQ_RESTRICT
+#endif
 template <int NCOLS>
 void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in, int n_out, dpct::queue_ptr s) {
     const auto* w = static_cast<const Q6KBlock*>(weights);
@@ -1545,7 +1592,8 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
         const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
         s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide_a2, dpct_kernel_scalar<NCOLS>>>(
             sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
-            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] {
+            mmvq_cache_props(),
+            [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] STRATA_MMVQ_RESTRICT {
                 native_mmvq_q6k_wide_kernel<NCOLS, 1, WARP, (int) sizeof(Q6KBlock), true>(w, x, y, n_in, n_out);
             });
         return;
@@ -1569,7 +1617,8 @@ void launch_q6k_wide(const void* weights, const void* x_q8_1, float* y, int n_in
     const unsigned blocks = unsigned((std::size_t(n_out) + WARPS - 1) / WARPS);
     s->parallel_for<dpct_kernel_name<class native_mmvq_q6k_wide1, dpct_kernel_scalar<NCOLS>>>(
         sycl::nd_range<3>(sycl::range(1, 1, blocks) * sycl::range(1, WARPS, WARP), sycl::range(1, WARPS, WARP)),
-        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] { native_mmvq_q6k_wide_kernel<NCOLS, 1>(w, x, y, n_in, n_out); });
+        mmvq_cache_props(),
+        [=](sycl::nd_item<3>) [[sycl::reqd_sub_group_size(32)]] STRATA_MMVQ_RESTRICT { native_mmvq_q6k_wide_kernel<NCOLS, 1>(w, x, y, n_in, n_out); });
 }
 // ---------------------------------------------------------------- SYCL port: wide kernels for Q4_K, Q5_K, IQ4_XS
 //
