@@ -330,6 +330,18 @@ if(STRATA_SYCL_PARITY)
   endif()
   add_executable(mmvq_sg_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_sg_bench.cpp)   # SIMD16 vs 32 decode mmvq
   target_link_libraries(mmvq_sg_bench PRIVATE strata_kernels)
+  # exp 42: DPAS int8 MMVQ on reordered Q6_K (the decode dot on the matrix pipe) against the shipped AOS dp4a
+  # kernel and the Q6K->Q6U pre-unpack ceiling, all in one process.
+  add_executable(xmx_mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_mmvq_bench.cpp)
+  target_link_libraries(xmx_mmvq_bench PRIVATE strata_kernels)
+  # exp 44's width sweep adds the prompt path's own kernel (oneMKL FP16 GEMM) as the control arm
+  if(MKL_FOUND)
+    target_link_libraries(xmx_mmvq_bench PRIVATE MKL::MKL_SYCL::BLAS)
+  endif()
+  # exp 43: DPAS int8 MMVQ fused gate+up for the shared expert (one activation pass + float32 GLU epilogue) against
+  # the unfused two-projection + swiglu_kernel sequence, all in one process.
+  add_executable(xmx_gateup_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gateup_bench.cpp)
+  target_link_libraries(xmx_gateup_bench PRIVATE strata_kernels)
   add_executable(q6k_align_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_align_bench.cpp)   # Q6_K block alignment
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
   add_executable(reorder_esimd_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/reorder_esimd_bench.cpp)   # P0-L1 Q8_0 reorder+ESIMD slice
