@@ -5075,6 +5075,15 @@ int main(int argc, char **argv) try {
             // "checkpoint is not a live token prefix".
             const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
             auto reuse = conversations.take_reuse();
+            static const bool reuse_trace = std::getenv("STRATA_REUSE_TRACE") != nullptr;
+            if (reuse_trace) {
+                std::fprintf(stderr, "strata serve: reuse trace: park taken kv=%zu unchanged=%lld stages=%zu",
+                             reuse.kv.size(), (long long) reuse.unchanged_tokens, reuse.stages.size());
+                for (size_t i = 0; i < reuse.stages.size(); ++i)
+                    std::fprintf(stderr, " [stage%zu kv=%zu unchanged=%lld]", i, reuse.stages[i].kv.size(),
+                                 (long long) reuse.stages[i].unchanged_tokens);
+                std::fprintf(stderr, "\n");
+            }
             size_t estimate = 0;
             if (!strata::core::conversation_snapshot_bytes(view, ss, g, mtp.kv_state(), estimate, err,
                                                             /*with_draft=*/!split_park,
@@ -5100,7 +5109,12 @@ int main(int argc, char **argv) try {
                     err.clear();
                     return true;
                 }
-                reuse.stages.push_back(std::move(stage_reuse));
+                // Put the stage's reuse back where it came from. push_back would append it AFTER the entry
+                // this loop just vacated, leaving an empty element at index i - and the save loop below reads
+                // stage_reuse[i], so the LAST stage's retained K/V would be dropped on the floor (measured: the
+                // primary reused 12.9 MB while every stage re-copied in full, with nothing logged).
+                if (i < reuse.stages.size()) reuse.stages[i] = std::move(stage_reuse);
+                else reuse.stages.push_back(std::move(stage_reuse));
             }
             const size_t fresh_estimate = estimate;
             if (!reuse.kv.empty() && !strata::core::conversation_snapshot_capture_bytes(
@@ -5985,12 +5999,26 @@ int main(int argc, char **argv) try {
                     // stages 1..N in full and a repeated rewrite loop never gets cheaper (README item 3).
                     std::vector<strata::core::StageKvReuse> stage_reuse;
                     stage_reuse.reserve(incoming->stages.size());
+                    std::vector<size_t> retained_stage_slot_sizes;
+                    size_t retained_stage_slots = 0;
                     for (auto& st : incoming->stages) {
+                        retained_stage_slot_sizes.push_back(st.kv.size());
+                        retained_stage_slots += st.kv.size();
                         stage_reuse.push_back(strata::core::StageKvReuse{std::move(st.kv),
                                                                           int64_t(live.size()),
                                                                           int64_t(live.size())});
                     }
+                    const size_t incoming_primary_slots = incoming->kv.size();
                     conversations.retain(std::move(incoming->kv), std::move(stage_reuse), int64_t(live.size()));
+                    if (std::getenv("STRATA_REUSE_TRACE") != nullptr) {
+                        std::fprintf(stderr, "strata serve: reuse trace: retained primary kv=%zu unchanged=%lld,"
+                                             " stage kv=%zu unchanged=%lld, live=%zu\n",
+                                     incoming_primary_slots, (long long) live.size(), retained_stage_slots,
+                                     (long long) live.size(), live.size());
+                        for (size_t i = 0; i < retained_stage_slots; ++i)
+                            std::fprintf(stderr, " [stage%zu kv=%zu]", i, retained_stage_slot_sizes[i]);
+                        std::fprintf(stderr, "\n");
+                    }
                 }
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu retained=%zu\n",

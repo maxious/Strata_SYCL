@@ -6,6 +6,8 @@
 #include "conversation_checked.hpp"
 
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
@@ -181,6 +183,11 @@ bool conversation_kv_save(ConversationKv& image, const QsaState& st, const Model
                 return transfer(p, src[i] ? static_cast<const uint8_t*>(src[i]) + at : nullptr, n, error);
             })) return false;
         if (reused_bytes) *reused_bytes += keep;
+        static const bool trace = std::getenv("STRATA_REUSE_TRACE") != nullptr;
+        if (trace)
+            std::fprintf(stderr, "strata serve: reuse trace: slot cells=%lld whole=%lld unchanged=%lld idx=%d buf%zu keep=%zu size=%zu%s\n",
+                         (long long) l.cells, (long long) whole_cells, (long long) unchanged_tokens, index ? 1 : 0,
+                         i, keep, dst[i]->size(), dst[i]->size() == 0 ? " (retained buffer EMPTY)" : "");
     }
     return true;
 }

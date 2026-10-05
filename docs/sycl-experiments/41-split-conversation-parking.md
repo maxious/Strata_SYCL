@@ -94,6 +94,13 @@ That reading was incomplete. Two independent defects kept it from engaging, and 
 `stage_capture_bytes` carried the same expression, where a **non-final** stage has `draft == nullptr` - a null
 dereference that this 2-GPU box cannot reach but a 3-GPU split would. Fixed the same way (`draft == nullptr ||
 i + 1 != slots`), since that signature takes a real pointer.
+3. **The estimate loop vacated `reuse.stages[i]` and appended.** It moved the entry out to price it, then
+   `push_back`ed it after the hole - leaving index `i` empty - and the save loop reads `stage_reuse[i]`. With one
+   later stage the vector was `[empty, full]` and **every stage re-copied in full** while the primary reused
+   correctly, with nothing logged anywhere. It was found by tracing the per-slot `keep`, not by reading: the
+   retain and park sides both showed the stage's vector arriving populated (`stage0 kv=8 unchanged=2182`) with
+   `unchanged` correct. Fixed by assigning back in place (`i < reuse.stages.size() ? reuse.stages[i] = ... :
+   push_back(...)`). `STRATA_REUSE_TRACE=1` prints the per-slot `keep`/`size` and both sides' slot counts.
 
 The lesson worth keeping: **the silent `err.clear()` on that drop is what hid both bugs.** A declined reuse is not
 an error - it just re-copies everything - so nothing said so. One line naming the reason would have found cause 2
@@ -112,14 +119,16 @@ by construction, but much smaller than the 4,000-token pair above.
 | **A, return** | 3446 ms | **168 ms** | 2182 reused + 3 read -> **20.5x** |
 | **B, return** | 809 ms | **172 ms** | 182 reused + 3 read -> **4.7x** |
 
-- **`reused_kv_bytes=12905600`** on the park that follows a restore, and **no `reuse declined`** anywhere: the
-  reuse engages, which is what both fixes above bought.
-- Restore 22.6 ms / 18.7 ms; `retained=33530232` at the first restore.
 - **Tokens identical: `T_DIFF` = 0 lines across all 48 tokens of the four requests.**
+- Restore 22.6 ms / 18.7 ms; `retained=33530232` at the first restore.
 
-**Still open:** the reuse keeps **12.9 MB of a 270 MB image**, so the unchanged-prefix accounting is not yet
-avoiding the copy it exists to avoid. Tokens are exact and nothing errors, so this is efficiency rather than
-correctness - but compaction is not cheap until the kept fraction is explained.
+**The reuse now covers the whole conversation.** After the third fix, the park that follows a restore reports
+**`reused_kv_bytes=33275520` of the 33,530,232 retained - 99.2%** - with 13 slots reusing at `keep=1116160` of
+`size=1124352` each (5 primary + 7 stage + the draft at `unchanged=2181`, the draft's final-cell refresh). Before
+that fix it was 12,905,600, exactly the primary's 5 slots, which is what pointed at the vacated index.
+
+(The first two fixes took the counter from 0 to 12,905,600 and the switch from 3446 ms to 168 ms; the third took
+the reuse from one carve to all of it.)
 
 ## Four defects found while building this item, all in the new code
 

@@ -111,8 +111,16 @@ With both fixed and `--pcie-frac 0.32 --adapt-swaps 0` pinned, the park that fol
 against **3446 ms / 809 ms** for the same prompts read in full (**20.5x** and **4.7x**); tokens identical to the
 no-parking arm. ctest 29/29 on the fixed binary.
 
-**Open: the reuse keeps 12.9 MB of a 270 MB image.** The reuse engages and costs nothing, but full copy-avoidance
-is *not* demonstrated - the kept-prefix accounting needs a look before compaction can be called cheap.
+**A third defect was hiding in plain sight, and it was mine.** The estimate loop moved each stage's retained K/V
+*out* of `reuse.stages[i]` to price it and then `push_back`ed it, leaving index `i` vacated; the save loop reads
+`stage_reuse[i]`, so **every stage re-copied in full** while the primary reused correctly - with nothing logged.
+Found by tracing per-slot `keep` (`STRATA_REUSE_TRACE=1`), not by reading: both sides showed the stage's vector
+arriving populated and correctly bounded. Fixed by assigning back in place.
+
+**The reuse now covers the whole conversation:** `reused_kv_bytes=33275520` of the 33,530,232 retained - **99.2%** -
+with 13 slots keeping `1116160` of `1124352` bytes each (5 primary + 7 stage + the draft's final-cell refresh).
+ctest 29/29. The two earlier fixes took the counter 0 -> 12,905,600 and the switch 3446 ms -> 168 ms; this one took
+the reuse from the primary alone to all of it.
 
 Four defects lived in this item, all in the new code and all found by reading the engine's own refusal rather than
 by a test: an empty `live.ids` that restored stale pooled rows; the `stage_parts` guard that survived removing the
