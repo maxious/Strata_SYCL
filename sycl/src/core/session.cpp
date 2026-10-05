@@ -1145,14 +1145,25 @@ bool session_run_token(const ModelGeometry &g, int64_t pos, int32_t pos_base,
                 // A slow ring: flush the submission queue once more, and notice a fault or a finished graph.
                 last_flush = now;
                 ++tg.flushes;
-                const dpct::err0 q = DPCT_CHECK_ERROR((cs->ext_oneapi_empty()));
-                if (q != 1 && *seq < want) {
+                // **`DPCT_CHECK_ERROR` DISCARDS THE VALUE OF ITS EXPRESSION** (exp 19): it evaluates `expr` as
+                // a statement and returns `dpct::success` unless the call throws. So the old
+                // `const dpct::err0 q = DPCT_CHECK_ERROR(cs->ext_oneapi_empty())` was ALWAYS `success`:
+                // `q != 1` was always true and the emptiness test never ran, so the host abandoned any layer
+                // whose ring took longer than the flush interval (2 ms by default) and called it
+                // "graph finished" - the same false abort exp 19 fixed in verify.cpp, still live here.
+                // Read the emptiness as its own statement; the 20 s bound below stays the real backstop.
+                bool idle = false;
+                try {
+                    idle = cs->ext_oneapi_empty();
+                } catch (const std::exception &e) {
+                    err = "session_run_token: layer " + std::to_string(l) + " never rang (" + e.what() + ")";
+                    return false;
+                }
+                if (idle && *seq < want) {
                     err = "session_run_token: layer " + std::to_string(l) +
-                          " never rang (" +
-                          (q == 0
-                               ? std::string("graph finished")
-                               : std::string(dpct::error_string(q))) +
-                          ")";
+                          " never rang (the graph finished, host seq=" +
+                          std::to_string((unsigned) *seq) + " want=" +
+                          std::to_string((unsigned) want) + ")";
                     return false;
                 }
             }
