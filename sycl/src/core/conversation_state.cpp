@@ -206,22 +206,6 @@ bool conversation_checkpoint_restore(const ConversationCheckpoint& c, SessionSta
     return sync(error);
 }
 
-// The running-state payload conversation_checkpoint_save would write for this carve (gdn/ple/tails/dead/block_pos).
-// The ids and image keys are deliberately NOT counted: a split's stages share the conversation's token list with the
-// primary image, and each stage's SavedStage::live holds a reference to the same ids, not a second copy in RAM.
-bool conversation_checkpoint_bytes(const ConversationCheckpoint& c, const SessionState& ss,
-                                   const ModelGeometry& g, size_t& bytes, std::string& error) {
-    ConversationStateSizes z;
-    if (!checkpoint_targets(ss, g, c.ids.size(), z, error)) return false;
-    const size_t layers = owned_qsa(ss);
-    size_t n = 0;
-    for (size_t k : {c.gdn.size(), c.ple.size(), c.tails.size(), c.dead.size(), c.block_pos.size()})
-        if (!add(n, k)) return fail(error, "checkpoint byte count overflow");
-    (void) layers;
-    if (!add(bytes, n)) return fail(error, "checkpoint byte count overflow");
-    return true;
-}
-
 bool conversation_snapshot_bytes(const ConversationView& view, const SessionState& ss,
                                  const ModelGeometry& g, const QsaState& draft, size_t& bytes, std::string& error,
                                  bool with_draft, bool allow_stage_parts) {
@@ -265,7 +249,11 @@ bool conversation_snapshot_capture_bytes(const ConversationKvReuse& reuse, const
         reuse.unchanged_tokens > reuse.captured_tokens || reuse.unchanged_tokens > int64_t(view.ids.size()))
         return fail(error, "invalid retained K/V prefix");
     for (size_t i = 0; i < layers; ++i) {
-        const bool index = i + 1 != layers;
+        // The draft is the last slot only when this image carries one. A split's primary holds its own main
+        // layers alone (with_draft=false), so `i + 1 != layers` on its own would validate the LAST MAIN LAYER
+        // against the draft's geometry - pooled rows and all - and reject the retained K/V as "incompatible K/V
+        // geometry", which silently dropped every reuse under a split (reused_kv_bytes=0).
+        const bool index = !with_draft || i + 1 != layers;
         const auto& st = index ? owned(ss, i) : draft;
         if (!conversation_kv_validate(reuse.kv[i], st, g, reuse.captured_tokens, index, error)) return false;
         const size_t fresh = conversation_kv_bytes(st, g, int64_t(view.ids.size()), index);
@@ -366,13 +354,17 @@ bool stage_bytes(size_t& bytes, const SessionState& stage, const ModelGeometry& 
                  int64_t upto, std::string& error) {
     ConversationStateSizes z;
     if (!conversation_session_sizes(g, stage, z, error)) return false;
-    size_t slots = 0, meta = 0, tails = 0, dead = 0, positions = 0;
+    size_t slots = 0, meta = 0, ids = 0, tails = 0, dead = 0, positions = 0;
     stage_kv_slots(stage, draft, slots);
     const size_t layers = owned_qsa(stage);
-    if (!product(meta, {(uint64_t) slots, sizeof(ConversationKv)}) || !product(tails, {layers, z.tail}) ||
+    // stage_save copies the conversation's ids into the stage's checkpoint (validation bounds the pooled rows
+    // by them), so the admission estimate owes their bytes too - SavedStage::bytes() already counts them.
+    if (!product(meta, {(uint64_t) slots, sizeof(ConversationKv)}) ||
+        !product(ids, {(uint64_t) upto, sizeof(int32_t)}) ||
+        !product(tails, {layers, z.tail}) ||
         !product(dead, {layers, z.dead}) || !product(positions, {layers, z.block_pos}))
         return fail(error, "stage metadata byte count overflow");
-    for (size_t k : {meta, tails, dead, positions, z.gdn, stage.ple_hist ? z.ple : 0})
+    for (size_t k : {meta, ids, tails, dead, positions, z.gdn, stage.ple_hist ? z.ple : 0})
         if (!add(bytes, k)) return fail(error, "stage byte count overflow");
     for (size_t j = 0; j < layers; ++j) {
         const size_t n = conversation_kv_bytes(owned(stage, j), g, upto, true);
@@ -390,8 +382,8 @@ bool stage_save(SavedStage& out, const std::vector<int32_t>& ids, const SessionS
     if (!sync(error)) return false;
     SavedStage captured;
     captured.layer_lo = stage.layer_lo; captured.layer_hi = stage.layer_hi;
-    // The stage's checkpoint carries the conversation's token ids even though the image does not duplicate the
-    // vector: conversation_checkpoint_validate bounds the pooled-indexer rows by ids.size(), and
+    // The stage's checkpoint carries a copy of the conversation's token ids (stage_bytes counts it):
+    // conversation_checkpoint_validate bounds the pooled-indexer rows by ids.size(), and
     // conversation_checkpoint_restore refreshes the last pooled row ONLY when ids is non-empty. An empty ids here
     // would validate vacuously and restore a stage with stale pooled rows - silently wrong, not a crash.
     captured.live.ids = ids;
@@ -426,7 +418,9 @@ bool stage_capture_bytes(StageKvReuse& reuse, const SessionState& stage, const M
         reuse.unchanged_tokens > reuse.captured_tokens || reuse.unchanged_tokens > upto)
         return fail(error, "invalid retained stage K/V prefix");
     for (size_t i = 0; i < slots; ++i) {
-        const bool index = i + 1 != slots;
+        // Same rule as the primary's: only the stage that carries the drafter has a draft slot, so a stage
+        // without one must not treat its last main layer as the draft (that would dereference a null draft).
+        const bool index = draft == nullptr || i + 1 != slots;
         const auto& st = index ? owned(stage, i) : *draft;
         if (!conversation_kv_validate(reuse.kv[i], st, g, reuse.captured_tokens, index, error)) return false;
         const size_t fresh = conversation_kv_bytes(st, g, upto, index);

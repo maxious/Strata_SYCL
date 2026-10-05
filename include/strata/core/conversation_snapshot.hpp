@@ -42,10 +42,6 @@ bool conversation_session_sizes(const ModelGeometry& g, const SessionState& sess
                                 std::string& error);
 bool conversation_checkpoint_validate(const ConversationCheckpoint& checkpoint, const SessionState& session,
                                       const ModelGeometry& g, std::string& error);
-// The payload conversation_checkpoint_save would write, without writing it: the estimate a split's per-stage
-// parking needs before it admits the RAM (one card per stage, so each stage's own state is costed separately).
-bool conversation_checkpoint_bytes(const ConversationCheckpoint& checkpoint, const SessionState& session,
-                                   const ModelGeometry& g, size_t& bytes, std::string& error);
 bool conversation_checkpoint_save(ConversationCheckpoint& checkpoint, const SessionState& session,
                                   const ModelGeometry& g, std::string& error);
 bool conversation_checkpoint_restore(const ConversationCheckpoint& checkpoint, SessionState& session,
