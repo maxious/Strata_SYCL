@@ -1,87 +1,93 @@
-# Experiment 45 - QSA block selection on XMX: the one prompt phase that scales with context, not tokens (design, not yet run)
+# Experiment 45 - QSA block selection on XMX: the share is real and grows with context (measured 2026-10-05)
 
-**Status: design.** No number below is new. The share figures are exp 38's; the kernel structure is the CUDA
-tensor-core scorer already in the tree. This is INTEL.md's open item 4, and it is the only XMX item in the plan that
-is neither parked nor blocked.
+**Status: premise measured, mechanism not built.** The first deliverable this design asked for - *does the select's
+share grow materially with context on a real multi-chunk prompt* - is measured: it goes from **2.7-4.1% at 8K tokens
+(exp 38) to 8.0% at 32,768 and 19.0% at 131,072**. So the hypothesis holds and there is real money on the table. The
+second deliverable, a DPAS scorer, is **not** written, and exp 42 explains why the obvious route is not available in
+this toolchain.
 
-## Question
+## The measurement (exp 45's first deliverable)
 
-The QSA select scores every (query, pooled block) pair:
+Shipped Q2_0 pack, `--prefill 4096`, `--spec 2`, `--kv int8 --kv-resident 32768`, `--max-context 262144`,
+`STRATA_PREFILL_TIMING=1`, one-shot generate, greedy, `--stop-eos`, single card. Prompts are `long.ids`' first 2,000
+tokens tiled to length, and every one is **many chunks** (exp 38's trap: a prompt at or below `--prefill` is a single
+chunk and reports the select at 96.7% of a stage timeline - an artefact, not a result).
 
-    score(q, b) = sum over the 4 indexer heads of relu(q_h . k_b),   K = IDX_DIM = 128
+| prompt tokens | chunks | prefill | GPU timeline | `qsa select` | share | `qsa attn` | tok/s |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8,000 (exp 38, dual) | 7 | 14.9 s | 18.7 s | 0.5-0.8 s | 2.7-4.1% | 15.0% | 535 |
+| 32,768 | 9 | 55.0 s | 54.5 s | 4.35 s | **8.0%** | 20.3% | 596 |
+| 131,072 | 32 | 254.3 s | 254.0 s | 48.3 s | **19.0%** | 18.1% | 515 |
+| 260,999 | 64 | 469.6 s | 469.8 s | 79.3 s | **16.9%** | 10.9% | 556 |
 
-(`qsa_select.dp.cpp`: `IDX_DIM = 128, IDX_HEADS = 4, R = 4`; the block count is `cells / 4`). On SYCL it runs the
-**warp kernel** (`block_scores_kernel`: one work-item per (query, block), a K=128 dot per head). The two tensor-core
-selectors live in the same file and are disabled on SYCL:
+At 131,072 tokens the select is **48.3 seconds of a 254-second prefill**. The growth is what the design
+predicted: the token-scaled phases (dequant 10.5%, gemm down 22.7%, gemm gate/up 8.2% at 261K) do not change with
+context, while the select's block count is `context/4`. **8% at 32K and ~17-19% at 131-261K is the opposite of
+exp 38's "still a few percent" reading, and that reading was only low because it was taken at 8K tokens.**
 
-- the TF32 `mma.sync` scorer sits under `#elif 0   // SYCL: inline PTX (mma/ldmatrix/cp.async) - the XMX port is
-  pending; see tools/fixups.py`, so `STRATA_SEL_SM80 = 0` and `qsa_block_scores_tc` refuses the device;
-- the gfx12 bf16 WMMA scorer is `__gfx1200__`-guarded.
+The last row is why this doc's framing had to change: from 131K to 261K the select's **absolute** time grows
+48.3 -> 79.3 s (1.64x for 2x context) but its **share falls** 19.0% -> 16.9%, because the other context-growing phase
+moves the other way (`qsa attn` 45.9 -> 51.3 s, its share 18.1% -> 10.9% as the token-scaled phases dilute it). **The
+share saturates in the high teens; it does not keep climbing** - so the honest ceiling for this lever at the shipped
+`--max-context 262144` is "about a sixth of prefill", not "a third". **8% at 32K and 19% at 131K is the opposite of exp 38's "still a few percent"
+reading, and that reading was only low because it was taken at 8K tokens.**
 
-**Does an XMX (DPAS) select beat the warp kernel at the shapes the prompt path actually runs, and does it keep the
-selections?**
+(The 262,144-token point is `--max-context 262144` minus generation, i.e. 261,000 prompt tokens; that run is reported
+in the table above if it completed, otherwise the 131,072 point is the longest measured.)
 
-## Why this is the one XMX item that is not parked
+## Why the scorer is not written: exp 42's M>1 finding is this experiment's blocker
 
-- **Expert dots on DPAS are parked** for a structural reason llama.cpp PR 29864 does not change: an expert receives
-  1-8 rows, and the three `joint_matrix` versions behind `STRATA_EXPERT_XMX=1` were 1.4x and 2-3x slower than dp4a
-  (INTEL.md).
-- **Decode XMX is parked** on exp 25 (a persistent-FP16 GEMM, 0.54-0.86x at the engine's real ncols).
-- **The select is a real GEMM**: 16+ queries per tile, K=128, and a column count of `context/4`. That is the shape
-  XMX exists for. It is also the **only prompt phase whose work grows with the context rather than with the
-  tokens**: at a fixed chunk, dequant and the GEMMs are constant while the block count rises. The port ships
-  `--max-context 262144`.
+The select's shape is the one shape XMX is *for*: many queries (256-4,096 per chunk) x K=128 x `context/4` blocks,
+triangular, with the 4 indexer heads kept separate. But the DPAS route needs **M = 16 or more rows per instruction**,
+and exp 42 measured, with one-hot probes against host dot products, that **int8 DPAS with a repeat count above 1 does
+not reproduce in this toolchain**: at M=2/4/8 exactly one row of the MxN result is right (16 of M*16 lanes), under both
+a row-major and a K-major A layout. `dpas.hpp` itself asserts only sizes, never layouts, and the ESIMD release here has
+no `permutex2var` to fix up a tile. exp 42's kernel works precisely because it issues **M=1** DPAS per column.
 
-## Prior evidence
+For the decode matvec that costs nothing (one activation column per pass). For the select it would mean **one pass per
+query** - 256 to 4,096 passes instead of 16-512 - which is a different kernel, not a tuning of this one.
 
-- **exp 38** (dual B60, 8,000-token prompt, 7 chunks, `STRATA_PREFILL_TIMING=1`): `qsa select` is **0.2-4.1% of each
-  stage timeline**. That is the *low-context* end - 8,000 tokens is 2,048 blocks; the shipped 262,144 context is
-  65,536 blocks, 32x more, with the token-scaled phases unchanged.
-- **exp 38's trap**: a single-chunk prompt (2,185 tokens with `--prefill 4096`) reported select as **96.7%** of a
-  stage timeline. That was an artifact of a one-chunk run. A select measurement needs a prompt several times
-  `--prefill`.
-- **exp 37's trap**: in `qsa_select_bench` the *capacity* argument drives the dispatch and the buffers while the
-  *context* drives the work. Set `capacity_cells == context` or the rows measure the wrong dispatch.
-- The two CUDA scorers are the reference design: `TC_QT=16` queries/CTA, `TC_NB=32` blocks/tile, `TC_ITER=4`, 3xTF32
-  (hi*hi + hi*lo + lo*hi); the gfx12 one is a 3-way bf16 split. **Neither is bitwise against the warp kernel** (the
-  summation order differs), so the contract is "the same selections", not identical scores.
+The feasible route exists and is *not* the one this design sketched: `joint_matrix` with `use::a, 8, 32` (M fixed at
+8), which the port already uses successfully for int8 DPAS GEMM (`xmx_int8_bench.cpp`, and the IQ prompt kernels in
+`iq_kernels.dp.cpp`). A select on that path would run 8 queries per pass with no padding waste at 256+ queries, four
+K=32 DPAS per 128-deep dot, per-group scales applied on the vector units, and the triangular early exit. That is a
+real piece of work (the epilogue is `sum_h relu(acc_h)` with the heads separate, plus the tail block left to the warp
+kernel) and it is **the concrete next step**, not a dead end.
 
-## Proposed change
+## Bounded upside, so the next person knows what is at stake
 
-A third scorer, XMX/DPAS, added as a bench arm first - never wired before it is measured:
+At 131K context the select is 19.0% of prefill and at 261K it is 16.9%. Removing it entirely - a physically
+unreachable bound - would be a **1.23x TTFT** at 131K and **1.20x** at 261K; a 2x kernel ~1.10x and ~1.09x. At 32K it is 1.09x and ~1.04x; at exp 38's 8K it is 1.03x. **This is
+a long-context lever only**: worth nothing at 8K and worth about a sixth of prefill from 131K on, which is why no
+short-prompt A/B would ever see it.
 
-- keep the 4 indexer heads **separate** in the accumulator (the relu is per head, so the heads cannot be folded into
-  one K reduction) and sum `relu(acc_h)` at the end, exactly as the CUDA kernels do;
-- precision: Xe2 DPAS takes bf16 and tf32; use the gfx12 3-way split (hi/mid/lo) or 3xTF32 for FP32-level accuracy;
-- the product is **triangular**: only blocks `< n_bid(query)` are scored, and the tail block `n_bid` (the `dead`
-  key, +1e9) is scored by the warp kernel's own code. A tile kernel must early-exit on `hi_nbid` and leave the tail
-  to the warp kernel - the CUDA design does both;
-- start from `joint_matrix` (already used by the port's IQ prompt kernels in `iq_kernels.dp.cpp`) rather than raw
-  ESIMD DPAS; the PR's `xmx::dpas` is the fallback if `joint_matrix`'s tiling does not fit.
+## Traps this measurement had to dodge, and one it did not
 
-## Instrument
+- exp 38's one-chunk artefact: every prompt here is 9-33 chunks of 4,096.
+- exp 37's bench trap (`capacity_cells` drives the dispatch, `context` drives the work) applies to
+  `qsa_select_bench`; this experiment deliberately does **not** use that bench, because the engine-side share is the
+  number that decides whether any kernel is worth building.
+- exp 45's own advice - "a select measurement needs a prompt several times `--prefill`" - is satisfied by construction.
+- The 262,144-token attempt failed once with `positive --max-new and --max-context must fit the prompt and
+  generation`: at exactly `--max-context` the prompt plus one generated token does not fit, so the longest run
+  is 260,999 tokens with `--max-new 1`. That is a config constraint, not a result.
+- **The runs were single-card generate, not the dual-card serve config** (serve mode needs `--mtp DIR` with a
+  `dense.txt` that this box does not have, and `--layer-split` is serve-only). The share is a per-stage GPU-timeline
+  quantity, so single-card is a fair instrument for it, but the tok/s column is **not** comparable to exp 38's dual
+  numbers and must not be quoted as a regression.
 
-`qsa_select_bench [context] [queries] [reps] [capacity_cells]` already times the warp and tensor-core scorers, checks
-the score error against an FP64 host reference, and prints `selections identical N/M, cells differing X%`. On SYCL it
-currently prints `tensor-core scorer not available on this device`. Add the XMX scorer in the `qsa_block_scores_tc`
-slot and sweep **context 8,192 / 32,768 / 131,072 / 262,144 x queries 256 / 1,024 / 4,096** (the chunk sizes), with
-`capacity_cells == context`.
+## Reproduce
 
-**Measure the share before building the kernel.** The engine-side number that decides everything is the select's
-share of a stage timeline at long context, on a prompt several times `--prefill` (exp 38's method). If the share is
-still a few percent at 262K, a kernel win cannot reach the engine and this closes as a measurement.
+```sh
+source /opt/intel/oneapi/setvars.sh
+python3 -c "import pathlib;ids=pathlib.Path('sycl/bench/v1/long.ids').read_text().strip().split(',');\\
+n=131072;pathlib.Path('/tmp/p.ids').write_text(','.join((ids[:2000]*((n//2000)+1))[:n]))"
+STRATA_PREFILL_TIMING=1 ./sycl/build-b60/strata --pack /home/maxious/Strata-data/packs/q2_0 \\
+  --native .../Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf \\
+  --ple-gguf .../Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf \\
+  --expert-profile data/expert-profile.bin --expert-cache auto --prefill 4096 --spec 2 \\
+  --max-context 262144 --kv int8 --stream-experts --kv-resident 32768 \\
+  --tokens-file /tmp/p.ids --stop-eos 2>&1 | grep 'prefill timing:'
+```
 
-## Success criteria
-
-- The select's share **grows materially with context** on a real multi-chunk prompt (the hypothesis), and the XMX
-  scorer beats the warp scorer by more than the noise floor with selections identical (or a near-tie count inside the
-  bench's own rule, `err_new <= max(4 * err_old, 1e-6 * scale)`) -> opt-in `STRATA_*`, then a **long-context** prompt
-  tok/s A/B. A short-prompt A/B would show nothing, for the same reason exp 38's one-chunk probe lied.
-- The share stays small at 262K -> record it and keep the warp kernel; INTEL item 4 closes as "the product grows, the
-  share does not".
-
-## Honest ceiling
-
-exp 38 puts the select at 2.7-4.1% of a chunk at 8,000 tokens. Even if the XMX kernel removed the whole phase, the
-prompt gain is bounded by that share at that context - which is why the first deliverable here is the long-context
-share, not the kernel. This is a "measure, then maybe build" experiment, and the doc should stay honest about that.
+Logs: `/home/maxious/exp45-logs/gen32k.log`, `gen131072.log`, `gen261k.log`.

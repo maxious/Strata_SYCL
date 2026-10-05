@@ -1,124 +1,112 @@
-# Experiment 46 - the host-flag handshake on the mirrored-expert path: is the spin exhausted, or just slow?
+# Experiment 46 - the host-flag handshake on the mirrored-expert path: exhausted, or just slow? (measured 2026-10-05)
 
-**Status: design.** No number below is new. The spin's cost is exp 20's, the platform limitation is INTEL.md's,
-the token rates are issue 867's, and the mechanism is the code in `sycl_doorbell.hpp` and
-`verify_kernels.dp.cpp`. This exists because issue 867 closed with the question open, and because our own
-header carries an instruction (`kSpinMax ... experiment: 100x smaller`) that nobody ever ran.
+**Status: measured on the available config, with the design's own caveat that a small number here is not a refutation.**
+Two artifacts now exist and both work: a per-window **spin-exhaustion counter** wired into the verify path's stage
+table, and the **standalone doorbell spin probe** the design doc believed was missing. The probe answers the
+design's question 1 (**both** happen; exhaustion dominates when the store lands mid-spin), and the engine counter puts a
+number on the cost: **533.5 spin iterations per decode round, bound hit in 6 of 225 windows (2.7%)**, on a 45.2 ms
+round at 21.2 tok/s.
 
-## Question
+## What was built
 
-The device waits for the host through a mapped flag:
+**(A) The counter** (per window, two mapped words: spins used, bound hits; one atomic pair per *wait*, never per spin):
 
-```cpp
-// sycl/include/strata/sycl_doorbell.hpp
-using sys_atomic_u32 = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::system>;
-inline void sys_store(volatile uint32_t* p, uint32_t v) {
-    sys_atomic_u32(*const_cast<uint32_t*>(p)).store(v);
-    sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
-}
+| file | line | what |
+|---|---|---|
+| `sycl/include/strata/sycl_doorbell.hpp` | 25 | `sys_add` - a relaxed system-scope `fetch_add` beside `sys_load`/`sys_store` |
+| `sycl/include/strata/sycl_doorbell.hpp` | 40 | `strata::kernels::wait_flag_set_counter(uint32_t*)` |
+| `sycl/src/kernels/cuda/verify_kernels.dp.cpp` | 786, 949 | `wait_flag_ge_kernel` and `wait_flag_ge_or_kernel` take the counter and record spins + bound hits |
+| same | 1001-1007 | `g_wait_ctr` + setter, following the existing `g_mirror_res` pattern (a device kernel cannot read a host global, so the wrapper passes it in) |
+| `sycl/include/strata/core/verify.hpp` | 169-170, 190 | public `spin_spins` / `spin_bound`, private mapped counter |
+| `sycl/src/core/verify.cpp` | 41, 386, 389, 1412-1415 | allocate, register, accumulate + reset once per window |
+| `sycl/src/program/generate.cpp` | 8116 | the verify-window line now prints `device wait spins ... bound-hit ... per round` |
+
+**(B) `sycl/probe/doorbell_spin.cpp`** (new, CMake target `doorbell_spin`, deliberately *not* a ctest so the suite
+count is unchanged): the host raises a mapped flag after a controlled delay while the device spins on it with the
+port's own `sys_load`, and the device reports the first-seen iteration. A delay-0 control proves the spin path itself is
+not reading stale cache.
+
+## Measured: the probe (re-run independently, 256 trials, kSpinMax 20,000)
+
+```
+delay      0 us -> first-seen 0            <- control: a pre-set flag is seen immediately
+delay      5 us -> first-seen 20000  (EXHAUSTED)
+delay     50 us -> first-seen 20000  (EXHAUSTED)
+delay    500 us -> first-seen 401
+delay   2000 us -> first-seen 1490
+delay  10000 us -> first-seen 20000  (EXHAUSTED)
+delay  50000 us -> first-seen 20000  (EXHAUSTED)
+histogram at 1 ms delay:  first-seen min 747  mean 15791.8  max 20000  exhausted 200/256 (78%)
 ```
 
-```cpp
-// sycl/src/kernels/cuda/verify_kernels.dp.cpp: wait_flag_ge_or_kernel
-if (strata::sys_load(skip) == value) return;
-for (uint32_t spin = 0; spin < strata::kSpinMax && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
-sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
+An independent second run of the same binary gave 211/256 (82%) exhausted, with 500 us and 2 ms landing in the
+"seen late" bucket instead of "exhausted". **The regime is bimodal and its boundary moves run to run**: a host store
+that lands while the kernel is spinning is usually never observed at all, and otherwise observed late (hundreds to
+thousands of iterations, i.e. 0.4-2 ms). 20,000 iterations take ~23 ms, so an exhausted wait costs ~23 ms of dead time.
+
+**So both hypotheses are true in different runs, and the dominant failure is exhaustion (hypothesis 1), not slow
+visibility.** A "waited and saw it late" story does not fit 78-82% of trials; a "never saw it" story does not fit the
+18-22% that saw it at iteration 333-1490.
+
+## Measured: the engine, with the counter
+
+Single card, Q2_0, `--spec 2` (so the verify window and its doorbell handshake are live), 256-token decode:
+
+```
+verify window   wait for rings 45.176 ms/round; device wait spins 533.5, bound-hit 0.0 per round
+                (6 hits in 225 windows); decode 256 tokens -> 21.20 tok/s
 ```
 
-Issue 867 (2x B60 upstream, one card with mirrored experts) measures **~3.9 ms per layer in `wait for rings` on
-its stage table**, and decode that **rises as the spin bound falls**: 25.1 tok/s at `kSpinMax` 2,000, 28.4 at 200,
-same text, same binary. Its reading is "the GPU does not seem to see the host's flag store during the spin".
+- The handshake costs **~533 spin iterations per round**. At the probe's ~1.15 us per iteration that is **~0.6 ms of a
+  45.2 ms round, about 1.4%**.
+- The `kSpinMax` bound is hit in **6 of 225 windows (2.7%)**. Each such window burns the full ~23 ms.
+- Expected value of the exhaustion tail: 0.027 x 23 ms = **~0.6 ms per round, the same order as the entire spin
+  cost** - i.e. on this configuration **more than half the handshake's price is the 2.7% of windows that give up**.
 
-**Three questions, in order of how much they would change the port:**
+## Why this is not the configuration the design wanted, and what it therefore does and does not close
 
-1. Is the bound being **exhausted** (the device never observes the flag) or **satisfied late** (it observes it,
-   just after a long latency)? These look identical from the outside and call for opposite remedies.
-2. Is the mixed read of the host-written `skip` flag a real bug? The same file reads it **both** ways:
-   `sys_load(skip)` in `wait_flag_ge_or_kernel`, but a plain `*skip == value` in `copy_or_zero_kernel` and
-   `copy_i32_unless_kernel`. INTEL.md's own rule says `volatile` device loads do **not** bypass the caches on
-   Intel, so the plain reads contradict the port's documented mechanism.
-3. What is the right bound? The header says `kSpinMax = 20u * 1000u; // experiment: 100x smaller` - a value
-   nobody swept, and issue 867's two points say smaller is faster.
+The design asked for the **single-card mirrored-expert** configuration (issue 867's: 4,042 of 12,288 experts mirrored,
+~3.9 ms per layer in `wait for rings`, decode rising as the spin bound falls). This box cannot run it: **serve mode
+requires `--mtp DIR` containing a generated `dense.txt`**, which the on-disk MTP directory does not have (serve mode
+aborts at startup with a segfault after its check). What *is* runnable is the one-shot generate path with `--spec 2`,
+which exercises the same verify-window spin and is where the numbers above come from - with far more experts resident.
 
-## Prior evidence (and what it already settles)
+So, honestly:
 
-- **The platform limitation is ours, already documented.** INTEL.md, "Host-mapped flags": `volatile` device
-  loads do not bypass the caches on Intel, system-scope atomics do, and then plainly: **"Host-to-device
-  visibility *during* a kernel stays unreliable on this platform. That is why the all-resident path waits for the
-  window instead."** Issue 867's observation is the same fact seen from the other side, so this is **not** an
-  unknown - it is a known limitation with a known mitigation, and the experiment is about the cost.
-- **The spin is expensive, measured.** Exp 20 part 1 prices `wait_flag_ge_kernel` at **2.510 s** of a VTune run -
-  the third of the three top kernels - and notes that instrumentation slows the host's plan writes until the
-  device's `kSpinMax` **expires**, which is that bounded-spin design behaving as documented.
-- **Exhaustion is silent.** `wait_flag_ge_or_kernel` has no post-loop check: on exhaustion it falls straight
-  through to the `acq_rel` fence and proceeds as if the flag had been seen. Nothing counts it, so the engine
-  cannot currently distinguish "waited and saw it" from "waited and gave up". **That is the first thing to
-  instrument** - it is cheap and it decides between hypotheses 1 and 2.
-- **The host's side of the same handshake was a real bug, already fixed.** Exp 19: the host's per-layer
-  completion gate discarded `ext_oneapi_empty()`'s value, so any ring slower than 2 ms was called "graph
-  finished". Fixed in `verify.cpp` (decode 17.4 tok/s), and now also in `session.cpp` (`ff93973`). Do not
-  re-investigate the host side.
-- **The all-resident path never met this.** Issue 867: it does not wait per layer, "which is why the B70 runs
-  never met it". Exp 38's 2x B60 numbers are therefore **not** a reproduction path for this experiment.
+- **Closed:** the instrument (counter + probe), the probe's bimodal answer to "exhausted or slow", and a cost for the
+  handshake on the all-resident path (~1.4% of a round, half of it the 2.7% exhaustion tail).
+- **Not closed:** the mirrored-expert regime where the wait was 3.9 ms per layer. The design doc's own warning applies
+  in reverse - **the small number here does not refute issue 867**, it is a different placement. On this box that
+  configuration is unreachable until `tools/mtp_rt.py` has produced the MTP `dense.txt`.
+- **Not done:** the `kSpinMax` sweep (20,000 / 2,000 / 200 / 20). It needs the mirrored config, and sweeping the bound
+  on the all-resident path would trade away headroom for nothing - the bound is hit only 2.7% of windows there, and
+  issue 867's two-point result already says smaller is faster on the path where the wait is live.
 
-## Proposed change (bench first, nothing wired before it is measured)
+## Three corrections to the design doc, with evidence
 
-1. **Count exhaustion.** Add a device-side counter (per window: spins used, bound hit) beside the existing
-   `tg.flushes` accounting, and surface it in the stage table next to `wait for rings`. Nothing changes
-   functionally; it only makes the two hypotheses separable.
-2. **Rebuild the missing probe.** INTEL.md cites `sycl/probe/doorbell.cpp` ("six variants", "measured to work")
-   as the authority for choosing system-scope atomics - **that file is not in this tree.** A standalone probe
-   (host writes flag -> device spins -> device reports first-seen iteration) is ~100 lines, needs no model, and
-   prices the handshake alone: latency distribution, P(spin > bound), and the effect of the bound.
-3. **Unify the `skip` read on `sys_load`.** If the probe shows the plain `volatile` read missing stores the
-   `sys_load` one sees, that is a one-line correctness fix with a bench A/B behind it. If it shows no
-   difference, that is worth recording too - it would mean the two spellings agree here and the inconsistency is
-   only latent.
+1. **`sycl/probe/doorbell.cpp` exists** - it is the six-variant handshake probe INTEL.md cites. It uses a *private*
+   `atomic_ref` alias rather than `sys_load`/`sys_store`, and reports OK/FAILED + latency, not first-seen iteration.
+   The new probe is its sibling `doorbell_spin.cpp` rather than a replacement, so the cited authority is intact.
+2. **The spin is on the verify path, not the token-graph path.** `wait_flag_ge*_kernel` is called only from
+   `verify.cpp`; the line to read is the **verify window** line (`generate.cpp:8116`), not the `token graph` line
+   (`tg.flushes`). The counter is surfaced there.
+3. **Both spin kernels were instrumented, not just `wait_flag_ge_or_kernel`** - the latter is only the
+   `STRATA_VERIFY_DEVICE_PLAN=1` variant, so instrumenting it alone would have reported a silent zero in the default
+   configuration. (Confirmed by the run above: the counter is non-zero in the default config.)
 
-## Instrument and configuration
-
-- **Reproduce on ONE B60 with the mirrored-expert config**, which is the configuration where the per-layer wait
-  is live: exp 19's exact setup (Coder IQ1_M, `pack-coder`, `--expert-cache auto --stream-experts --spec 4
-  --mtp ...`, greedy). Issue 867 reached 11.9 tok/s with 4,042 of 12,288 experts mirrored on one card; our 2x
-  B60 all-resident config will **not** reproduce it, by design.
-- **VTune GPU Hotspots** with the exp 20 recipe (`dev.xe.observation_paranoid=0`), reading
-  `wait_flag_ge_kernel`'s duration against the new counters.
-- **Sweep the bound**: `kSpinMax` at 20,000 (today's value), 2,000, 200, 20 - decoding tok/s **and** the
-  exhaustion count, so speed and correctness trade off against each other instead of being guessed.
-
-## Success criteria
-
-- **Exhaustion counter non-zero on the mirrored path** -> hypothesis 1. The bound is a correctness guard being
-  hit routinely; the remedy is the platform route (wait for the window, as the all-resident path already does),
-  and the experiment's output is a **number for what that costs**, not a fix.
-- **Counter zero, spin still slow** -> hypothesis 2's cousin: visibility works, latency does not. Then the
-  measurement to make is the flag-store-to-device-observation **distribution** (PCIe 3.0 x8 in issue 867's box,
-  which is a plausible contributor and worth stating as such rather than assuming).
-- **`copy_or_zero_kernel`'s plain `*skip` misses stores that `sys_load(skip)` sees** -> a real correctness bug,
-  fixed behind the probe's A/B, with the `wait_flag_ge_or_kernel` pre-check and the plain read made to agree.
-- **Any tok/s gain from a bound sweep alone** -> take it, but record it as trading correctness headroom for
-  speed, and keep the smallest bound at which the exhaustion counter stays zero on the slowest observed run.
-
-## Honest ceiling
-
-- This may well close as a **measurement with no fix**: INTEL.md already says in-kernel host-to-device visibility
-  is unreliable here, and issue 867's own conclusion is that the fence made no difference. If the counters show
-  exhaustion on every layer, the honest result is "the per-layer handshake costs X ms/layer on this platform and
-  the mitigation is structural" - a number for the port, not a bug.
-- Reproducing it needs the **single-card mirrored-expert** configuration. On our 2x B60 all-resident setup the
-  wait is not exercised, so a null result here would be **inconclusive**, not a refutation - say which.
-- Exp 20 already showed instrumentation can push the device past the bound. Counters must be cheap enough that
-  measuring does not change the thing measured; that constraint is why the counter is per-window and not per-spin.
-- `STRATA_VERIFY_COHERENT`, which issue 867 did not try, **does not exist in this tree** - so it is not an
-  available knob here and must not be cited as an untried lever.
+`STRATA_VERIFY_COHERENT` still does not exist in this tree, so it remains a non-untried lever rather than an omission.
 
 ## Reproduce
 
 ```sh
-# one B60, the config where the per-layer wait is live (exp 19's setup)
-STRATA_STAGE_TRIM=1 ./sycl/build-b60/strata --serve --pack .../pack-coder \
-    --expert-profile data/expert-profile-coder.bin --expert-cache auto --stream-experts \
-    --spec 4 --mtp ~/ComfyUI/mtp/rt ... # then read the stage table's wait-for-rings line
-# VTune with counters (exp 20's recipe)
-dev.xe.observation_paranoid=0 vtune --driver memcgpu ... # look at wait_flag_ge_kernel
+source /opt/intel/oneapi/setvars.sh
+ninja -C sycl/build-b60 doorbell_spin strata
+ZE_AFFINITY_MASK=1 ./sycl/build-b60/doorbell_spin 256 1000       # probe, 256 trials at 1 ms host-store delay
+./sycl/build-b60/strata --pack .../q2_0 --native ...01.gguf --ple-gguf ...02.gguf \\
+  --expert-profile data/expert-profile.bin --expert-cache auto --prefill 4096 --spec 2 \\
+  --kv int8 --stream-experts --kv-resident 32768 \\
+  --tokens-file sycl/bench/v1/short.ids --max-new 256 2>&1 | grep 'wait for rings'
 ```
+
+Logs: `/home/maxious/exp46-harness/`, `/home/maxious/exp46-harness-verify.log`, `/home/maxious/exp46-harness/engine_counter.log`.
+`ctest`: 30/30 pass with the counter in place.

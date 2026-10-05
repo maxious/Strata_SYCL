@@ -1,95 +1,136 @@
-# Experiment 42 - DPAS int8 MMVQ on reordered Q6_K: the decode dot on the matrix pipe (design, not yet run)
+# Experiment 42 - DPAS int8 MMVQ on reordered Q6_K: the decode dot on the matrix pipe (measured 2026-10-05)
 
-**Status: design.** No number below is new. Every measurement is cited from a closed experiment (21-28); the
-proposal exists to test a mechanism exp 25 did not try. It reopens the README's parked "XMX for decode" row, and
-that is deliberate - the parked verdict rests on a *dequant-to-FP16 GEMM*, not on a DPAS int8 matvec on quantized
-weights.
+**Status: measured, bench-only.** The candidate is built and verified (`sycl/src/kernels/xmx_mmvq_bench.cpp`, CMake
+target `xmx_mmvq_bench`). It beats the shipped kernel by 1.7-2.0x on the model's *real* dense shapes and loses on the
+small square. Nothing in the engine calls it; the engine A/B and the opt-in `STRATA_*` wiring are the next step and are
+**not** done, so no default may move.
 
 ## Question
 
-The dense Q6_K decode MMVQ is ALU-pipe-bound. exp 23 put Pipe at 16.8% with Send 0.0%, and exp 27's ISA dump found
-the 6-bit unpack is roughly 4x the dp4a count on that same pipe (`dp4a` is 32 of 985 instructions). Two levers have
-been tried against it and neither moved the *dot* off the pipe:
+The dense Q6_K decode MMVQ is ALU-pipe-bound (exp 23: Pipe 16.8%, Send 0.0%; exp 27's ISA dump: `dp4a` is 32 of 985
+instructions against a 6-bit unpack roughly 4x its size on the same pipe). exp 27 removed the per-token unpack with a
+one-time pre-unpack to signed bytes and got ~2x, but the dot stayed `dp4a` on the ALU pipe. exp 25 reached XMX by
+materializing FP16 for oneMKL and lost at every ncols the engine runs. llama.cpp PR 29864 takes the third route: keep
+the weights in a reordered layout and feed **DPAS int8** directly. **Does that beat the shipped dp4a kernel - and exp 27's
+no-unpack ceiling - at the engine's ncols 1-8?**
 
-- **exp 27** removed the per-token unpack with a one-time pre-unpack to signed bytes -> ~2x at kernel level
-  (19.1 -> 9.3 us at ncols=1), but the dot is still `dp4a` on the ALU pipe. It ships opt-in (`STRATA_MMVQ_PREUNPACK=1`)
-  and loses end to end on VRAM (exp 28/36: +2.53 GiB, 9,478 -> 8,152 expert-cache slots, 12.4% decode loss on the
-  Coder; at matched slots the arms are within 1.0%).
-- **exp 25** reached XMX by materializing FP16 and calling oneMKL, and lost at every ncols the engine runs
-  (0.54-0.86x at ncols 1-4), crossing only at ncols>=6 while costing 2x dense VRAM plus ~12 us of materialization.
+## What was built, and the two toolchain facts that shaped it
 
-[llama.cpp PR 29864](https://github.com/ggml-org/llama.cpp/pull/29864) takes the third route: keep the weights
-quantized in a reordered layout and feed **DPAS int8** directly - a thread owns 16 weight rows, the q8_1 activation
-columns are the A operand, and the per-group scales are applied on the vector units after each DPAS. The dot leaves
-the ALU pipe entirely. **Does that beat the shipped dp4a kernel - and, more tellingly, exp 27's no-unpack byte
-ceiling - at the engine's real ncols 1-8?**
+`xmx_mmvq_bench` runs three arms in one process at the engine's shapes:
 
-## Prior evidence (B60, 2560x2560 Q6_K, per-call us)
+| arm | what it is | bytes / 256 weights |
+|---|---|---:|
+| 1 `native_q6_k_mmvq` | shipped AOS 6-bit unpack + `dp4a` | 210 |
+| 2 `native_mmvq_q6k_unpacked` | exp 27's one-time pre-unpack to signed bytes, still `dp4a` | 272 |
+| 3 `xmx_dpas_q6k` | this experiment: 6-bit unpack in registers, dot on DPAS int8 | 210 (layout only) |
 
-| ncols | 1 | 2 | 4 | 6 | 8 | source |
-|---|---:|---:|---:|---:|---:|---|
-| shipped AOS dp4a `native_q6_k_mmvq` | 19.1 | 21.7 | 26.3 | 36.1 | 55.3 | exp 27 |
-| pre-unpack byte dp4a (the no-unpack ceiling) | 9.3 | 11.1 | 16.5 | 20.9 | 25.9 | exp 27 |
-| oneMKL FP16 GEMM (materialized) | 39.9 | 38.0 | 34.4 | 30.8 | 26.1 | exp 25 |
-| shipped / GEMM | 0.54x | 0.63x | 0.86x | 1.33x | 2.39x | exp 25 |
+Two facts had to be established before any ratio meant anything, both by standalone probes:
 
-The engine decodes at ncols=1 (`layer.cpp:154`); the drafter and the verify window run 2-8 (`kVerifyMaxT = 8`), so
-1-8 is the whole relevant range. The PR's 9-80 range is a llama.cpp short-prompt path and has no call site here
-(see exp 44).
+1. **int8 DPAS on this device is K=32, N in {8,16}, repeat count (M) 1..8** - `dpas.hpp` static-asserts
+   `SystolicDepth == 8`, and for s8 that fixes `K = 8 * 4 = 32`. Q6_K keeps one scale per **16** weights, so a 32-deep
+   DPAS spans two different scales: the kernel issues **two DPAS per group with the unused half of B zeroed**, which is
+   what "zeros in B drop the other half of K" means upstream. Measured cost of that masked pair: dropping the second
+   DPAS (`XMX_ONE_DPAS=1`, numerically wrong by construction) moves ncols 1 from 17.3 to 16.5 us - **the mask is not the
+   cost**.
+2. **The M>1 repeat count does not accept the documented A layout.** With M=1 and B in K-major VNNI order
+   (element (k,n) at dword `(k/4)*16+n`, byte `k%4`), `dpas<8,1,int>` matches a host dot product exactly for every
+   random case (`dpas_vnni` probe). At M=2,4,8 with A laid out row-major (M rows x K bytes, the form
+   `xmx_int8_bench`'s `joint_matrix` path uses and validates) the same probe matches **only 16 of RC*16 lanes - one
+   row** - and neither a K-major interleave of A nor a transposed result index fixes it. The kernel therefore issues
+   **one M=1 DPAS per column** with the unpacked B tile held in registers across columns; that is verified correct, and
+   it costs nothing extra in matrix-pipe work (M=1 wastes none of it).
 
-## Proposed change
+`esimd::load_2d(..., Transposed=true)` does **not** deliver a usable 16-row x 8-dword tile in this toolchain (a
+row-encoded probe returns a layout that is neither `(kd,n)` nor `(n,kd)`, and repeated every 16 elements), so arm 3 does
+not use it. Instead the one-time reorder writes the DPAS B order directly - per (16-row tile, block, 32-wide group) a
+512-byte tile with element (k,n) at dword `(k/4)*16+n` - which makes each group **one contiguous 512-byte load** with no
+in-register transpose. The cost is that the buffer holds bytes rather than 6-bit codes: 272 B per 256 weights, the same
+class as arm 2, so arms 2 and 3 differ in the dot and not in resident bytes. (The layout-only reorder the design assumed
+would have been free is not: VNNI needs materialized bytes.)
 
-A new bench-only kernel, not a production dispatch:
+Two ESIMD traps cost real time and are worth recording: `select<16,16>(off)` on a per-row scale block returns
+something that is not that strided slice (row 0 came out exact and every other row wrong - the same signature as a real
+layout bug), and a ternary between two `simd` values (`one ? simd(0) : dpas(...)`) silently changed results. Both are
+silent-wrong-answer, not compile-error.
 
-- `sycl/src/kernels/xmx_mmvq_bench.cpp`, a CMake target in the parity bench set (the `decode_xmx_gemm_bench`
-  pattern), linking ESIMD.
-- One ESIMD DPAS kernel for **Q6_K only** (the PR's `xmx_traits_q6_k`): reorder layout
-  `[ql: nb*128][qh: nb*64][scales int8: nb*16][d: nb*2]`, 16 rows/thread, 2D block loads, `xmx_bytes_sub` unpack,
-  one DPAS per group with the two 16-wide scales applied after it.
-- The reorder is a **one-time transform at weight load**, exactly like the existing Q6U pre-unpack - it must never
-  be inside the timed region.
-- `grf_size` 128 for narrow tiles and 256 for wide ones (the PR's `xmx_grf`); confirm it applied by re-dumping the
-  ISA (`IGC_ShaderDumpEnable=1`), or fall back to the runtime `IGC_ExtraOCLOptions=-ze-opt-large-register-file`
-  route exp 21 used.
+## Correctness gate
 
-## Instrument
+Arm 3 is checked against an fp64 host reference (llama.cpp's `dequantize_row_q6_K` on the host, 48 rows x every column)
+and must land at the *same* rel-RMS as the two shipped arms - it does, to all printed digits, at every ncols 1-8 and every
+shape below. The bench exits non-zero otherwise (`XMX_CMP=1` prints ref/AOS/pre-unpack/DPAS side by side). An earlier
+build that read the wrong dump offset reported 95/4096 tile matches and looked like a layout bug; the shipped gate is
+the rel-RMS line, not the dump.
 
-Single-process `xmx_mmvq_bench`, same shape and activations as `mmvq_bench`/`q6k_preunpack_bench`, four arms in one
-process so the ratio is same-run:
+## Measured (B60, one process, warm 300 ms, 400 reps, best arm per row not needed - all within the +-1.5% floor)
 
-1. shipped AOS dp4a `native_q6_k_mmvq` - the self-check (must reproduce the exp 22/27 plateau: ~19.1 us / ~281 GB/s
-   at ncols=1, 26.1 us / 205.7 GB/s at ncols=4);
-2. pre-unpacked byte dp4a (exp 27's ceiling);
-3. DPAS int8 on the reordered layout - the candidate;
-4. oneMKL int8 GEMM on the same layout - a control that proves the win is DPAS, not "any int8 GEMM".
+### The square the old experiments used (2560 x 2560)
 
-Report **per-call us, not GB/s** (exp 27's trap: the byte path's GB/s is inflated by its 1.30x bigger buffer).
-Warm ~300 ms, ~400 iterations, best of 3. Sweep ncols 1/2/3/4/5/6/7/8, then the Coder IQ1_M's real dense shapes
-(2560->512/640/10240/12288, 6144->2560) - the square alone is not enough (exp 22/36).
+| ncols | 1 | 2 | 4 | 6 | 8 |
+|---|---:|---:|---:|---:|---:|
+| arm 1 AOS `dp4a` (us) | 19.2 | 21.7 | 26.3 | 36.7 | 54.9 |
+| arm 2 pre-unpack (us) | 9.3 | 11.4 | 16.7 | 21.2 | 26.4 |
+| arm 3 DPAS (us) | 17.3 | 20.5 | 27.4 | 34.0 | 40.1 |
+| DPAS vs AOS | 1.11x | 1.06x | 0.96x | 1.08x | 1.37x |
+| **DPAS vs pre-unpack** | **0.54x** | 0.55x | 0.61x | 0.62x | 0.66x |
 
-## Gates before any ratio means anything
+Arms 1 and 2 reproduce exp 22/27's published plateau (19.2/21.7/26.3/36.7/54.9 and 9.3/11.4/16.7/21.2/26.4), so the
+self-check passes. On this shape the DPAS arm **loses to the no-unpack ceiling by ~1.8x**.
 
-- Correctness vs an fp64 host reference, max rel err ~1e-7 (exp 25's standard); a NaN at any row count that is not
-  a multiple of 4 was the PR author's own first bug - check non-multiple-of-16 row counts explicitly.
-- The PR's `xmx_supported` precondition: `ncols % QK_K == 0` and a 64-byte-aligned activation base, else the
-  short-row variant.
-- B60 is BMG G21, which the PR's arch check lists; the port's `gpu_has_xmx` gate already exists.
-- The pre-unpack arm and the DPAS arm must be compared at **the same resident VRAM** - the reorder costs the same
-  ~1.30x dense buffer class as Q6U, and exp 36 is the proof that a kernel win can be a 12.4% engine loss from that
-  cost alone.
+### The model's real dense shapes - where it wins
 
-## Success criteria
+Q6_K dense projections in the Coder IQ1_M are 2560->12288, 2560->10240 (down) and 6144->2560 (up), plus small
+2560->640/512. Per-call us, arm 3 vs the two others:
 
-- **Beats arm 2 at ncols 1-4** -> the matrix pipe removes the pipe bottleneck and this is a real new lever; wire
-  opt-in behind `STRATA_*` and run the engine A/B (matched expert-cache slots, `--layer-split` pinned) *before* any
-  default flip.
-- **Matches arm 2 only** -> parked: the bottleneck was the unpack, not the dot unit, and the cheaper Q6U path wins.
-- **Loses to arm 1** -> parked with exp 12/25, and the PR's win on llama.cpp does not transfer because this port's
-  AOS wide kernel is already column-vectorized (exp 12's finding).
+| shape (n_out x n_in) | ncols | AOS | pre-unpack | DPAS | vs AOS | vs pre-unpack |
+|---|---:|---:|---:|---:|---:|---:|
+| 12288 x 2560 | 1 | 100.5 | 94.1 | **50.8** | **1.98x** | **1.85x** |
+| 12288 x 2560 | 8 | 258.0 | 156.5 | 150.8 | 1.71x | 1.04x |
+| 10240 x 2560 | 1 | 77.9 | 77.1 | **44.6** | **1.75x** | **1.73x** |
+| 10240 x 2560 | 8 | 212.7 | 129.5 | 121.8 | 1.75x | 1.06x |
+| 2560 x 6144 | 1 | 37.9 | 29.2 | **22.0** | **1.72x** | **1.33x** |
+| 2560 x 6144 | 8 | 105.7 | 60.3 | 53.8 | 1.97x | 1.12x |
+| 640 x 2560 | 1 | 6.3 | 4.1 | 13.5 | 0.47x | 0.30x |
+| 640 x 2560 | 8 | 20.1 | 9.3 | 33.4 | 0.60x | 0.28x |
+| 2560 x 2560 | 1 | 19.2 | 9.3 | 17.3 | 1.11x | 0.54x |
 
-## Traps carried in from the earlier XMX work
+All rows passed the correctness gate ("all arms within tolerance" in each run's log).
 
-- Tiny-M GEMM timing is launch/backend-overhead dominated: report us, not GFLOP/s (exp 25 fabricated 0.3-4.0
-  TFLOP/s at M=1..8).
-- A "clean" build can be stale: verify the binary before trusting an arm (exp 33).
-- `--expert-cache N` is a hint the sizer exceeds; read each arm's reported slot count, not the flag (exp 36).
+## Verdict
+
+**A real new lever, and the square is the wrong place to look for it.** The design's success criterion was "beats arm 2
+at ncols 1-4"; at the shapes that dominate the model's dense Q6_K work it does, by 1.33-1.85x at decode width and
+1.04-1.12x at the verify window's 8. It loses on the small shapes (640 out, the 2560 square) where 16 rows per work-item
+and one 512-byte load per group cannot fill the machine - the same "bench the square" trap exp 22 and exp 36 document,
+now with the sign flipped.
+
+What this says mechanistically: exp 23's "the decode dot is ALU-pipe-bound" is true of the shipped kernel and **not** a
+property of the decode dot. Moving the dot to DPAS removes that bottleneck, and at 12288x2560 the arm is 1.98x the
+shipped kernel - a bigger factor than the 2.05x the pre-unpack bought on the square, and it buys it *while also* removing
+the in-kernel unpack.
+
+What is **not** established, and must be before any default moves:
+
+- **No engine A/B.** The bench is where the design's instrument lives, but exp 28/36's lesson is that a kernel win can be
+  an engine loss: arm 3's buffer is 272 B per 256 weights, the same 1.30x class that cost the pre-unpack 2.53 GiB and
+  12.4% end to end. Wiring it opt-in behind `STRATA_Q6K_DPAS=1` with a parallel-buffer registration like
+  `native_mmvq_register_q6k_preunpack`, then an engine A/B at **matched expert-cache slots** (read the reported slot
+  count, not the `--expert-cache` hint) with `--layer-split` pinned, is the required next step.
+- **The one-time transform cost is not measured here** (this bench builds the tile buffer on the host). The engine would
+  do it on device at load; it must be bounded before shipping.
+- **The M>1 repeat count is unusable**, so every column costs its own DPAS and the tile is 16 rows wide. Both are
+  probably why the small shapes lose; N=8 tiles or 8-row tiles with two tiles in flight are the obvious next attempt.
+
+## Reproduce
+
+```sh
+source /opt/intel/oneapi/setvars.sh
+ninja -C sycl/build-b60 xmx_mmvq_bench
+./sycl/build-b60/xmx_mmvq_bench                 # 2560x2560 square
+./sycl/build-b60/xmx_mmvq_bench 12288 2560 200  # the shape that wins
+XMX_CMP=1 ./sycl/build-b60/xmx_mmvq_bench 256 256 2   # ref / AOS / pre-unpack / DPAS side by side
+XMX_ONE_DPAS=1 ./sycl/build-b60/xmx_mmvq_bench        # masked-half DPAS cost (wrong results on purpose)
+```
+
+Probe files used to establish the operand layouts (kept outside the repo, `/home/maxious/exp42-harness/`):
+`dpas_vnni.cpp` (M=1 exact, M>1 mismatch), `dpas_map.cpp`/`dpas_ramp.cpp` (one-hot and ramp index maps),
+`load2d_layout.cpp` (the 2D transposed load's layout).

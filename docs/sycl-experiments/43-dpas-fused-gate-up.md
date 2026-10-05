@@ -1,69 +1,99 @@
-# Experiment 43 - DPAS fused gate+up for the shared expert (design, not yet run)
+# Experiment 43 - DPAS fused gate+up: the fusion is real, the target shape is not what the design assumed (measured 2026-10-05)
 
-**Status: design.** No number below is new; the profile figures are cited from exp 20/33 and the kernel comments.
-This is the companion to exp 42: the same DPAS mechanism, applied to a gate+up that is **already fused in this
-port** - the experiment is the engine, not the fusion.
+**Status: measured, bench-only.** A fused DPAS gate+up kernel (two weight streams, one activation read, the GLU in the
+epilogue) beats the two-projection + `swiglu_kernel` sequence at **every ncols 1-8 on both shapes measured**
+(1.05-1.71x, largest at decode width). It is **not** an engine win yet, for two measured reasons: the bench baseline is
+two *DPAS Q6_K* projections while the engine's shared expert runs S-form `native_mmvq`, and **only 26 of 96 gate/up
+tensors are Q6_K**. Nothing is wired into the engine.
 
 ## Question
 
-llama.cpp PR 29864's second kernel computes `up * act(gate)` for both FFN weights in one launch, reads the
-activations once, and applies SWIGLU/GEGLU in the epilogue (up to 16 columns). Its point is not the fusion - llama.cpp
-already fused gate+up for the reorder path - it is doing the fusion **on XMX**.
+llama.cpp PR 29864's second kernel computes `up * act(gate)` for both FFN weights in one launch, reading the
+activations once and applying the GLU in the epilogue. This port already fuses gate+up in two places, so the honest
+question is which of them an XMX gate+up would move. The design recommended building the **shared expert** first
+(dense, quantized, currently unfused: `ffn_gate_shexp` / `ffn_up_shexp` + a separate `swiglu_kernel`).
 
-This port already fuses gate+up in two places, so the honest question is which of them an XMX gate+up would move:
+## What was built
 
-| gated FFN in this port | layout | state | measured |
-|---|---|---|---|
-| `native_gu_port<TG,LN>` (routed experts, grouped) | S-form quantized | **already one launch** (gate+up outputs) | 1.426 s in exp 20's decode profile, 2nd-largest kernel; ALU-bound, 77% XVE active at 58 of 608 GB/s (exp 33) |
-| `fused_gr_read_multi` (dense GR block) | BF16, 2 B/elem | **already fused**, multi-column (exp 06: default fastest at every width) | - |
-| shared expert (`ffn_gate_shexp` / `ffn_up_shexp`) | S-form quantized | two projections + a separate `swiglu_kernel` | kernel comment cites the block at 0.8883 ms, 26.7% of its block - a stale comment, re-measure before quoting |
+`sycl/src/kernels/xmx_gateup_bench.cpp` (582 lines, CMake target `xmx_gateup_bench`), a sibling of exp 42's bench so
+exp 42's published plateau stays untouched:
 
-So there are two candidate targets, and they answer different questions:
+- exp 42's single-projection kernel copied verbatim (`xmx_dpas_q6k_kernel`, lines 50-124) - it is the **self-check**:
+  in the same process it reproduces exp 42's 17.0-17.3 us at 2560x2560 (published 17.3) and 13.2 us at 640 (published
+  13.5).
+- the fused kernel `xmx_dpas_q6k_fused_kernel` (156-264) with a `STORE_GLU` dispatch wrapper (266-291): two weight
+  tiles, two accumulator sets, the activation read once, `silu(gate) * up` applied before the store.
+- the port's `swiglu_kernel` reproduced as `swiglu_f64` (300-312) as the baseline's second phase.
 
-- **A - the shared expert.** Dense (n_embd -> n_ff), quantized, currently unfused: the exact shape of the PR's
-  kernel. Smaller cost, but the kernel is a near-copy of exp 42's plus the epilogue.
-- **B - `native_gu_port`.** The highest-value target - measured the 2nd-largest decode kernel and ALU-bound, which is
-  precisely the "move the dot to the matrix pipe" lever - but it is a *grouped* kernel (each expert's token rows
-  gathered), so it needs the expert-grouped activation layout as well.
+## Correctness (all three values, fp64 host reference, tolerance declared before the run)
 
-**Recommendation: build A first** (it is exp 42's kernel plus an epilogue and a second weight stream), and extend to
-B only if A's win is real. Do not start with B.
+Tolerance: gate < 1e-2, up < 1e-2 (exp 42's DPAS plateau is 3.4e-03 rel-RMS, so ~3x headroom), product < 2e-2.
+Observed at 2560x640, all ncols: gate 3.4-4.1e-03, up 4.3-5.0e-03, **fused product identical to the baseline product
+to every printed digit** (4.5-5.8e-03). The gate and up projections are read out of the **fused arm's own
+accumulators** (a second `STORE_GLU=false` instantiation sharing the exact DPAS accumulation with the timed arm), so a
+product error cannot hide behind an input error.
 
-## Proposed change (target A)
+**The design's "float32 epilogue will not be bitwise" is true and irrelevant: the float32-vs-fp64 `silu` gap is
+5e-08 to 9e-08 relative**, five orders of magnitude below the int8 dot's 3.4e-03. That number is worth having - it means
+the epilogue does not need an fp64 path.
 
-- A fused variant of exp 42's kernel: two weight streams (`vx` = up, `vg` = gate), two accumulator sets, one
-  activation read, the GLU applied to `up * act(gate)` in the epilogue before the store - the PR's `xmx_mul_mat`
-  with `FUSED=true` and `xmx_glu_act`.
-- Both weight sets must be in the reorder layout; the shared expert's S-form (S2/S4/S8, IQ4_NL codebook) is broader
-  than exp 42's Q6_K, so the reorder/unpack traits must cover the forms the pack actually uses. **Count them first**
-  (`sycl/tools/gguf_count_dense_usage.py`) - a lever can be real and invisible end to end because the model barely
-  uses the type (the skill's step 8).
-- Gate and up in this model are separate tensors (`ffn_gate_shexp`, `ffn_up_shexp`), so the fused kernel is a real
-  fusion, not a re-labeling of an existing call.
+## Measured (per-call us, one process, warm 300 ms, 400 reps, `ZE_AFFINITY_MASK=1`)
 
-## Instrument
+**2560 x 640 - the shared expert's real gate/up shape**
 
-- Extend exp 42's `xmx_mmvq_bench` with a fused arm: gate+up weights, the GLU epilogue, and the reference
-  two-GEMV + `swiglu_kernel` sequence as the baseline arm. Per-call us at ncols 1-8, warm, best of 3.
-- Correctness on all three values: the gate projection, the up projection, and their product vs an fp64 reference
-  (the product hides an error in either input, so check the inputs too).
-- Engine side only if the bench wins: the shared expert runs every token, so measure with the decode profile
-  (exp 20's method) or `STRATA_PREFILL_TIMING` for the prompt path, and pin everything the arms must share.
+| ncols | 1 | 2 | 4 | 6 | 8 |
+|---|---:|---:|---:|---:|---:|
+| fused | 16.1 | 21.9 | 30.6 | 43.1 | 53.1 |
+| unfused (2 proj + swiglu) | 27.6 | 35.3 | 45.6 | 56.1 | 67.0 |
+| win | **1.71x** | 1.61x | 1.49x | 1.30x | 1.26x |
 
-## Gates and traps
+**2560 x 2560 (square)**
 
-- The PR's fused kernel keeps **two** sets of weights and scales and always takes the 256-GRF file; a 128-GRF build
-  spills. Verify the register file the way exp 21 did (ISA dump, not the source).
-- Activation columns must satisfy the same `ncols % QK_K == 0` / 64-byte alignment precondition; the shared expert's
-  n_ff may not be a multiple of the tile - check the tail path.
-- The epilogue must match the reference's order: this port's `swiglu_kernel` computes `silu(gate) * up` in float64
-  internally for parity (the kernel comment records that a float32 exp differs in the last bits). A DPAS epilogue in
-  float32 will not be bit-identical - define the tolerance, and do not "fix" it by loosening the reference.
+| ncols | 1 | 2 | 4 | 6 | 8 |
+|---|---:|---:|---:|---:|---:|
+| fused | 24.5 | 30.5 | 41.4 | 62.5 | 77.8 |
+| unfused | 35.5 | 43.5 | 56.1 | 70.3 | 81.8 |
+| win | **1.45x** | 1.42x | 1.35x | 1.12x | 1.05x |
 
-## Success criteria
+Independently re-verified at 2560x256 (a third shape): 1.77x at ncols 1 falling to 1.22x at ncols 8, all arms within
+tolerance. The trend - biggest win at decode width, shrinking toward 8 - is what the mechanism predicts (one launch,
+one activation read, no elementwise pass).
 
-- Beats the two-projection + swiglu sequence at ncols 1-8 -> opt-in `STRATA_*`, then the engine A/B; if the shared
-  expert is a measured slice of decode time, consider target B next.
-- No win -> parked, and the record should say the fusion was never the cost (as exp 06 found for the GR variants).
-- Note the earlier error this doc corrects: the drafter's `fc_embedding`/`fc_hidden` are two **sequential** FC
-  layers, not a gate/up pair - there is nothing to fuse there, and any doc that says otherwise is wrong.
+## Two measured facts that keep this from being an engine win
+
+1. **The shared expert's `n_ff` is 640, not 10240.** Read from the GGUF header
+   (`Qwen3.8-Flash-Next-GSQ-RCO-IQ1_M-00001-of-00002.gguf`): `blk.N.ffn_gate_shexp.weight dims (2560, 640)` and
+   `ffn_down_shexp dims (640, 2560)` in every layer. So the target is the **small** shape - and at small shapes exp 42
+   found the DPAS kernel *loses* to the shipped kernels (0.47x at 640x2560). The 1.26-1.71x above is the **fusion
+   lever** (one launch vs three), not the DPAS lever, and the engine's current shared-expert cost is S-form
+   `native_mmvq` x2 + swiglu, which this bench does not measure.
+2. **Only 27% of gate/up tensors are Q6_K.** Across the 96 gate+up tensors: Q4_K 30, IQ4_XS 28, **Q6_K 26** (13 gate +
+   13 up), Q5_K 12. A Q6_K-only wiring would leave **73%** of the shared expert's gate/up untouched - the design's own
+   step-8 warning, confirmed with a count rather than an assumption. (IQ4_NL is the *down* projection only.)
+
+Still open from the design: the 256- vs 128-GRF spill gate needs an ISA dump, and the reorder traits must cover
+Q4_K/Q5_K/IQ4_XS before any of this is visible in the engine.
+
+## Verdict
+
+- "Beats the two-projection + swiglu sequence at ncols 1-8" - **yes, at the bench level, 1.05-1.77x**, on every shape
+  and width measured.
+- "No win -> parked" - **not applicable; there is a win.** But it is a win on a *baseline that does not exist in the
+  engine*, on the one shape where the DPAS lever is weakest, for 27% of the tensors. **The honest next step is the
+  non-Q6_K reorder traits, then an engine A/B** - not a default flip.
+
+## Reproduce
+
+```sh
+source /opt/intel/oneapi/setvars.sh
+ninja -C sycl/build-b60 xmx_gateup_bench
+ZE_AFFINITY_MASK=1 ./sycl/build-b60/xmx_gateup_bench 640 2560        # the shared expert's real shape
+ZE_AFFINITY_MASK=1 ./sycl/build-b60/xmx_gateup_bench 2560 2560
+```
+
+Harness and logs: `/home/maxious/exp43-harness/`; independent re-verification: `/home/maxious/exp43-verify.log`.
+`ctest`: 30/30.
+
+**A trap this experiment hit, worth keeping:** the first run had no device selector and landed on the card another
+measurement was using. The self-check caught it - the exp 42 arm read 56.9 us instead of 17.3 - and the numbers above
+are from a re-run pinned to the idle card with `ZE_AFFINITY_MASK=1`. Nothing here rests on the contended run.
