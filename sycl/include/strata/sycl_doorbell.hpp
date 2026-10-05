@@ -20,6 +20,11 @@ inline void sys_store(volatile uint32_t* p, uint32_t v) {
     sys_atomic_u32(*const_cast<uint32_t*>(p)).store(v);
     sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
 }
+// A relaxed system-scope accumulate: the verify window's spin counter (spins used, bound hit) is a diagnostic
+// word the host resets once per window, so it needs no fence of its own.
+inline void sys_add(volatile uint32_t* p, uint32_t v) {
+    sys_atomic_u32(*const_cast<uint32_t*>(p)).fetch_add(v);
+}
 
 // Every device spin is bounded. An unbounded spin that never sees its flag is not a hang of one process: the
 // xe driver times the queue out, resets the GT node by node (a window graph has 2,366 of them), and the card
@@ -27,3 +32,10 @@ inline void sys_store(volatile uint32_t* p, uint32_t v) {
 // verifier's checks catch. ~2 M host-memory reads is a few seconds at PCIe latency.
 inline constexpr uint32_t kSpinMax = 20u * 1000u;   // experiment: 100x smaller
 }  // namespace strata
+
+namespace strata::kernels {
+/// Set the device word the verify window's spin kernels (wait_flag_ge / wait_flag_ge_or) add their spin cost to:
+/// [0] = spins used, [1] = kSpinMax hits.  null = no counting.  The kernels add one atomic pair per wait, never
+/// per spin, so the instrument does not change what it measures.
+void wait_flag_set_counter(uint32_t* ctr);
+}  // namespace strata::kernels

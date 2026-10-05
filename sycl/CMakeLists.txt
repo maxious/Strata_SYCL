@@ -358,6 +358,11 @@ if(STRATA_SYCL_PARITY)
   add_executable(xmx_probe_test ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_probe_test.cpp)
   target_link_libraries(xmx_probe_test PRIVATE strata_includes)
   add_test(NAME xmx_probe_test COMMAND xmx_probe_test)
+  # exp 46: the device-side host-flag spin priced alone (host writes a mapped flag, the device spins on it with
+  # strata::sys_load and reports the first-seen iteration): the missing doorbell probe. Not a ctest - it is run
+  # by hand so its numbers are read directly.
+  add_executable(doorbell_spin ${CMAKE_CURRENT_SOURCE_DIR}/probe/doorbell_spin.cpp)
+  target_link_libraries(doorbell_spin PRIVATE strata_includes)
   # FP16-vs-INT8 oneMKL XMX GEMM at the prompt expert shapes; the measurement that decides whether an INT8
   # dequant+gemm prompt path is worth building (prefill/gemm.dp.cpp f16 vs a hypothetical dequant-to-int8)
   add_executable(int8_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/int8_gemm_bench.cpp)

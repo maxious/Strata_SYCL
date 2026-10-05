@@ -38,6 +38,7 @@
 #include "strata/core/progress.hpp"
 #include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/verify_kernels.hpp"
+#include "strata/sycl_doorbell.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -280,6 +281,7 @@ Verifier::~Verifier() try {
     // that throws aborts the process (exit 139); the waits and frees below are best-effort then.
     const Verifier* self = this;
     g_diag_verifier.compare_exchange_strong(self, nullptr);
+    strata::kernels::wait_flag_set_counter(nullptr);   // our mapped counter dies with this object; do not hand it out again
     for (auto& slot : g_live) {
         Verifier* me = this;
         slot.compare_exchange_strong(me, nullptr);
@@ -382,8 +384,10 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
               mapped(64, (void**) &h_flag_, (void**) &m_flag_) &&
               mapped(64, (void**) &h_flagA_, (void**) &m_flagA_) &&
               mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
+              mapped(64, (void**) &h_spin_, (void**) &m_spin_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
+    strata::kernels::wait_flag_set_counter(m_spin_);   // the spin kernels add [spins, kSpinMax hits] here each window
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
         const int64_t cap = (int64_t) (T * K);
@@ -1406,6 +1410,11 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     trace_ev("SYNC", -1, -1, 0);
     const dpct::err0 se = DPCT_CHECK_ERROR(cs_->wait());
     trace_ev("SYNCED", -1, -1, (int64_t) se);
+    if (h_spin_) {   // the device's host-flag spins this window (wait_flag_ge[_or]): [0] spins used, [1] kSpinMax hits
+        spin_spins += (int64_t) h_spin_[0];
+        spin_bound += (int64_t) h_spin_[1];
+        h_spin_[0] = h_spin_[1] = 0;
+    }
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {
         const Clock::time_point t_done = Clock::now();
         std::fprintf(stderr, "verify dbg: T=%d window: since previous window %.1f ms, staging %.1f ms, gpu %.1f ms\n", T,

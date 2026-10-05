@@ -784,8 +784,13 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
 
 namespace {
 __dpct_inline__ void wait_flag_ge_kernel(const volatile uint32_t *flag,
-                                         uint32_t value) {
-    for (uint32_t spin = 0; spin < strata::kSpinMax && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+                                         uint32_t value, uint32_t* ctr) {
+    uint32_t spin = 0;
+    for (; spin < strata::kSpinMax && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    if (ctr != nullptr) {   // one atomic pair per wait, never per spin: [0] spins used, [1] kSpinMax hits
+        strata::sys_add(ctr, spin);
+        if (spin >= strata::kSpinMax) strata::sys_add(ctr + 1, 1u);
+    }
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -943,9 +948,15 @@ __dpct_inline__ void resident_plan_kernel(
 }
 __dpct_inline__ void wait_flag_ge_or_kernel(const volatile uint32_t *flag,
                                             uint32_t value,
-                                            const volatile uint32_t *skip) {
+                                            const volatile uint32_t *skip,
+                                            uint32_t* ctr) {
     if (strata::sys_load(skip) == value) return;
-    for (uint32_t spin = 0; spin < strata::kSpinMax && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    uint32_t spin = 0;
+    for (; spin < strata::kSpinMax && strata::sys_load(flag) < value; ++spin) strata_spin_pause();
+    if (ctr != nullptr) {   // one atomic pair per wait, never per spin: [0] spins used, [1] kSpinMax hits
+        strata::sys_add(ctr, spin);
+        if (spin >= strata::kSpinMax) strata::sys_add(ctr + 1, 1u);
+    }
     /*
     DPCT1078: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -987,10 +998,14 @@ __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
 namespace {
 const int32_t* g_mirror_res = nullptr;
 const unsigned long long* g_mirror_table = nullptr;
+uint32_t* g_wait_ctr = nullptr;   // the spin cost of wait_flag_ge[_or]: [0] spins used, [1] kSpinMax hits
 }
 void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table) {
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
+}
+void wait_flag_set_counter(uint32_t* ctr) {
+    g_wait_ctr = ctr;
 }
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
@@ -1015,6 +1030,7 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
     check("resident_plan");
 }
 void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip, void* stream) {
+    uint32_t* ctr = g_wait_ctr;
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -1024,7 +1040,7 @@ void wait_flag_ge_or(const uint32_t* flag, uint32_t value, const uint32_t* skip,
                 dpct_kernel_name<class wait_flag_ge_or_kernel_2b2de3>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    wait_flag_ge_or_kernel(flag, value, skip);
+                    wait_flag_ge_or_kernel(flag, value, skip, ctr);
                 });
     }
     check("wait_flag_ge_or");
@@ -1072,6 +1088,7 @@ void copy_or_zero_from_mapped(float* dst, const float* src, long long n, const u
 }
 
 void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
+    uint32_t* ctr = g_wait_ctr;
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{
             sycl::ext::oneapi::experimental::use_root_sync};
@@ -1080,7 +1097,7 @@ void wait_flag_ge(const uint32_t* flag, uint32_t value, void* stream) {
             ->parallel_for<dpct_kernel_name<class wait_flag_ge_kernel_d7debf>>(
                 sycl::nd_range<3>(sycl::range(1, 1, 1), sycl::range(1, 1, 1)),
                 exp_props, [=](sycl::nd_item<3> item_ct1) {
-                    wait_flag_ge_kernel(flag, value);
+                    wait_flag_ge_kernel(flag, value, ctr);
                 });
     }
     check("wait_flag_ge");
