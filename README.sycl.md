@@ -87,18 +87,32 @@ Park 108-141 ms (298-417 MB snapshot), restore **32-36 ms**. Not the ~200x the r
 restore only brought back a *checkpoint prefix* (2,185 / 3,278 of 4,000 tokens) and the rest was re-read - the copy
 leaves the bottleneck but does not remove it. ExTV's 0.4-0.5 s restores the whole conversation, not a prefix.
 
-**Open: one generated token differs** (request 4, position 2: `21966` vs `3575`, the other 11 identical; requests 1-3
-are bit-identical). The obvious rounding explanation is unsupported - request 3 had a different reuse split and
-matched exactly - so it is recorded as undiagnosed. `STRATA_SNAPSHOT_VERIFY=1` is the next step.
+**The token difference is RESOLVED, and it was never parking.** With the expert configuration pinned the two arms
+produce **identical tokens for all four requests** (`T_DIFF` = 0 lines over 48). The cause was the split's
+**per-stage PCIe probe**: it returned 11.5 GB/s in one engine startup and 13.8 GB/s in another on the same cards,
+giving `pcie_frac` 0.32 vs 0.38, and that share decides how much expert work is *streamed* rather than computed in
+place - a different arithmetic path, hence a flipped near-tie. Worse, with parking off vs on, **request 1** (which
+touches no cache code) diverged at token 9, which is what finally ruled parking out. **An A/B that does not pin
+`--pcie-frac` and `--adapt-swaps` compares two numerics, not two parking modes**; `STRATA_CKPT_REREAD`'s own note
+says the same. The park arm is deterministic besides: two park runs agree token-for-token on requests 1-3.
 
-**Per-stage K/V reuse: implemented, and MEASURED NULL.** `StageKvReuse` now rides in `ConversationKvReuse`,
-`stage_save` takes its stage's retained K/V and passes `unchanged_tokens` down as the primary does,
-`stage_capture_bytes` does the retained-K/V accounting, and `retain()`/`limit_reuse` cover every stage. It does **not**
-engage: every park still reports `reused_kv_bytes=0` and the switch times are unchanged (3675.8 / 2182.4 ms against
-3684.4 / 2184.9 ms - identical within noise). ctest 29/29. The cause is **undiagnosed**; the candidates are
-`drop_superseded`/`make_room` discarding the retained image, `limit_reuse(read_from)` zeroing it on a switch, or
-`retain()`'s budget check declining it. Until one is ruled out, **treat per-stage reuse as not working** and the
-"no new kernel needed" framing for compaction as unproven.
+**Per-stage K/V reuse: FIXED and now engaging** (it was inert in the first split run). Two independent defects kept
+it off, and the second was invisible until a diagnostic named it:
+
+1. `conversation_snapshot_save` takes the reuse **by value**, so `std::move(reuse)` carried `reuse.stages` into the
+   parameter and destroyed it; the stage-save loop after that call read an empty vector.
+2. `conversation_snapshot_capture_bytes` decided "is this the draft?" with `i + 1 != layers` - true single-card,
+   where the last slot is the drafter, but **false under a split**, where the primary holds main layers alone. It
+   validated the last *main* layer against the *draft's* geometry and rejected the retained K/V as `incompatible
+   K/V geometry`. `stage_capture_bytes` had the same expression, a null deref away on a 3-GPU split.
+
+With both fixed and `--pcie-frac 0.32 --adapt-swaps 0` pinned, the park that follows a restore reports
+**`reused_kv_bytes=12905600`** with no `reuse declined`, and the two switch requests drop to **168 ms / 172 ms**
+against **3446 ms / 809 ms** for the same prompts read in full (**20.5x** and **4.7x**); tokens identical to the
+no-parking arm. ctest 29/29 on the fixed binary.
+
+**Open: the reuse keeps 12.9 MB of a 270 MB image.** The reuse engages and costs nothing, but full copy-avoidance
+is *not* demonstrated - the kept-prefix accounting needs a look before compaction can be called cheap.
 
 Four defects lived in this item, all in the new code and all found by reading the engine's own refusal rather than
 by a test: an empty `live.ids` that restored stale pooled rows; the `stage_parts` guard that survived removing the

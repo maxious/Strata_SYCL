@@ -69,30 +69,59 @@ from a run without the cache") applies. **That explanation is not supported**: r
 `STRATA_SNAPSHOT_VERIFY=1` exists and fingerprints the restored draft K/V after a synchronized restore; running the
 park arm with it set is the next step, and it is the difference between "unexplained" and "diagnosed".
 
-## What it does not yet do: per-stage K/V reuse
+## Per-stage K/V reuse: implemented, and the null had TWO causes (both fixed)
 
-`ConversationKvReuse` is what makes a *rewritten* conversation cheap: after a restore the cache hands the just-used
-buffers to the next park with an `unchanged_tokens` bound, and only the cells past `first_dirty` are re-copied. Under
-a split that carries **only the primary's** K/V - `conversations.retain(std::move(incoming->kv), ...)` - so **every
-later stage's pages are re-copied in full on each park** (`reused_kv_bytes=0` in every line above).
+The reuse makes a *rewritten* conversation cheap: after a restore the cache hands the just-used buffers to the
+next park with an `unchanged_tokens` bound, and only the cells past `first_dirty` are re-copied. Under a split it
+has to carry **every stage's** K/V, not just the primary's, or each park re-copies stages 1..N in full - which costs
+every conversation *rewrite* (regenerate, branch, compaction), not just a switch.
 
-This is not only a compaction concern: `limit_reuse(first_dirtry)` exists for *any* rewrite of a live conversation -
-regenerate, branch, or a future compaction - and under a split all of them pay a full re-copy of stages 1..N.
+The first split-parking run measured `reused_kv_bytes=0` on every park and the feature was written up as inert.
+That reading was incomplete. Two independent defects kept it from engaging, and only the second was visible:
 
-**Implemented, and MEASURED NULL.** `StageKvReuse` now rides along in `ConversationKvReuse`, `stage_save` takes its
-stage's retained K/V and passes `unchanged_tokens` down exactly as the primary does, `stage_capture_bytes` does the
-retained-K/V accounting so `make_room` is not charged for pages that are not copied, `retain()` keeps every stage and
-`limit_reuse` clamps them all. On the same two-conversation run it **does not engage**: every park still reports
-`reused_kv_bytes=0`, and the switch times are unchanged (3675.8 / 2182.4 ms against 3684.4 / 2184.9 ms before the
-change - identical within noise). ctest 29/29.
+1. **`conversation_snapshot_save` takes the reuse BY VALUE.** `park_current` passed `std::move(reuse)`, which
+   carried `reuse.stages` into the parameter; the parameter consumes `reuse.kv` and destroys `reuse.stages` with
+   it. The stage-save loop *after* that call read a moved-from (guaranteed-empty) vector, so every `stage_save`
+   got an empty `StageKvReuse`. Fixed by moving `reuse.stages` out into a local **before** the save call.
+2. **`conversation_snapshot_capture_bytes` decided "is this the draft?" with `i + 1 != layers`.** That holds
+   single-card, where the last slot is the drafter - but a split's primary holds its own main layers *alone*
+   (`with_draft=false`), so `layers` is the main-layer count and the expression validated the **last main layer**
+   against the *draft's* geometry, pooled rows included. The retained K/V was rejected and the reuse silently
+   dropped. This is the defect the new `reuse declined (...)` diagnostic names on its first run:
+   `reuse declined (conversation snapshot: incompatible K/V geometry)`. Fixed by keying the decision off
+   whether the image carries a draft at all (`!with_draft || i + 1 != layers`).
 
-So the plumbing is correctly shaped but inert, and **the reason is not diagnosed**. The candidates, none confirmed:
-the retained image is dropped before the next park (`drop_superseded` and `make_room` run in between),
-`limit_reuse(read_from)` sees a `read_from` of 0 on a conversation switch and zeroes the reuse, or `retain()`'s budget
-check declines it. Until one of those is ruled in or out with a log line, treat per-stage reuse as **not working**,
-and treat the "no new kernel needed" framing for compaction as unproven.
+`stage_capture_bytes` carried the same expression, where a **non-final** stage has `draft == nullptr` - a null
+dereference that this 2-GPU box cannot reach but a 3-GPU split would. Fixed the same way (`draft == nullptr ||
+i + 1 != slots`), since that signature takes a real pointer.
 
-## Four defects found in this item, all in the new code
+The lesson worth keeping: **the silent `err.clear()` on that drop is what hid both bugs.** A declined reuse is not
+an error - it just re-copies everything - so nothing said so. One line naming the reason would have found cause 2
+on the first run instead of after a code review.
+
+### Measured after the fix
+
+Pinned expert configuration (`--pcie-frac 0.32 --adapt-swaps 0`, both arms, split auto -> K=22, 2x B60, ctest
+29/29 on the binary under test). `long.ids` on this box holds 2,185 tokens, so A is 2,185 and B is 185 - disjoint
+by construction, but much smaller than the 4,000-token pair above.
+
+| request | no parking | with parking | |
+|---|---:|---:|---|
+| A, 1st visit | 3832 ms | 3750 ms | full read either way |
+| B, 1st visit | 829 ms | 905 ms | full read either way |
+| **A, return** | 3446 ms | **168 ms** | 2182 reused + 3 read -> **20.5x** |
+| **B, return** | 809 ms | **172 ms** | 182 reused + 3 read -> **4.7x** |
+
+- **`reused_kv_bytes=12905600`** on the park that follows a restore, and **no `reuse declined`** anywhere: the
+  reuse engages, which is what both fixes above bought.
+- Restore 22.6 ms / 18.7 ms; `retained=33530232` at the first restore.
+- **Tokens identical: `T_DIFF` = 0 lines across all 48 tokens of the four requests.**
+
+**Still open:** the reuse keeps **12.9 MB of a 270 MB image**, so the unchanged-prefix accounting is not yet
+avoiding the copy it exists to avoid. Tokens are exact and nothing errors, so this is efficiency rather than
+correctness - but compaction is not cheap until the kept fraction is explained.
+
+## Four defects found while building this item, all in the new code
 
 1. **`live.ids` left empty by `stage_save`.** `conversation_checkpoint_restore` refreshes the last pooled-indexer row
    only when `!c.ids.empty()`, and `checkpoint_targets` bounds the pooled rows by `ids.size()`. An empty ids
@@ -117,6 +146,60 @@ and treat the "no new kernel needed" framing for compaction as unproven.
   a rotation is the cheapest way to get a prefix-disjoint one.
 - **A segfault in an unrelated arm is evidence about the harness.** Both crashes reproduced with a starved split and
   vanished once the arms were serialized behind a real VRAM check.
+
+## The review pass: five more defects, and what the measurement actually says
+
+Re-reading the item after it shipped found five more problems, two of them the reason the per-stage reuse never
+engaged (above). The rest:
+
+3. **`STRATA_SNAPSHOT_VERIFY` was itself broken under a split.** It fingerprinted `incoming->kv.back()` as the
+   drafter's K/V, but a split image's primary carries only its own layers - so the check named as "the next step"
+   for the token difference was reading a main layer. It now verifies the last stage's own draft slot, on the card
+   the drafter lives on.
+4. **Dead code.** `conversation_checkpoint_bytes` was declared, defined, and never called (`stage_bytes` computes
+   its own estimate). Removed.
+5. **`stage_bytes` undercounted the admission estimate**, and its comment claimed the per-stage ids copy did not
+   exist. It does - `ConversationCheckpoint::ids` is a by-value vector, and `SavedStage::bytes()` already counted
+   it - so the estimate now does too.
+
+### The single differing token was NOT a parking defect
+
+The earlier write-up recorded "one generated token differs (request 4, position 2)" as undiagnosed. It is
+diagnosed, and it was never in the parking path:
+
+- **The two arms were not computing the same thing even on a first visit.** With parking off and on, request 1 -
+  which touches no cache code at all - diverged at token 9 (`411` vs `279`). A first visit cannot differ if
+  parking is the cause.
+- **The cause is the per-stage PCIe probe.** The split probes each card's link and derives `pcie_frac` from it;
+  that probe returned 11.5 GB/s in one startup and 13.8 GB/s in another (same host, same cards), giving
+  `pcie_frac` 0.32 vs 0.38. The share decides how much expert work is **streamed** instead of computed in place -
+  a different arithmetic path, hence different logits and a flipped near-tie. `STRATA_CKPT_REREAD`'s own note
+  says the same thing: with the VRAM expert set fixed the answer must match token for token.
+- **The fix is to pin it:** `--pcie-frac` (giving it also skips the per-stage probes) and `--adapt-swaps 0`. An
+  A/B that does not pin both is comparing two numerics, not two parking modes.
+- **The park arm is deterministic**: two park runs agree token-for-token on requests 1-3. So a park-vs-nopark
+  difference is systematic, never run-to-run noise.
+
+**Closed by measurement.** With the expert configuration pinned, the no-parking and parking arms produce
+**identical tokens for all four requests** (48/48, `T_DIFF` = 0). Split parking is token-exact against a full
+re-read; the original "one differing token" was this probe, not the parking path.
+
+### Traps this item cost real time
+
+- **`long.ids` on this box holds 2,185 tokens**, so "A = ids[0:4000]" is 2,185 tokens and "B = ids[2000:6000]" is
+  185 - the two overlap, so the harness must build disjoint conversations from what the file actually has, not
+  from the offsets the earlier note used. Timings here are not comparable with the 4,000-token numbers above.
+- **A ctest "hang" can be a driver wedge.** ctest was blocked in its event loop with no test output for 25
+  minutes; the truth was `dequant_s2_parity --selftest` in **D state** on `drm_pagemap_acquire_owner` holding both
+  render nodes, with `xpu-smi` hanging too. `ps | grep _test` misses it (the comm name truncates to
+  `dequant_s2_pari`); use `ps --ppid <ctest-pid>`. D state cannot be killed - it needs a reboot or a driver reset.
+- **A build gate that pipes the compiler into `grep` reports success on failure** (the pipeline status is grep's,
+  not the compiler's), which puts a **stale binary** into the A/B. Gate on the compiler's own exit code and print
+  the binary's mtime, or the freshness rule is decorative.
+- **Do not edit a running bash harness.** bash reads scripts lazily by byte offset; a mid-run edit made it spawn
+  rogue engines that would have starved the next arm's split search.
+- **A stalled read is not always a stall**: one arm read its first prompt in 42 s where another took 3.8 s with no
+  config difference. Only a reproduced stall point is evidence.
 
 ## Reproduce
 
