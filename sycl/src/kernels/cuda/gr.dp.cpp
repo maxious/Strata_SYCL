@@ -24,12 +24,13 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/kernels/gr.hpp"
 #include "strata/kernels/bf16_bits.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
+#include "strata/kernels/gr.hpp"
 #include "strata/kernels/native_gr_norm.hpp"
 #include "strata/kernels/native_gr_postops.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -75,59 +76,19 @@ __dpct_inline__ float sigmoid_f(float x) {
 }
 
 __dpct_inline__ double warp_sum(double v) {
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-    /*
-DPCT1121: Make sure that the "v" which is used in the SYCL group
-function/algorithm is initialized.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             off);
-    /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature masked
-    sub_group function which may not be supported by all compilers or runtimes.
-    You may need to adjust the code.
-    */
-    /*
-    DPCT1121: Make sure that the "v" which is used in the SYCL group
-    function/algorithm is initialized.
-    */
-    return dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
+    return strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
 }
 
 __dpct_inline__ float warp_sumf(float v) {
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-    /*
-DPCT1121: Make sure that the "v" which is used in the SYCL group
-function/algorithm is initialized.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             off);
-    /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature masked
-    sub_group function which may not be supported by all compilers or runtimes.
-    You may need to adjust the code.
-    */
-    /*
-    DPCT1121: Make sure that the "v" which is used in the SYCL group
-    function/algorithm is initialized.
-    */
-    return dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
+    return strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
 }
 
 /// The FP32 block-wide sum, for the reason the review's G5 states: this is a GeForce part and FP64 runs at a
@@ -142,33 +103,18 @@ inline float block_sumf(float v, double *scratch_raw) {
     // The leading barrier is not decoration - see the note on `block_sum` above: the result is read straight out
     // of `scratch[0]` by every thread and a later call reuses the array, so without it a fast thread can
     // overwrite `scratch[0]` before a slow one has read the previous result.
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int lane = item_ct1.get_local_id(2) & 31,
               warp = item_ct1.get_local_id(2) >> 5;
     v = warp_sumf(v);
     if (lane == 0) scratch[warp] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
     v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
                                         : 0.0f;
     if (warp == 0) v = warp_sumf(v);
     if (item_ct1.get_local_id(2) == 0) scratch[0] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return scratch[0];
 }
 
@@ -182,34 +128,19 @@ inline float block_sumf(float v, double *scratch_raw) {
 /// thread, and a later call reuses the same array.  Without a barrier on entry a fast thread can overwrite
 /// `scratch[0]` before a slow one has read the previous result - a race that is invisible in most runs.
 double block_sum(double v, double* scratch) {
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int lane = item_ct1.get_local_id(2) & 31,
               warp = item_ct1.get_local_id(2) >> 5;
     v = warp_sum(v);
     if (lane == 0) scratch[warp] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
     v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
                                         : 0.0;
     if (warp == 0) v = warp_sum(v);
     if (item_ct1.get_local_id(2) == 0) scratch[0] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return scratch[0];
 }
 
@@ -667,11 +598,6 @@ void gr_read(const float *R, const float *w_norm, const uint16_t *w_down,
         }
     }
 
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) {

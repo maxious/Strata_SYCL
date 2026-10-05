@@ -21,6 +21,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_flash_attn.hpp"
 #include <cfloat>
@@ -36,11 +37,6 @@ namespace {
 template <int Width> __dpct_inline__ float warp_sum(float x) {
 #pragma unroll
     for (int offset = Width / 2; offset; offset >>= 1)
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         x += dpct::experimental::permute_sub_group_by_xor(
             0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
             offset, Width);
@@ -49,14 +45,8 @@ template <int Width> __dpct_inline__ float warp_sum(float x) {
 __dpct_inline__ float warp_max(float x) {
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1)
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         x = sycl::fmax(x,
-                       dpct::experimental::permute_sub_group_by_xor(
-                           0xffffffffu,
+                       strata::sub_group_permute_xor(
                            sycl::ext::oneapi::this_work_item::get_sub_group(),
                            x, offset));
     return x;
@@ -65,12 +55,6 @@ __dpct_inline__ float warp_max(float x) {
 // D=256,ncols=1,F16/F16; 128 threads, nthreads_KQ=nthreads_V=8,
 // four values (float2) per load, four V columns per iteration. Padded length256
 // gives ntiles_KV=ceil(256/D)=1, so the pinned launcher selects grid.y=1.
-/*
-DPCT1110: The total declared local variable size in device function attend
-exceeds 128 bytes and may cause high register pressure. Consult with your
-hardware vendor to find the total register size available and adjust the code,
-or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
        const sycl::half *__restrict__ v, const int32_t *__restrict__ step,
@@ -155,15 +139,9 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
         }
 #pragma unroll
         for (int offset = 8; offset < 32; offset <<= 1)
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             next_max = sycl::fmax(
                 next_max,
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
+                strata::sub_group_permute_xor(
                     sycl::ext::oneapi::this_work_item::get_sub_group(),
                     next_max, offset));
         const float rescale = sycl::native::exp(maximum - next_max);
@@ -201,41 +179,13 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
                     // Later columns use fma(V,w,acc). Explicit intrinsics retain
                     // that order despite this adapter's masked-load branches.
                     if (k0 == 0) {
-                        /*
-                        DPCT1013: The rounding mode could not be specified
-                        and the generated code may have different accuracy than
-                        the original code. Verify the correctness. SYCL math
-                        built-in function rounding mode is aligned with OpenCL
-                        C 1.2 standard.
-                        */
                         vkq[i0 / 8 + j].x() =
                             sycl::fma(rescale, vkq[i0 / 8 + j].x(), a * weight);
-                        /*
-                        DPCT1013: The rounding mode could not be specified
-                        and the generated code may have different accuracy than
-                        the original code. Verify the correctness. SYCL math
-                        built-in function rounding mode is aligned with OpenCL
-                        C 1.2 standard.
-                        */
                         vkq[i0 / 8 + j].y() =
                             sycl::fma(rescale, vkq[i0 / 8 + j].y(), b * weight);
                     } else {
-                        /*
-                        DPCT1013: The rounding mode could not be specified
-                        and the generated code may have different accuracy than
-                        the original code. Verify the correctness. SYCL math
-                        built-in function rounding mode is aligned with OpenCL
-                        C 1.2 standard.
-                        */
                         vkq[i0 / 8 + j].x() =
                             sycl::fma(a, weight, vkq[i0 / 8 + j].x());
-                        /*
-                        DPCT1013: The rounding mode could not be specified
-                        and the generated code may have different accuracy than
-                        the original code. Verify the correctness. SYCL math
-                        built-in function rounding mode is aligned with OpenCL
-                        C 1.2 standard.
-                        */
                         vkq[i0 / 8 + j].y() =
                             sycl::fma(b, weight, vkq[i0 / 8 + j].y());
                     }
@@ -244,36 +194,14 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
         }
     }
     if (warp == 0) { max_shared[lane] = -FLT_MAX / 2.0f; sum_shared[lane] = 0.0f; }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (lane == 0) max_shared[warp] = maximum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float global_max = warp_max(max_shared[lane]);
     const float rescale = sycl::native::exp(maximum - global_max);
 #pragma unroll
     for (int i = 0; i < 16; ++i) {
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         vkq[i].x() = vkq[i].x() * rescale;
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         vkq[i].y() = vkq[i].y() * rescale;
     }
 #pragma unroll
@@ -288,12 +216,7 @@ attend(const float *__restrict__ q, const sycl::half *__restrict__ k,
     sum *= rescale;
     sum = warp_sum<32>(sum);
     if (lane == 0) sum_shared[warp] = sum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     sum = warp_sum<32>(sum_shared[lane]);
 #pragma unroll
     for (int i0 = 0; i0 < 256; i0 += 128) {
@@ -357,26 +280,9 @@ void native_flash_attn_short_step(const float* q, const uint16_t* k, const uint1
                                reinterpret_cast<const sycl::half *>(mask));
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto result = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (result != 0)
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("native FlashAttention launch: ") +
-                                 dpct::get_error_string_dummy(result));
+                                 dpct::error_string(result));
 }
 } // namespace strata::kernels

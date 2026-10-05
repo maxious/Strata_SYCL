@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
 
@@ -52,15 +53,10 @@ __dpct_inline__ void bf16_gemv_warp_kernel(const uint16_t *__restrict__ x,
 #pragma unroll
     for (long long i = lane; i < n_in; i += 32)
         acc += f32_from_bf16(x[i]) * f32_from_bf16(row[i]);
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_shift_left(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, off);
     if (lane == 0) y[o] = acc;
 }
@@ -88,21 +84,12 @@ __dpct_inline__ void bf16_gemv_split_kernel(const uint16_t *__restrict__ x,
 #pragma unroll
     for (int off = tpr >> 1; off > 0; off >>= 1) {
         if (t < off) scratch[t] += scratch[t + off];
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     if (t == 0) y[o] = scratch[0];
 }
 
 inline void finish(void *stream, const char *what) try {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream != nullptr) return;

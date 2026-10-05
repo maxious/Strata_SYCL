@@ -253,11 +253,6 @@ uint64_t fnv1a64(const uint8_t* p, uint64_t n, uint64_t seed) {
 }
 
 namespace {
-/*
-DPCT1010: SYCL uses exceptions to report errors and does not use the error
-codes. The cudaGetLastError function call was replaced with 0. You need to
-rewrite this code.
-*/
 bool clear_error() {(void)0; return true; }
 }  // namespace
 
@@ -375,11 +370,6 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
                 use by host and device.
                 */
                 if (0 != 0) {
-                    /*
-                    DPCT1010: SYCL uses exceptions to report errors and
-                    does not use the error codes. The cudaGetLastError function
-                    call was replaced with 0. You need to rewrite this code.
-                    */
                     (void)0;
                     break;
                 }
@@ -394,14 +384,8 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
                      ? "cudaHostRegister limited to " +
                            std::to_string(cap >> 30) + " GiB " + cap_why + "; "
                      :
-                     /*
-                     DPCT1009: SYCL reports errors using exceptions and
-                     does not use error codes. Please replace the
-                     "get_error_string_dummy(...)" with a real error-handling
-                     function.
-                     */
                      "cudaHostRegister of the whole arena FAILED (" +
-                         std::string(dpct::get_error_string_dummy(e)) + "); " +
+                         std::string(dpct::error_string(e)) + "); " +
                          (limited ? "slices capped at " + std::string(gib) +
                                         " GiB (" + limit_why +
                                         "; STRATA_ARENA_PIN_GIB=auto; N sets a "
@@ -419,13 +403,8 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
                 }
             }
         } else {
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
             note = std::string("cudaHostRegister FAILED (") +
-                   dpct::get_error_string_dummy(e) +
+                   dpct::error_string(e) +
                    ") - the arena is NOT pinned, so copies will be slow; " +
                    note;
             // **CONSUME THE ERROR, OR IT LIES ABOUT SOMETHING ELSE LATER.**
@@ -439,11 +418,6 @@ PinnedArena::PinnedArena(uint64_t bytes, const std::vector<uint64_t> &bounds,
             //
             // It is the same trap `gr.cu` warns about for ASYNC faults, in the other direction: a synchronous
             // failure is sticky too, and it lies about where it happened just as convincingly.
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not
-            use the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             (void)0;
             // Plan v0.3 P0.1: keep it RESIDENT instead. Unpinned, Windows trims the arena under memory pressure
             // and the CPU pool's rate then depends on the OS; locking it through the working set needs no
@@ -756,12 +730,6 @@ StreamStats stream_bandwidth(const uint8_t *src, uint64_t bytes, uint64_t chunk,
 
     // one untimed pass so the first transfer's page-fault and setup cost is not in the measurement
     for (uint64_t off = 0; off + chunk <= bytes; off += chunk) {
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         s->memcpy(dst, src + off, (size_t)chunk);
     }
     s->wait();
@@ -769,12 +737,6 @@ StreamStats stream_bandwidth(const uint8_t *src, uint64_t bytes, uint64_t chunk,
     const auto t0 = std::chrono::steady_clock::now();
     for (int it = 0; it < iters; ++it) {
         for (uint64_t off = 0; off + chunk <= bytes; off += chunk) {
-            /*
-            DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-            API. While the origin API might be synchronous, it depends on the
-            type of operand memory, so you may need to call wait() on event
-            return by memcpy API to ensure synchronization behavior.
-            */
             s->memcpy(dst, src + off, (size_t)chunk);
         }
     }

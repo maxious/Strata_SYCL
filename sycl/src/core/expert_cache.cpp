@@ -373,18 +373,8 @@ bool ExpertCache::shrink(int64_t keep_bytes, std::string &err) try {
     if (keep >= mapped_segs_) return true;
     if (DPCT_CHECK_ERROR(dpct::get_current_device().queues_wait_and_throw()) !=
         0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaGetLastError function call was replaced with 0. You
-        need to rewrite this code.
-        */
         err = std::string("the device failed before the cache shrank: ") +
-              dpct::get_error_string_dummy(0);
+              dpct::error_string(0);
         return false;
     }
     const dpct::device_ptr va = reinterpret_cast<dpct::device_ptr>(base_);
@@ -514,17 +504,7 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert,
         char buf[256];
         std::snprintf(
             buf, sizeof buf, "ExpertCache: cudaMalloc(%.2f GiB) failed: %s",
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not
-            use the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
-            (double)want / 1073741824.0, dpct::get_error_string_dummy(0));
+            (double)want / 1073741824.0, dpct::error_string(0));
         err = buf;
         return false;
     }
@@ -688,29 +668,11 @@ bool ExpertCache::fill_slot(int32_t slot, const uint8_t *host_blob,
         err = "ExpertCache::fill_slot: the host blob is null";
         return false;
     }
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     const dpct::err0 e =
         DPCT_CHECK_ERROR(strata::q_of(stream)->memcpy(dst, host_blob, n));
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (e != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("ExpertCache::fill_slot: ") +
-              dpct::get_error_string_dummy(e);
+              dpct::error_string(e);
         return false;
     }
     ++fills_;
@@ -744,30 +706,12 @@ bool ExpertCache::fill_slot_blocking(int32_t slot, const uint8_t *host_blob,
     std::memcpy(blocking_staging_, host_blob, n);
     const cudaError_t e = cudaMemcpy(dst, blocking_staging_, n, cudaMemcpyHostToDevice);
 #else
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
-    in the original code the source host memory is pageable memory. If the
-    memory is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     const dpct::err0 e =
         DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(dst, host_blob, n).wait());
 #endif
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (e != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("ExpertCache::fill_slot_blocking: ") +
-              dpct::get_error_string_dummy(e);
+              dpct::error_string(e);
         return false;
     }
     ++fills_;
@@ -788,29 +732,11 @@ bool ExpertCache::fill_slot_queued(int32_t slot, const uint8_t *host_blob,
                              : "ExpertCache::fill_slot_queued: the host blob is null";
         return false;
     }
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     const dpct::err0 e =
         DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(dst, host_blob, n).wait());
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (e != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("ExpertCache::fill_slot_queued: ") +
-              dpct::get_error_string_dummy(e);
+              dpct::error_string(e);
         return false;
     }
     ++fills_;
@@ -824,21 +750,9 @@ catch (sycl::exception const &exc) {
 
 bool ExpertCache::sync_queued(std::string &err) try {
     const dpct::err0 e = DPCT_CHECK_ERROR(dpct::get_in_order_queue().wait());
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (e != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("ExpertCache::sync_queued: ") +
-              dpct::get_error_string_dummy(e);
+              dpct::error_string(e);
         return false;
     }
     return true;
@@ -863,21 +777,9 @@ bool ExpertCache::verify_slot(int32_t slot, const uint8_t *host_blob,
     std::vector<uint8_t> got((size_t) nb);
     const dpct::err0 e = DPCT_CHECK_ERROR(
         dpct::get_in_order_queue().memcpy(got.data(), src, (size_t)nb).wait());
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (e != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("ExpertCache::verify_slot: ") +
-              dpct::get_error_string_dummy(e);
+              dpct::error_string(e);
         return false;
     }
     if (std::memcmp(got.data(), host_blob, (size_t) nb) != 0) {

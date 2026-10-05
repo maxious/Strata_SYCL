@@ -33,9 +33,10 @@ IMAGE = os.environ.get("STRATA_SYCL_IMAGE", "strata-sycl-dev")
 BIN = os.environ.get("STRATA_SYCL_BIN", "build-sycl-aot/strata")
 # docker or podman (the strata-sycl-dev image; rootless podman runs as the user who ran sudo, with that user's
 # images), or distrobox:<name> - a toolbox with oneAPI where ROOT is /work, for hosts such as Fedora Silverblue that
-# keep the toolchain in a container
+# keep the toolchain in a container. STRATA_NATIVE=1 runs the engine directly instead, with no image at all.
 RUNNER = os.environ.get("STRATA_SYCL_RUNNER", "docker")
 BOX = RUNNER.split(":", 1)[1] if RUNNER.startswith("distrobox:") else None
+NATIVE = os.environ.get("STRATA_NATIVE", "0") == "1"     # run the engine directly (no oneAPI image); exec `strata` with oneAPI env
 PROMPTS = REPO / "sycl" / "bench" / VERSION
 SIZES = [20, 2185, 8000, 40000, 128000, 256000]
 NEW = 256
@@ -115,7 +116,10 @@ def disk_read_bytes(dev):
 def machine(dev, cold, root):
     cpu = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo") if l.startswith("model name")), "?")
     git = lambda *a: subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True).stdout.strip()
-    if BOX:
+    if NATIVE:
+        img = "native:" + (os.path.basename(BIN) if "/" in BIN else BIN)
+        image = f"{img} (STRATA_NATIVE=1)"
+    elif BOX:
         icpx = subprocess.run(box_cmd(". /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; icpx --version | head -1"),
                               capture_output=True, text=True).stdout.strip().splitlines()
         image = f"distrobox {BOX}, {icpx[-1] if icpx else 'oneAPI ?'}"
@@ -171,10 +175,13 @@ def engine_cmd(args, sel, cfg_env=()):
 
 
 def kill_engine():
+    if NATIVE:   # the engine is our own child process; the caller kills it through the pipe
+        return
     if BOX:   # the engine is the container's child, not ours
         subprocess.run(["pkill", "-KILL", "-x", Path(BIN).name[:15]] + (["-U", os.environ["SUDO_UID"]] if os.environ.get("SUDO_UID") else []))
     else:
         subprocess.run(ctr("kill", CONTAINER), capture_output=True)
+
 def prompt_file(n, outdir):
     """the v1 prompt of n tokens, written under the data root so the container sees it"""
     short = (PROMPTS / "short.ids").read_text().strip().split(",")
@@ -202,7 +209,7 @@ def to_host(p: str):
 
 def parse(log):
     g = lambda pat, t=float: (lambda m: t(m.group(1)) if m else None)(re.search(pat, log, re.M))
-    return {
+    out = {
         "engine": g(r"session is up \(engine ([^)]+)\)", str),
         "pp": g(r"^prefill\s+\d+ tokens in [\d.]+ ms\s+->\s+([\d.]+) tok/s"),
         "ttft_s": (g(r"time to first token ([\d.]+) ms") or 0) / 1000 or None,
@@ -218,6 +225,36 @@ def parse(log):
         "ple_ssd_mb": g(r"SSD reads \(([\d.]+) MB\)"),
         "exit": g(r"ENGINE EXIT (-?\d+)", int),
     }
+    # serve-mode (dual-GPU): the one-shot prefill/decode lines are absent; drive from the DONE line.
+    #   PP <pos> <total> <ms> <tok/s>   (final one carries the prompt rate)
+    #   DONE <gen> <prompt> <prompt_ms> <decode_ms> <finish> <drafts acc> <drafts off> <reused> ...
+    if out["pp"] is None:
+        pp = [float(m.group(1)) for m in re.finditer(r"^PP \d+ \d+ [\d.]+ ([\d.]+)", log, re.M)]
+        if pp:
+            out["pp"] = pp[-1]
+        d = re.search(r"^DONE (\d+) (\d+) ([\d.]+) ([\d.]+) \S+ (\d+) (\d+)", log, re.M)
+        if d:
+            gen, prompt, pm, dm, acc, off = d.groups()
+            out["decoded"] = int(gen)
+            out["decode"] = (1000.0 * int(gen) / float(dm)) if float(dm) > 0 else None
+            out["ttft_s"] = (float(pm) / 1000.0) if float(pm) > 0 else None     # time to first token ~ prompt ms
+            out["accept"] = (float(acc) / float(off)) if float(off) > 0 else None
+    return out
+
+
+ONEAPI_SETVARS = "/opt/intel/oneapi/setvars.sh"
+
+def native_cmd(args, sel, cfg_env=()):
+    """native: exec build-b60/strata (or STRATA_SYCL_BIN) with the oneAPI env, no container."""
+    env = dict(os.environ, STRATA_VERIFY_DEVICE_PLAN="1", STRATA_VERIFY_NO_HOST="1", STRATA_STAGER_THREADS="12")
+    for e in cfg_env:
+        k, _, v = e.partition("=")
+        env[k] = v
+    if sel:
+        env["ONEAPI_DEVICE_SELECTOR"] = sel
+    bin_ = BIN if os.path.isabs(BIN) else str(REPO / BIN)
+    prefix = f"source {ONEAPI_SETVARS} >/dev/null 2>&1 && cd {REPO} && exec "
+    return ["/bin/bash", "-lc", prefix + f"{bin_} " + " ".join(shlex.quote(a) for a in args)], env
 
 
 def run_one(name, cfg, n, outdir, cold, root, dev, timeout):
@@ -225,18 +262,34 @@ def run_one(name, cfg, n, outdir, cold, root, dev, timeout):
     ctx = int(args0[args0.index("--max-context") + 1]) if "--max-context" in args0 else 0
     if ctx and n + NEW > ctx:
         return {"config": name, "prompt": n, "ctx": ctx, "skipped": f"needs --max-context {n + NEW}"}
-    args = args0 + ["--tokens-file", to_container(prompt_file(n, outdir)), "--max-new", str(NEW), "--greedy", "--stats"]
+    serve = "--serve" in args0          # dual-GPU (--layer-split) needs serve mode: drive it with a GEN request
     if cold:
         subprocess.run(["sync"]); Path("/proc/sys/vm/drop_caches").write_text("3\n"); time.sleep(2)
     log_path = outdir / f"{name}-{n}.log"
     sel = os.environ.get("ONEAPI_DEVICE_SELECTOR") or ("level_zero:gpu" if "--layer-split" in args0 else None)   # as strata-sycl.sh
-    cmd = engine_cmd(args, sel, [f"{k}={v}" for k, v in (cfg.get("env") or {}).items()])
+    # --stop-eos: serve-mode requests stop at the model's end-of-turn token, so the one-shot runs must too - on the
+    # v1 prompts over 2,000 tokens (long.ids' first 2,000 repeated) the model ends the turn right away, and without
+    # this the one-shot rows would report 256 tokens that start with EOS while the serve rows report 1
+    if serve:   # dual-GPU (--layer-split) needs serve mode: drive it with a GEN request, so the config runs as-is
+        one = list(args0)
+    else:
+        one = args0 + ["--tokens-file", str(prompt_file(n, outdir)), "--max-new", str(NEW), "--greedy", "--stats", "--stop-eos"]
+    cfg_env = [f"{k}={v}" for k, v in (cfg.get("env") or {}).items()]
+    if NATIVE:
+        sel = sel or "level_zero:0"
+        ids = prompt_file(n, outdir).read_text().strip()
+        cmd, env = native_cmd(one, sel, cfg_env)
+    else:
+        pf = to_container(prompt_file(n, outdir))
+        cmd = engine_cmd([pf if a.endswith(".ids") else a for a in one], sel, cfg_env)
+        env = None; ids = ""
     base_avail, base_disk, base_vram = meminfo(), disk_read_bytes(dev), vram_used_mb(root) or 0
     t0 = time.time(); peak_vram = 0.0; min_avail = base_avail
     base_cards = vram_by_card_mb() if root else {}; peak_cards = {}   # which card the engine ran on
     load_s = load_disk = t_up = e_up = t_end = e_end = None
+    sent_gen = False; sent_quit = False
     with open(log_path, "w") as lf:
-        p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT)
+        p = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, stdin=subprocess.PIPE, text=True, env=env)
         while p.poll() is None:
             time.sleep(1)
             v = vram_used_mb(root)
@@ -248,13 +301,30 @@ def run_one(name, cfg, n, outdir, cold, root, dev, timeout):
             text = log_path.read_text(errors="replace")
             if load_s is None and "session is up" in text:
                 load_s, load_disk, t_up, e_up = time.time() - t0, disk_read_bytes(dev) - base_disk, time.time(), xe_energy_uj()
-            if t_end is None and re.search(r"^decode\s+\d+ tokens", text, re.M):
+            if serve and not sent_gen and "session is up" in text:   # serve config: send one GEN request, same ids
+                try:
+                    p.stdin.write(f"GEN {NEW} {ids}\n"); p.stdin.flush(); sent_gen = True
+                except (BrokenPipeError, ValueError):
+                    pass
+            if serve and sent_gen and not sent_quit and re.search(r"^DONE \d", text, re.M):
+                try:
+                    p.stdin.write("QUIT\n"); p.stdin.flush(); sent_quit = True
+                except (BrokenPipeError, ValueError):
+                    pass
+            if t_end is None and (re.search(r"^decode\s+\d+ tokens", text, re.M) or re.search(r"^DONE \d", text, re.M)):
                 t_end, e_end = time.time(), xe_energy_uj()
             if time.time() - t0 > timeout:   # a hang, not a slow run: the timeout is several times the expected time
-                kill_engine()
+                if serve or NATIVE:
+                    try: p.stdin.write(("QUIT\n" if serve else "") + "\n"); p.stdin.flush()
+                    except (OSError, ValueError): pass
+                    p.kill(); p.wait()
+                else:
+                    kill_engine()
                 lf.write("\nBENCHY TIMEOUT\n")
                 break
         p.wait()
+        try: p.stdin.close()
+        except (OSError, ValueError): pass
         lf.write(f"\nENGINE EXIT {p.returncode}\n")
     total_disk = disk_read_bytes(dev) - base_disk
     log = log_path.read_text(errors="replace")
@@ -312,6 +382,9 @@ def table(rows, m):
             f"- One run per row, greedy, {NEW} new tokens, a fresh engine each time; "
             + ("the page cache dropped before every run (cold start)." if m["cold_cache"] else "a WARM page cache (not run as root)."),
             "- TG includes speculative decoding (the MTP draft layer): it depends on the text, and on how often drafts are accepted.",
+            "- Runs stop at the model's end-of-turn token (serve requests always do; one-shot runs get --stop-eos). "
+            "The v1 prompts over 2,000 tokens (long.ids' first 2,000 repeated) end the turn right away, so those rows "
+            "decode 1 token - the model's answer to that text, not a failure; TG there is one token's time.",
             "- RAM is the drop in the host's available memory (pinned memory included); VRAM is "
             + ("every client's resident VRAM from fdinfo, less what was in use before." if m["vram_source"] == "fdinfo" else "from /run/gpustat.json."),
             *(["- Avg power sums every Intel card's energy counter, so an idle second card's draw is included."] if len(m["cards"]) > 1 else [])]

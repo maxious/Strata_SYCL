@@ -168,6 +168,13 @@ def install(argv) -> None:
         if not callable(getattr(S, name, None)):
             S.fail(f"setup.py has no {name}() any more: sycl/setup_intel.py needs updating for this setup.py")
 
+    # Prefer Q2_0 on the Arc. The prompt bottleneck is the weight dequant, and Q2_0's is bandwidth-bound where the
+    # i-quants' is LUT-bound: dequant_bench reads Q2_0 at 419-473 GB/s vs IQ2_XS 192 / IQ2_S 183 / IQ4_NL 68-75 GB/s,
+    # so the INT8 prompt GEMM win (int8_gemm_bench: 1.4-2.2x over FP16, bit-exact) is realizable on Q2_0.
+    # README.sycl.md "Prefer Q2_0 for the SYCL port", docs/INTEL.md planned item 6.
+    if "Q2_0" in S.MODELS and "recommended" not in S.MODELS["Q2_0"].get("about", ""):
+        S.MODELS["Q2_0"]["about"] += " - recommended on Intel Arc (cheap dequant, fastest prompt path)"
+
     real_ram = S.ram_gb()
     keep = {}                                           # hand-set keys setup does not write: kept across a rerun
     for p in ROOT.glob("strata-*.json"):

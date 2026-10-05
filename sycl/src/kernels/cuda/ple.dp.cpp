@@ -16,6 +16,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/ple.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -81,61 +82,24 @@ __dpct_inline__ float silu_f(float x) {
 /// overwrite it before a slow one has read it - invisible in most runs and a slightly different norm when it
 /// fires.
 inline double block_sum(double v, double *scratch) {
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int lane = item_ct1.get_local_id(2) & 31,
               warp = item_ct1.get_local_id(2) >> 5;
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-    /*
-DPCT1121: Make sure that the "v" which is used in the SYCL group
-function/algorithm is initialized.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            off);
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
     if (lane == 0) scratch[warp] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const int nw = ((int)item_ct1.get_local_range(2) + 31) >> 5;
     v = (item_ct1.get_local_id(2) < nw) ? scratch[item_ct1.get_local_id(2)]
                                         : 0.0;
     if (warp == 0)
-        /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-        /*
-DPCT1121: Make sure that the "v" which is used in the SYCL group
-function/algorithm is initialized.
-*/
 #pragma unroll
         for (int off = 16; off > 0; off >>= 1) v +=
-            dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                v, off);
+            strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), v, off);
     if (item_ct1.get_local_id(2) == 0) scratch[0] = v;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     return scratch[0];
 }
 
@@ -305,11 +269,6 @@ void ple_history_advance(float* hist, const float* normalized, void* stream) {
                     history_advance_kernel(hist, normalized);
                 });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     ck(0, "history advance launch");
 }
 
@@ -603,70 +562,29 @@ void ple_block(const float* emb, const float* hidden, const float* hist_rows, co
     // ---- the intermediates the oracle comparison needs.  `key` is the NORMALISED key, because the source's
     //      `cb(key, ...)` capture is after `gnorm`; `value` is the projection before the gate.  Each stage the
     //      oracle records is reproduced here so a mismatch can be attributed instead of guessed at.
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     if (out.key) ck(DPCT_CHECK_ERROR(st->memcpy(out.key, normalized_key,
                                                 hc_dim * sizeof(float))),
                     "key");
     if (out.value)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                st->memcpy(out.value, d_value, n_embd * sizeof(float))),
            "value");
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     if (out.gate)
         ck(DPCT_CHECK_ERROR(st->memcpy(out.gate, d_gate, hc * sizeof(float))),
            "gate");
     if (out.gated)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                st->memcpy(out.gated, d_gated, hc_dim * sizeof(float))),
            "gated");
     if (out.normalized)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                st->memcpy(out.normalized, d_norm, hc_dim * sizeof(float))),
            "norm");
     if (out.conv)
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         ck(DPCT_CHECK_ERROR(
                st->memcpy(out.conv, d_conv, hc_dim * sizeof(float))),
            "conv");
 
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     ck(0, "launch");
     // **NO `cudaStreamSynchronize` HERE.**  It was there to make the function self-contained for the parity
     // test, and inside a capture it is an error - a caller that wants the result immediately synchronises

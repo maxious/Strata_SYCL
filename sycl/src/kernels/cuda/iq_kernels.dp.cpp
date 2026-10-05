@@ -27,17 +27,7 @@ namespace strata::kernels {
 namespace {
 
 void check(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 // ---------------------------------------------------------------- llama.cpp helpers (vecdotq.cuh)
@@ -661,15 +651,8 @@ template<> struct Fmt<8> { static constexpr int qk = 32, ipb = QI8_0 / VDR_Q8_0,
 
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int o = 16; o > 0; o >>= 1) v +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            o);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
 
@@ -685,7 +668,7 @@ template <int LANES>
 __dpct_inline__ float lanes_sum(float v) {
 #pragma unroll
     for (int o = LANES / 2; o > 0; o >>= 1)
-        v += dpct::experimental::permute_sub_group_by_xor(0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
+        v += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
 template <int TY, int LANES>
@@ -1546,24 +1529,10 @@ __dpct_inline__ void q8_1_store(const float xi, block_q8_1 *__restrict__ y,
     float amax = sycl::fabs(xi), sum = xi;
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         amax = sycl::fmax(
             amax,
-            dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                amax, o));
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        sum += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            sum, o);
+            strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), amax, o));
+        sum += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, o);
     }
     const float d = q8_1_finite(amax / 127.0f);   // #606: q8_1_finite.hpp - the same bits for every finite block
     const int8_t q = q8_1_quant(xi, d, amax);
@@ -1610,12 +1579,6 @@ __dpct_inline__ void swiglu_q8_1_entries_kernel(
 #if defined(__HIPCC__)
         const float h = (g / (1.0f + __expf(-g))) * up[i];
 #else
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         const float h = (g / (1.0f + sycl::native::exp(-g))) * up[i];
 #endif
         q8_1_store(h, hq, i);
@@ -2478,6 +2441,91 @@ void iq_dequant_gu_f16(int t, const void* gate, const void* up, int64_t n_ff, in
     check("iq_dequant_gu_f16");
 }
 
+// ---- Q2_0 -> INT8 (README.sycl.md P0 "GEMM-shaped INT8 prompt path"; docs/INTEL.md planned item 6).
+// block_q2_0 = { f16 d; uint8_t qs[16] } per QK2_0 = 64 values, w = d*(code-1) with code-1 in {-1,0,1,2}.
+// One 32-lane work-group per row: lane L walks the row's 64-value blocks b = L, L+32, ..., a group reduce
+// gives the row's max|w|, then every lane writes q = round(w * 127 / max|w|) clamped to [-127, 127] - the row's
+// own int8 grid.  The scale is what the oneMKL int8 GEMM's result is rescaled by afterwards.
+__dpct_inline__ void q2_0_row_i8_kernel(const uint8_t *__restrict__ row, int64_t n_cols, int64_t out_row,
+                                        int8_t *__restrict__ out, float *__restrict__ scale,
+                                        sycl::nd_item<3> item) {
+    const block_q2_0 *blk = (const block_q2_0 *) row;   // this row's blocks, 18 bytes apart
+    const int lane = (int) item.get_local_id(2);
+    const int nblk = (int) (n_cols / QK2_0);
+    float mx = 0.0f;
+    for (int b = lane; b < nblk; b += 32) {
+        const float d = (float) blk[b].d;
+#pragma unroll
+        for (int i = 0; i < QK2_0; ++i) {
+            const int code = (blk[b].qs[i >> 2] >> ((i & 3) * 2)) & 3;
+            mx = sycl::fmax(mx, sycl::fabs(d * (float) (code - 1)));
+        }
+    }
+    mx = sycl::reduce_over_group(item.get_sub_group(), mx, sycl::maximum<float>());
+    const float inv = mx > 0.0f ? 127.0f / mx : 0.0f;
+    for (int b = lane; b < nblk; b += 32) {
+        const float d = (float) blk[b].d;
+        int8_t *o = out + out_row * n_cols + (int64_t) b * QK2_0;
+#pragma unroll
+        for (int i = 0; i < QK2_0; ++i) {
+            const int code = (blk[b].qs[i >> 2] >> ((i & 3) * 2)) & 3;
+            int v = (int) sycl::rint(d * (float) (code - 1) * inv);   // nearest-even, as ggml's quantizers
+            v = sycl::min(127, sycl::max(-127, v));
+            o[i] = (int8_t) v;
+        }
+    }
+    if (lane == 0) scale[out_row] = mx / 127.0f;
+}
+
+bool iq_int8_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
+    return gu_type == 42 && d_type == 42 && n_embd > 0 && n_embd % QK2_0 == 0 && n_ff > 0 && n_ff % QK2_0 == 0;
+}
+
+void iq_quant_gu_i8(int ggml_type, const void* gate, const void* up, int64_t n_ff, int64_t n_embd, int8_t* dst,
+                    float* scale, void* stream) {
+    if (ggml_type != 42 || n_embd % QK2_0 != 0) {
+        std::fprintf(stderr, "iq_quant_gu_i8: type %d / %lld\n", ggml_type, (long long) n_embd);
+        std::exit(1);
+    }
+    const size_t row_bytes = (size_t) (n_embd / QK2_0) * sizeof(block_q2_0);
+    const uint8_t* g = (const uint8_t*) gate;
+    const uint8_t* u = (const uint8_t*) up;
+    strata::q_of(stream)
+        ->submit([&](sycl::handler &cgh) {
+            cgh.parallel_for<dpct_kernel_name<class q2_0_gu_i8_kernel>>(
+                sycl::nd_range<3>(sycl::range(1, 2, (size_t) n_ff) * sycl::range(1, 1, 32),
+                                  sycl::range(1, 1, 32)),
+                [=](sycl::nd_item<3> item_ct1) {
+                    const int parity = (int) item_ct1.get_group(1);
+                    const int64_t r = (int64_t) item_ct1.get_group(2);
+                    const uint8_t* src = (parity ? u : g) + (size_t) r * row_bytes;
+                    q2_0_row_i8_kernel(src, n_embd, 2 * r + parity, dst, scale, item_ct1);
+                });
+        });
+    check("iq_quant_gu_i8");
+}
+
+void iq_quant_i8(int ggml_type, const void* src, int64_t n_rows, int64_t n_cols, int8_t* dst, float* scale,
+                 void* stream) {
+    if (ggml_type != 42 || n_cols % QK2_0 != 0) {
+        std::fprintf(stderr, "iq_quant_i8: type %d / %lld\n", ggml_type, (long long) n_cols);
+        std::exit(1);
+    }
+    const size_t row_bytes = (size_t) (n_cols / QK2_0) * sizeof(block_q2_0);
+    const uint8_t* s = (const uint8_t*) src;
+    strata::q_of(stream)
+        ->submit([&](sycl::handler &cgh) {
+            cgh.parallel_for<dpct_kernel_name<class q2_0_flat_i8_kernel>>(
+                sycl::nd_range<3>(sycl::range(1, 1, (size_t) n_rows) * sycl::range(1, 1, 32),
+                                  sycl::range(1, 1, 32)),
+                [=](sycl::nd_item<3> item_ct1) {
+                    const int64_t row = (int64_t) item_ct1.get_group(2);
+                    q2_0_row_i8_kernel(s + (size_t) row * row_bytes, n_cols, row, dst, scale, item_ct1);
+                });
+        });
+    check("iq_quant_i8");
+}
+
 bool native_expert_supported(int gu_type, int d_type, int64_t n_embd, int64_t n_ff) noexcept {
     const int qg = gu_qk(gu_type), qd = d_qk(d_type);
     return qg > 0 && qd > 0 && is_iq(gu_type) && is_iq(d_type) && n_embd % qg == 0 && n_ff % qd == 0 &&
@@ -2731,6 +2779,7 @@ bool xmx_gemm_iq(int ty, const void* gate, const void* up, int64_t K, int n_out,
                          (size_t) xmx::NSG * 256 * 4;
     if (bytes > 96 * 1024) return false;
     dpct::queue_ptr q = strata::q_of(stream);
+    if (!strata::gpu_has_xmx(q)) return false;   // no matrix units: the joint_matrix kernel cannot run
     xmx::Src src{(const uint8_t*) gate, (const uint8_t*) up, ty, by_block ? K / 256 : 0};
     const int groups = n_out / xmx::NT;
     q->submit([&](sycl::handler& cgh) {

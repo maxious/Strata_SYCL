@@ -86,21 +86,9 @@ int main(int argc, char** argv) {
     check(DPCT_CHECK_ERROR(d_out = sycl::malloc_device<float>(
                                cpu.size(), dpct::get_in_order_queue())),
           "cudaMalloc out");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_codes, codes.data(), codes.size()).wait()),
           "copy codes");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_scales, scales.data(), scales.size() * sizeof(float)).wait()),
           "copy scales");

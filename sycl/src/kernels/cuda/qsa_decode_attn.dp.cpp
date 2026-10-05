@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/qsa_decode_attn.hpp"
 #include "strata/kernels/kv_q8.hpp"
@@ -23,28 +24,14 @@ constexpr int WARPS = THREADS / 32;
 
 __dpct_inline__ float warp_sum(float v) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int o = 16; o > 0; o >>= 1) v +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            o);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
 __dpct_inline__ float warp_max(float v) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int o = 16; o > 0; o >>= 1) v = sycl::fmax(
-        v, dpct::experimental::permute_sub_group_by_xor(
-               0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-               v, o));
+        v, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o));
     return v;
 }
 
@@ -108,12 +95,6 @@ __dpct_inline__ void load8(const QsaAttnPools &p, bool value, long long row,
 }
 
 template <int KV_MODE>
-/*
-DPCT1110: The total declared local variable size in device function
-attn_chunk_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
                   const int32_t *__restrict__ ids,
@@ -141,11 +122,6 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
         *sycl::ext::oneapi::group_local_memory_for_overwrite<long long[CHUNK]>(
             sycl::ext::oneapi::this_work_item::get_work_group<
                 3>()); // pool row of each cell (page, kv head, slot)
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     const int n_ids = *(step + kStepWidth);
     const int chunk = item_ct1.get_group(2), kvh = item_ct1.get_group(1);
     const int t = item_ct1.get_local_id(2), lane = t & 31, warp = t >> 5;
@@ -170,12 +146,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
         }
         srow[t] = r;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // scores: each warp takes cells warp, warp+8, ...; each lane holds 8 of the 256 dimensions.
     for (int c = warp; c < CHUNK; c += WARPS) {
         if (c >= n_here || srow[c] < 0) {
@@ -197,12 +168,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
             if (lane == 0) sp[h][c] = s * scale;
         }
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // per-head chunk max and exp-sum: warp w handles heads w and w+8.
     for (int h = warp; h < G; h += WARPS) {
         const float a = sp[h][lane], b = sp[h][lane + 32];
@@ -218,12 +184,7 @@ attn_chunk_kernel(const float *__restrict__ q, QsaAttnPools p,
         const float l = warp_sum(ea + eb);
         if (lane == 0) { part_m[slot * G + h] = m; part_l[slot * G + h] = l; }
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // values: thread t owns dimension t for all 12 heads.
     float acc[G];
 #pragma unroll
@@ -567,11 +528,6 @@ void qsa_decode_attn_batch(const float* q, const QsaAttnPools& pools, const int3
                                   stride);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 
@@ -678,11 +634,6 @@ void qsa_decode_attn_step(const float* q, const QsaAttnPools& pools, const int32
                 attn_merge_kernel(part_acc, part_m, part_l, n_chunks, attn, 0);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 

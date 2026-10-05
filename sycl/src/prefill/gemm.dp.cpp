@@ -375,24 +375,12 @@ bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
          "cublasSetStream");
     // A fixed workspace so the handle never allocates on the way (and graphs could capture it later).
     const size_t ws = 32u << 20;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (const dpct::err0 e =
             DPCT_CHECK_ERROR(workspace_ = (void *)sycl::malloc_device(
                                  ws, dpct::get_in_order_queue()));
         e != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("prefill gemm: workspace of 32 MiB: ") +
-              dpct::get_error_string_dummy(e);
+              dpct::error_string(e);
         return false;
     }
     /*
@@ -406,26 +394,13 @@ bool Gemm::init(void *stream, int64_t scratch_elems, std::string &err) try {
     hipblaslt_state_ = create_hipblaslt_state(workspace_, ws).release();
 #endif
     if (scratch_elems > 0) {
-        /*
-        DPCT1000: Error handling if-stmt was detected but could not be
-        rewritten.
-        */
         if (const dpct::err0 e = DPCT_CHECK_ERROR(
                 scratch_ = (uint16_t *)sycl::malloc_device(
                     (size_t)scratch_elems * 2, dpct::get_in_order_queue()));
             e != 0) {
-            /*
-            DPCT1001: The statement could not be removed.
-            */
             err = "prefill gemm: dequant scratch of " +
                   std::to_string(scratch_elems * 2 >> 20) + " MiB: " +
-                  /*
-                  DPCT1009: SYCL reports errors using exceptions and does
-                  not use error codes. Please replace the
-                  "get_error_string_dummy(...)" with a real error-handling
-                  function.
-                  */
-                  dpct::get_error_string_dummy(e);
+                  dpct::error_string(e);
             return false;
         }
     }
@@ -483,6 +458,24 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
            dpct::compute_type::f32)),
        "cublasGemmEx f16");
     STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx f16");
+}
+
+void Gemm::int8(const int8_t* X, const int8_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
+                float beta) {
+    if (T <= 0 || N <= 0) return;
+    if (ldy <= 0) ldy = N;
+    const float alpha = 1.0f;
+    // The same column-major view as f16: Y^T[N, T] = W[N, K] (K x N col-major) . X^T[K, T], INT8 operands and
+    // an FP32 result (the exact integer sums, for the caller's rescale).
+    ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
+           (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
+           oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
+           dpct::library_data_t::real_int8, (int)K, X,
+           dpct::library_data_t::real_int8, (int)K, &beta, Y,
+           dpct::library_data_t::real_float, (int)ldy,
+           dpct::compute_type::f32)),
+       "cublasGemmEx int8");
+    STRATA_ABSORB_HIPBLAS_STICKY("cublasGemmEx int8");
 }
 
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,

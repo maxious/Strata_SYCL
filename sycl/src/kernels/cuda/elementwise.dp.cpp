@@ -2,13 +2,14 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
-#include "strata/sycl_doorbell.hpp"
-#include "strata/kernels/elementwise.hpp"
-#include "strata/kernels/dp4a.hpp"
 
 #include "strata/kernels/bf16_bits.hpp"
+#include "strata/kernels/dp4a.hpp"
+#include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/f16_bits.hpp"
+#include "strata/sycl_doorbell.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -34,19 +35,7 @@ __dpct_inline__ void embedding_gather_kernel(const uint8_t *__restrict__ codes,
     const unsigned mask = (1u << code_bits) - 1u;
     const int code = (codes[i / per_byte] >> ((i % per_byte) * code_bits)) & mask;
     const int64_t group = i / group_elems;
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     const float product = (float)(code + code_bias) * scales[group];
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     out[i] = product + (offsets ? offsets[group] : 0.0f);
 }
 
@@ -150,28 +139,16 @@ __dpct_inline__ void rms_norm_weighted_kernel(float *__restrict__ x,
     float acc = 0.0f;
 #pragma unroll
     for (int64_t c = lane; c < cols; c += 32) acc += r[c] * r[c];
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) acc +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, off);
     // The MEAN, not the sum: `ref/qsa.py::rms_norm` divides by `np.mean(np.square(x))`.  Broadcasting the
     // reciprocal from lane 0 keeps all 32 lanes on the same value - computing `rsqrt` per lane would be the
     // same number but a needless 32-way divergence in the last bit.
     float inv = 0.0f;
     if (lane == 0) inv = sycl::rsqrt(acc / (float)cols + eps);
-    /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
-    inv = dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), inv,
+    inv = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), inv,
         0);
 #pragma unroll
     for (int64_t c = lane; c < cols; c += 32)
@@ -190,11 +167,6 @@ catch (sycl::exception const &exc) {
 }
 
 bool check_launch(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     return true;
@@ -582,11 +554,6 @@ __dpct_inline__ void doorbell_publish_kernel(const float *__restrict__ x,
     are needed.
     */
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier();
     if (item_ct1.get_local_id(2) == 0) {
         /*

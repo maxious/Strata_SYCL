@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -13,11 +14,6 @@ namespace strata::kernels {
 namespace {
 
 void check(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 
@@ -36,11 +32,6 @@ __dpct_inline__ void kv_append_q8_kernel(
     const int32_t *__restrict__ table, const int32_t *__restrict__ step,
     const float *__restrict__ kcur, const float *__restrict__ vcur,
     int kv_heads, int head_dim, int page_size, KvHostPools host) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long pos = (long long)*(step + kStepPos);
     const int h = item_ct1.get_group(2), g = item_ct1.get_group(1),
@@ -50,26 +41,16 @@ __dpct_inline__ void kv_append_q8_kernel(
     const float x = (is_v ? vcur : kcur)[h * head_dim + g * KV_Q8_GROUP + t];
     // max |x| over the 64 values: two warps, then combine through shared memory in a fixed order
     float a = sycl::fabs(x);
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) a = sycl::fmax(
-        a, dpct::experimental::permute_sub_group_by_xor(
-               0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        a, strata::sub_group_permute_xor(
+               sycl::ext::oneapi::this_work_item::get_sub_group(),
                a, o));
     auto &warp_max =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<float[2]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
     if ((t & 31) == 0) warp_max[t >> 5] = a;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float amax = sycl::fmax(warp_max[0], warp_max[1]);
     const uint16_t sbits = f16_from_f32(amax / 127.0f);
     const float sf = f32_from_f16(sbits);                          // quantize against the STORED scale
@@ -100,11 +81,6 @@ __dpct_inline__ void kv_gather_q8_kernel(
     const int32_t *__restrict__ table, const int32_t *__restrict__ ids,
     const int32_t *__restrict__ step, int kv_heads, int head_dim, int page_size,
     uint16_t *__restrict__ k_scratch, uint16_t *__restrict__ v_scratch) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long n_ids = (long long)*(step + kStepWidth);
     const int per = head_dim / 4;

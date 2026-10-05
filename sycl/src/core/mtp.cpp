@@ -2,6 +2,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/core/mtp.hpp"
+#include "strata/core/graph_audit.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/on_device.hpp"
 
@@ -187,10 +188,6 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
         const dpct::err0 alloc =
             DPCT_CHECK_ERROR(dense_ = (uint8_t *)sycl::malloc_device(
                                  blob.size(), dpct::get_in_order_queue()));
-        /*
-        DPCT1000: Error handling if-stmt was detected but could not be
-        rewritten.
-        */
         if (alloc != 0) {
             size_t free_bytes = 0, total_bytes = 0;
             /*
@@ -201,28 +198,14 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
             const dpct::err0 info =
                 DPCT_CHECK_ERROR(dpct::get_current_device().get_memory_info(
                     free_bytes, total_bytes));
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            /*
-            DPCT1001: The statement could not be removed.
-            */
             err = "mtp: dense weights allocation failed (" +
-                  std::string(dpct::get_error_string_dummy(alloc)) +
+                  std::string(dpct::error_string(alloc)) +
                   "), requested " + std::to_string(blob.size() >> 20) +
                   " MiB, CUDA0 free " +
                   (info == 0 ? std::to_string(free_bytes >> 20) + " MiB"
                              : "unknown");
             return false;
         }
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
-        in the original code the source host memory is pageable memory. If the
-        memory is not pageable, call wait() on event return by memcpy API to
-        ensure synchronization behavior.
-        */
         dpct::get_in_order_queue().memcpy(dense_, blob.data(), blob.size()).wait();
         vram_ += blob.size();
     }
@@ -355,12 +338,6 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
         std::vector<int32_t> id((size_t) (T * (uint64_t) cap_));
         for (uint64_t t = 0; t < T; ++t)
             for (int64_t i = 0; i < cap_; ++i) id[(size_t) (t * (uint64_t) cap_ + (uint64_t) i)] = (int32_t) i;
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming
-        in the original code the source host memory is pageable memory. If the
-        memory is not pageable, call wait() on event return by memcpy API to
-        ensure synchronization behavior.
-        */
         dpct::get_in_order_queue().memcpy(ident_, id.data(), id.size() * 4).wait();
     }
     /*
@@ -634,12 +611,6 @@ bool MtpDrafter::record_forward(int T, int step_row0, dpct::queue_ptr cs,
         native_mmvq(GGML_Q8_0, q8("self_attn.q_proj.weight"), xq_, qfull_, (int) N, (int) (NH * 2 * HD), T, cs);
         for (int t = 0; t < T; ++t) {
             float* qc = qcur_ + t * NH * HD;
-            /*
-            DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous memcpy
-            API. While the origin API might be synchronous, it depends on the
-            type of operand memory, so you may need to call wait() on event
-            return by memcpy API to ensure synchronization behavior.
-            */
             if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                     qc, (size_t)HD * 4, qfull_ + t * NH * 2 * HD,
                     (size_t)HD * 2 * 4, (size_t)HD * 4, (size_t)NH,
@@ -732,12 +703,20 @@ bool MtpDrafter::record_forward(int T, int step_row0, dpct::queue_ptr cs,
 }
 
 namespace {
+std::string capture_key(const char *what, int idx, bool coupled) {
+    char b[64];
+    std::snprintf(b, sizeof b, "mtp.%s%d%s", what, idx, coupled ? ".coupled" : "");
+    return b;
+}
+
 bool finish_capture(dpct::queue_ptr cs, bool ok,
                     dpct::experimental::command_graph_exec_ptr &exec,
-                    const char *what, std::string &err) try {
+                    const char *what, int idx, bool coupled, std::string &err) try {
+    const std::string key = capture_key(what, idx, coupled);
     dpct::experimental::command_graph_ptr graph = nullptr;
     const dpct::err0 ce =
         DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs, &graph));
+    audit::graph_capture_end(key.c_str(), cs, graph, (long) ce, "mtp::finish_capture");
     if (!ok) {
         if (graph) delete (graph);
         return false;
@@ -748,14 +727,14 @@ bool finish_capture(dpct::queue_ptr cs, bool ok,
                 sycl::ext::oneapi::experimental::graph_state::executable>(
                 graph->finalize())) != 0) {
         if (graph) delete (graph);
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use error
-        codes. Please replace the "get_error_string_dummy(...)" with a real
-        error-handling function.
-        */
-        err = std::string("mtp: ") + what +
-              " capture: " + dpct::get_error_string_dummy(ce);
+        err = std::string("mtp: ") + key +
+              " capture: " + dpct::error_string(ce);
         return false;
+    }
+    {
+        size_t nn = 0;
+        dpct::experimental::get_nodes(graph, nullptr, &nn);
+        audit::graph_capture_nodes(key.c_str(), nn);
     }
     delete (graph);
     // an explicit upload: the first launch's implicit one blocked behind a device-side spin (verify.cpp)
@@ -776,14 +755,15 @@ catch (sycl::exception const &exc) {
 bool MtpDrafter::capture_prefill(int T, std::string &err) try {
     if (prefill_exec_[T]) return true;
     using namespace strata::kernels;
+    audit::graph_capture_begin(capture_key("prefill", T, false).c_str(), cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
+        err = "mtp: begin capture"; audit::graph_capture_abandon(cs_); return false;
     }
     copy_i32_from_mapped(tok_, m_tok_, T, cs_);
     copy_i32_from_mapped(step_, m_step_, (int64_t) T * 4, cs_);
     copy_i32_from_mapped(pos_, m_pos_, (int64_t) T * g_->n_head, cs_);
     const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T)
-    return finish_capture(cs_, ok, prefill_exec_[T], "prefill", err);
+    return finish_capture(cs_, ok, prefill_exec_[T], "prefill", T, false, err);
 }
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
@@ -793,11 +773,12 @@ catch (sycl::exception const &exc) {
 
 bool MtpDrafter::capture_prefill_dev(int T, std::string &err) try {
     if (prefill_dev_exec_[T]) return true;
+    audit::graph_capture_begin(capture_key("prefill_dev", T, false).c_str(), cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
+        err = "mtp: begin capture"; audit::graph_capture_abandon(cs_); return false;
     }
     const bool ok = record_forward(T, -1, cs_, err);   // K/V only, rows [0, T); tok_/step_/pos_ filled before launch
-    return finish_capture(cs_, ok, prefill_dev_exec_[T], "prefill (device inputs)", err);
+    return finish_capture(cs_, ok, prefill_dev_exec_[T], "prefill_dev", T, false, err);
 }
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
@@ -810,8 +791,9 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string &err) try {
     if (exec) return true;
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
+    audit::graph_capture_begin(capture_key("round", T, coupled).c_str(), cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
+        err = "mtp: begin capture"; audit::graph_capture_abandon(cs_); return false;
     }
     bool ok = true;
     // coupled: the request's chain and the penalty history's base, for this round's drafts
@@ -836,7 +818,7 @@ bool MtpDrafter::capture_round(int T, bool coupled, std::string &err) try {
         coupled_rec_ = false;
     }
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, 0, cs_, probs_, m_prob_);
-    return finish_capture(cs_, ok, exec, coupled ? "round (coupled)" : "round", err);
+    return finish_capture(cs_, ok, exec, "round", T, coupled, err);
 }
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
@@ -852,8 +834,9 @@ bool MtpDrafter::capture_step(int j, bool coupled, std::string &err) try {
     using namespace strata::kernels;
     const int64_t HCN = g_->hc * g_->n_embd;
     const int row = max_t_ + j - 1;
+    audit::graph_capture_begin(capture_key("step", j, coupled).c_str(), cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
-        err = "mtp: begin capture"; return false;
+        err = "mtp: begin capture"; audit::graph_capture_abandon(cs_); return false;
     }
     copy_i32_from_mapped(step_ + row * 4, m_step_ + row * 4, 4, cs_);
     copy_i32_from_mapped(pos_ + row * g_->n_head, m_pos_ + row * g_->n_head, g_->n_head, cs_);
@@ -862,7 +845,7 @@ bool MtpDrafter::capture_step(int j, bool coupled, std::string &err) try {
     bool ok = record_forward(1, row, cs_, err);
     coupled_rec_ = false;
     if (ok) mtp_select(R_, HCN, out_ids_, row_ + 1, Rin_, tok_, m_out_, j, cs_, probs_, m_prob_);
-    return finish_capture(cs_, ok, exec, coupled ? "step (coupled)" : "step", err);
+    return finish_capture(cs_, ok, exec, "step", j, coupled, err);
 }
 catch (sycl::exception const &exc) {
   std::cerr << exc.what() << "Exception caught at file:" << __FILE__
@@ -932,12 +915,6 @@ bool MtpDrafter::prefill(const float *R_rows, const int32_t *next_tokens,
             stp[i * 4 + 3] = (int32_t) (cell + 1);
             for (int64_t h = 0; h < NHp; ++h) ps[i * NHp + h] = (int32_t) cell;
         }
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         if (DPCT_CHECK_ERROR(cs_->memcpy(pf_dev_, rec.data(),
                                          rec.size() * sizeof(int32_t))) != 0) {
             err = "mtp prefill: the input records upload failed";
@@ -950,70 +927,25 @@ bool MtpDrafter::prefill(const float *R_rows, const int32_t *next_tokens,
             const int T = (int) std::min<int64_t>(max_t_, n - c);
             if (cell0 + c + T <= first_needed) continue;
             if (!capture_prefill_dev(T, err)) return false;
-            /*
-            DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-            While the origin API might be synchronous, it depends on the type of
-            operand memory, so you may need to call wait() on event return by
-            memcpy API to ensure synchronization behavior.
-            */
             if (DPCT_CHECK_ERROR(cs_->memcpy(tok_, d_tk + c, (size_t)T * 4)) !=
                     0 ||
-                /*
-                DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-                API. While the origin API might be synchronous, it depends on
-                the type of operand memory, so you may need to call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 DPCT_CHECK_ERROR(
                     cs_->memcpy(step_, d_stp + c * 4, (size_t)T * 16)) != 0 ||
-                /*
-                DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-                API. While the origin API might be synchronous, it depends on
-                the type of operand memory, so you may need to call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 DPCT_CHECK_ERROR(cs_->memcpy(pos_, d_ps + c * NHp,
                                              (size_t)(T * NHp) * 4)) != 0 ||
-                /*
-                DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-                API. While the origin API might be synchronous, it depends on
-                the type of operand memory, so you may need to call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 DPCT_CHECK_ERROR(
                     cs_->memcpy(Rin_, R_rows + (size_t)c * HCN,
                                 (size_t)T * HCN * sizeof(float))) != 0 ||
                 DPCT_CHECK_ERROR(
                     (cs_)->ext_oneapi_graph(*prefill_dev_exec_[T])) != 0) {
-                /*
-                DPCT1009: SYCL reports errors using exceptions and does not
-                use error codes. Please replace the
-                "get_error_string_dummy(...)" with a real error-handling
-                function.
-                */
-                /*
-                DPCT1010: SYCL uses exceptions to report errors and does not
-                use the error codes. The cudaGetLastError function call was
-                replaced with 0. You need to rewrite this code.
-                */
                 err = std::string("mtp prefill: ") +
-                      dpct::get_error_string_dummy(0);
+                      dpct::error_string(0);
                 return false;
             }
         }
         if (DPCT_CHECK_ERROR(cs_->wait()) != 0) {
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not use
-            the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             err =
-                std::string("mtp prefill: ") + dpct::get_error_string_dummy(0);
+                std::string("mtp prefill: ") + dpct::error_string(0);
             return false;
         }
         ms_prefill += ms_since(t0);
@@ -1032,29 +964,13 @@ bool MtpDrafter::prefill(const float *R_rows, const int32_t *next_tokens,
             h_step_[t * 4 + 3] = (int32_t) (cell + 1);
             for (int64_t h = 0; h < g_->n_head; ++h) h_pos_[t * g_->n_head + h] = (int32_t) cell;
         }
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         if (DPCT_CHECK_ERROR(cs_->memcpy(Rin_, R_rows + (size_t)c * HCN,
                                          (size_t)T * HCN * sizeof(float))) !=
                 0 ||
             DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*prefill_exec_[T])) != 0 ||
             DPCT_CHECK_ERROR(cs_->wait()) != 0) {
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not use
-            the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             err =
-                std::string("mtp prefill: ") + dpct::get_error_string_dummy(0);
+                std::string("mtp prefill: ") + dpct::error_string(0);
             return false;
         }
     }
@@ -1092,17 +1008,7 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(cp ? round_exec_c_[T] : round_exec_[T]))) != 0 ||
         DPCT_CHECK_ERROR(cs_->wait()) != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use error
-        codes. Please replace the "get_error_string_dummy(...)" with a real
-        error-handling function.
-        */
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use the
-        error codes. The cudaGetLastError function call was replaced with 0. You
-        need to rewrite this code.
-        */
-        err = std::string("mtp draft: ") + dpct::get_error_string_dummy(0);
+        err = std::string("mtp draft: ") + dpct::error_string(0);
         return false;
     }
     drafts[0] = ((volatile int32_t*) h_out_)[0];
@@ -1116,18 +1022,8 @@ bool MtpDrafter::draft(int T, const int32_t* tokens, int64_t p, int a, int32_t* 
         std::atomic_thread_fence(std::memory_order_seq_cst);
         if (DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*(cp ? step_exec_c_[j] : step_exec_[j]))) != 0 ||
             DPCT_CHECK_ERROR(cs_->wait()) != 0) {
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not use
-            the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             err = std::string("mtp draft step: ") +
-                  dpct::get_error_string_dummy(0);
+                  dpct::error_string(0);
             return false;
         }
         drafts[j] = ((volatile int32_t*) h_out_)[j];

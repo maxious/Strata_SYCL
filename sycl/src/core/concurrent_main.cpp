@@ -110,21 +110,9 @@ int main(int argc, char** argv) {
           "cudaMalloc y");
     std::vector<uint16_t> hx((size_t) n_in, 0x3C00);
     std::vector<float> hs((size_t) n_out * (size_t) (n_in / 64), 0.001f);
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     check(DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
               d_x, hx.data(), hx.size() * sizeof(uint16_t)).wait()),
           "copy x");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     check(DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
               d_scales, hs.data(), hs.size() * sizeof(float)).wait()),
           "copy scales");
@@ -157,12 +145,6 @@ int main(int argc, char** argv) {
         for (int b = 0; b < 2; ++b)
             check(DPCT_CHECK_ERROR(ev[b] = new sycl::event()), "event");
         uint8_t* buf[2] = {d_codes, d_codes};      // one buffer is enough: the timing is what is measured
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         check(
             DPCT_CHECK_ERROR(s_copy->memcpy(buf[0], arena.data(), role_codes)),
             "prologue");
@@ -176,12 +158,6 @@ int main(int argc, char** argv) {
         for (int i = 0; i < roles; ++i) {
             const int cur = i & 1, nxt = (i + 1) & 1;
             if (i + 1 < roles) {
-                /*
-                DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy
-                API. While the origin API might be synchronous, it depends on
-                the type of operand memory, so you may need to call wait() on
-                event return by memcpy API to ensure synchronization behavior.
-                */
                 check(DPCT_CHECK_ERROR(s_copy->memcpy(
                           buf[nxt],
                           arena.data() +

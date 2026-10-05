@@ -34,18 +34,45 @@ int main(int argc, char** argv) {
         std::printf("wide vs shared: rel %.3e over %zu outputs (first %g vs %g)\n", num / (den > 0 ? den : 1), y0.size(), y0[0], y1[0]);
         strata::kernels::native_mmvq_set_q6k_wide(std::getenv("STRATA_MMVQ_WIDE") == nullptr || std::atoi(std::getenv("STRATA_MMVQ_WIDE")) != 0);
     }
-    {   // warm up until the clocks are up (~300 ms of work), then time
+    auto time_ptr = [&](void* ww) {
         const auto w0 = std::chrono::steady_clock::now();
         while (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - w0).count() < 300) {
-            for (int i = 0; i < 20; ++i) strata::kernels::native_q6_k_mmvq(w, xq, y, n_in, n_out, ncols, s);
+            for (int i = 0; i < 20; ++i) strata::kernels::native_q6_k_mmvq(ww, xq, y, n_in, n_out, ncols, s);
             s->wait();
         }
-    }
-    const int it = 400;
-    const auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < it; ++i) strata::kernels::native_q6_k_mmvq(w, xq, y, n_in, n_out, ncols, s);
-    s->wait();
-    const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / it;
+        const int it = 400;
+        const auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < it; ++i) strata::kernels::native_q6_k_mmvq(ww, xq, y, n_in, n_out, ncols, s);
+        s->wait();
+        return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / it;
+    };
+    const double us = time_ptr(w);
     std::printf("q6_k mmvq %d x %d, %d cols: %.1f us  (%.1f GB/s of weights)\n", n_in, n_out, ncols, us, wbytes / us / 1e3);
+#ifdef SYCL_EXT_ONEAPI_USM_DEVICE_READ_ONLY
+    {
+        void* w_ro = sycl::malloc_device(wbytes, s->get_device(), s->get_context(),
+                                         sycl::ext::oneapi::property::usm::device_read_only());
+        s->memcpy(w_ro, hw.data(), wbytes).wait();
+        const double us_ro = time_ptr(w_ro);
+        std::printf("  device_read_only weights: %.1f us (%.1f GB/s) = %.3fx of plain\n",
+                    us_ro, wbytes / us_ro / 1e3, us_ro / us);
+        std::vector<float> y_plain((size_t) ncols * n_out), y_ro(y_plain.size());
+        strata::kernels::native_q6_k_mmvq(w, xq, y, n_in, n_out, ncols, s); s->wait();
+        s->memcpy(y_plain.data(), y, y_plain.size() * 4).wait();
+        strata::kernels::native_q6_k_mmvq(w_ro, xq, y, n_in, n_out, ncols, s); s->wait();
+        s->memcpy(y_ro.data(), y, y_ro.size() * 4).wait();
+        size_t ndiff = 0;
+        double maxd = 0;
+        for (size_t i = 0; i < y_plain.size(); ++i) {
+            const double d = std::fabs((double) y_plain[i] - (double) y_ro[i]);
+            if (d != 0) ++ndiff;
+            if (d > maxd) maxd = d;
+        }
+        std::printf("  results: %zu of %zu differ, max |d| %.3g\n", ndiff, y_plain.size(), maxd);
+        sycl::free(w_ro, *s);
+    }
+#else
+    std::printf("  device_read_only: SYCL_EXT_ONEAPI_USM_DEVICE_READ_ONLY is not defined here\n");
+#endif
     return 0;
 }

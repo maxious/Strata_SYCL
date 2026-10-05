@@ -43,6 +43,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/core/emulate.hpp"
 #include "strata/kernels/qsa.hpp"
@@ -69,11 +70,6 @@ void fail(const char* what) {
 }
 
 void check_launch(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 
@@ -130,11 +126,6 @@ kv_append_kernel(uint16_t *__restrict__ k_pool, uint16_t *__restrict__ v_pool,
                  const int32_t *__restrict__ step,
                  const float *__restrict__ kcur, const float *__restrict__ vcur,
                  int kv_heads, int head_dim, int page_size, KvHostPools host) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long pos = (long long)*(step + kStepPos);
     const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
@@ -177,11 +168,6 @@ __dpct_inline__ void indexer_key_append_kernel(
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     auto s_mean = (double *)dpct_local; // idx_dim doubles
     const int d = item_ct1.get_local_id(2);
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     const int pos = (int)*pos_dev;
     const int slot = pos % r;
 
@@ -204,20 +190,8 @@ __dpct_inline__ void indexer_key_append_kernel(
         // and `__dsqrt_rn` pin the reciprocal square root for the same reason.
         for (int i = 0; i < idx_dim; ++i) {
             const double v = (double) raw[i];
-            /*
-            DPCT1013: The rounding mode could not be specified and the
-            generated code may have different accuracy than the original code.
-            Verify the correctness. SYCL math built-in function rounding mode is
-            aligned with OpenCL C 1.2 standard.
-            */
             ss = ss + v * v;
         }
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         const double inv = 1.0 / sycl::sqrt(ss / (double)idx_dim + (double)eps);
         float y = (float) (p * inv * (double) w_k_norm[d]);
         // The spare rotates at position 0 - ALWAYS row 0 of the table, whatever `pos_base` is, as the native
@@ -234,11 +208,6 @@ __dpct_inline__ void indexer_key_append_kernel(
     }
 
     if (slot != r - 1) return;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(); // the tail rows this thread is about to read are
                         // written above
 
@@ -246,44 +215,17 @@ __dpct_inline__ void indexer_key_append_kernel(
     // cell (slot r-1).  The sum of r f32 values is exact in double, so the mean's order cannot matter here -
     // but the order of the SUM OF SQUARES below can, and it is fixed to d ascending on both sides.
     double m = 0.0;
-    /*
-DPCT1013: The rounding mode could not be specified and the generated code
-may have different accuracy than the original code. Verify the correctness. SYCL
-math built-in function rounding mode is aligned with OpenCL C 1.2 standard.
-*/
 #pragma unroll
     for (int j = 0; j < r - 1; ++j)
         m = m + (double)tail[(size_t)j * idx_dim + d];
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     m = m + (double)raw[d];
     m = m / (double) r;
     s_mean[d] = m;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 
     double ss = 0.0;
-    /*
-DPCT1013: The rounding mode could not be specified and the generated code
-may have different accuracy than the original code. Verify the correctness. SYCL
-math built-in function rounding mode is aligned with OpenCL C 1.2 standard.
-*/
 #pragma unroll
     for (int i = 0; i < idx_dim; ++i) ss = ss + s_mean[i] * s_mean[i];
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     const double inv = 1.0 / sycl::sqrt(ss / (double)idx_dim + (double)eps);
 
     const int b = pos / r;
@@ -293,11 +235,6 @@ math built-in function rounding mode is aligned with OpenCL C 1.2 standard.
     // The rotation position for this row, kept because a capture reader and the debug dumps want it.  It is the
     // block's first cell's POSITION, `pos_base + b*r`, and NOT the cell index `b*r`.
     if (d == 0) *block_pos = (int32_t) (pos_base + b * r);
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
     item_ct1.barrier(); // the row is complete only now; the rotation below
                         // reads TWO elements of it
 
@@ -328,18 +265,8 @@ __dpct_inline__ void qsa_index_kernel(const float *__restrict__ pooled,
                                       int idx_n_head, int idx_dim, long long r,
                                       const int32_t *__restrict__ step,
                                       float *__restrict__ cell_scores) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long n_bid = (long long)*(step + kStepNBid);
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     const long long n_kv = (long long)*(step + kStepNKv);
     auto &s_dot =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<double[32]>(
@@ -359,29 +286,11 @@ __dpct_inline__ void qsa_index_kernel(const float *__restrict__ pooled,
     double acc = 0.0;
 #pragma unroll
     for (int d = lane; d < idx_dim; d += 32)
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         acc = acc + (double)pooled[(size_t)b * idx_dim + d] *
                         (double)q_idx[(size_t)wid * idx_dim + d];
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-    /*
-DPCT1013: The rounding mode could not be specified and the generated code
-may have different accuracy than the original code. Verify the correctness. SYCL
-math built-in function rounding mode is aligned with OpenCL C 1.2 standard.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) acc =
-        acc + dpct::experimental::permute_sub_group_by_xor(
-                  0xffffffffu,
-                  sycl::ext::oneapi::this_work_item::get_sub_group(), acc, o);
+        acc + strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), acc, o);
     if (lane == 0) s_dot[wid] = acc;
     item_ct1.barrier(sycl::access::fence_space::local_space);
 
@@ -420,27 +329,11 @@ __dpct_inline__ uint32_t order_key(float s) {
 
 constexpr int TOPK_THREADS = 256;
 
-/*
-DPCT1110: The total declared local variable size in device function
-topk_kernel exceeds 128 bytes and may cause high register pressure. Consult with
-your hardware vendor to find the total register size available and adjust the
-code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void topk_kernel(const float *__restrict__ scores,
                                  const int32_t *__restrict__ step,
                                  int *__restrict__ out_ids) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long n_kv = (long long)*(step + kStepNKv);
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     const long long width = (long long)*(step + kStepWidth);
     auto &s_a =
         *sycl::ext::oneapi::group_local_memory_for_overwrite<int[TOPK_THREADS]>(
@@ -467,26 +360,13 @@ __dpct_inline__ void topk_kernel(const float *__restrict__ scores,
         for (long long j = lo; j < hi;
              ++j) if (order_key(scores[j]) >= cand)++ c;
         s_a[t] = c;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
         for (int s = TOPK_THREADS / 2; s > 0; s >>= 1) {
             if (t < s) s_a[t] += s_a[t + s];
-            /*
-            DPCT1118: SYCL group functions and algorithms must be
-            encountered in converged control flow. You may need to adjust the
-            code.
-            */
             item_ct1.barrier(sycl::access::fence_space::local_space);
         }
         const int tot = s_a[0];
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(
             sycl::access::fence_space::local_space); // before the next round
                                                      // overwrites s_a
@@ -566,11 +446,6 @@ __dpct_inline__ void kv_gather_kernel(
     const int32_t *__restrict__ table, const int32_t *__restrict__ ids,
     const int32_t *__restrict__ step, int kv_heads, int head_dim, int page_size,
     uint16_t *__restrict__ k_scratch, uint16_t *__restrict__ v_scratch) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long n_ids = (long long)*(step + kStepWidth);
     const int per = head_dim / 4;                       // 4 halfs per uint2
@@ -595,50 +470,25 @@ __dpct_inline__ void kv_gather_kernel(
 // ================= 6. qsa_attend =================
 
 __dpct_inline__ float warp_max(float v) {
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v = sycl::fmax(
-        v, dpct::experimental::permute_sub_group_by_xor(
-               0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-               v, o));
+        v, strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o));
     return v;
 }
 
 __dpct_inline__ float warp_sum(float v) {
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) v +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
-            o);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
     return v;
 }
 
 /// One block per query head.  `s` holds the scores, which are then overwritten with the softmax weights.
-/*
-DPCT1110: The total declared local variable size in device function
-qsa_attend_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void qsa_attend_kernel(
     const float *__restrict__ q, const uint16_t *__restrict__ k_scratch,
     const uint16_t *__restrict__ v_scratch, const int32_t *__restrict__ step,
     int n_head, int n_head_kv, int head_dim, float *__restrict__ attn,
     float *__restrict__ weights, uint8_t *dpct_local) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long n_ids = (long long)*(step + kStepWidth);
     auto s_w = (float *)dpct_local; // CAPACITY floats (scores, then weights) +
@@ -671,12 +521,7 @@ __dpct_inline__ void qsa_attend_kernel(
             h2f(krow[i]) * q[(size_t)h * head_dim + i];
         w[j] = acc * scale;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float mx = -FLT_MAX;    // not -inf, whose double -> float conversion nvcc warns about
 #pragma unroll
@@ -684,30 +529,15 @@ __dpct_inline__ void qsa_attend_kernel(
         mx = sycl::fmax(mx, w[j]);
     mx = warp_max(mx);
     if (lane == 0) red[wid] = mx;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (wid == 0) {
         mx = (lane < nwarp) ? red[lane] : -FLT_MAX;
         mx = warp_max(mx);
         if (lane == 0) red[0] = mx;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     mx = red[0];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float sum = 0.0f;
     for (long long j = d; j < n_ids; j += item_ct1.get_local_range(2)) {
@@ -717,30 +547,15 @@ __dpct_inline__ void qsa_attend_kernel(
     }
     sum = warp_sum(sum);
     if (lane == 0) red[wid] = sum;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (wid == 0) {
         sum = (lane < nwarp) ? red[lane] : 0.0f;
         sum = warp_sum(sum);
         if (lane == 0) red[0] = 1.0f / sum;
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float inv = red[0];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 
     float acc = 0.0f;
 #pragma unroll
@@ -807,12 +622,6 @@ catch (sycl::exception const &exc) {
 
 void step_upload_raw(const int32_t *h_step) try {
     int32_t* d = step_scratch();
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     if (DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
             d, h_step, qsa_step_bytes()).wait()) != 0) {
         std::fprintf(stderr, "qsa: step upload: cudaMemcpy failed\n");

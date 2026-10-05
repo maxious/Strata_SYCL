@@ -2,8 +2,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
 #include "strata/kernels/fused_gdn.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -15,12 +16,6 @@ constexpr int S = 128;          // state size (rows = cols = 128)
 constexpr int RG = 4;           // row groups
 constexpr int RPG = S / RG;     // 32 rows per thread
 
-/*
-DPCT1110: The total declared local variable size in device function
-gdn_step_norm_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void gdn_step_norm_kernel(
     float *__restrict__ state, const float *__restrict__ q,
     const float *__restrict__ k, const float *__restrict__ v,
@@ -49,23 +44,13 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
     const size_t row_stride = (size_t) h_v * S;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) s[r] = base[r * row_stride];
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float g = sycl::native::exp(gate[head]);
     float kv = 0.0f;
 #pragma unroll
     for (int r = 0; r < RPG; ++r) kv = sycl::fma(s[r], sk[rg * RPG + r], kv);
     red[rg][col] = kv;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     const float kv_col = red[0][col] + red[1][col] + red[2][col] + red[3][col];
     const float delta = (v[head * S + col] - g * kv_col) * beta[head];
     float o = 0.0f;
@@ -75,19 +60,9 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         o = sycl::fma(s[r], sq[rg * RPG + r], o);
         base[r * row_stride] = s[r];
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier(); // every thread has read red[] for kv_col
+    item_ct1.barrier(sycl::access::fence_space::local_space); // every thread has read red[] for kv_col
     red[rg][col] = o;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     float oc = 0.0f, sq_part = 0.0f;
     if (rg == 0) {
         oc = (red[0][col] + red[1][col] + red[2][col] + red[3][col]) *
@@ -95,23 +70,12 @@ auto &sk = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[S]>(
         sq_part = oc * oc;
     }
     // RMS over the head's 128 outputs: warps of row group 0 are threads 0..127.
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o2 = 16; o2 > 0; o2 >>= 1) sq_part +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             sq_part, o2);
     if ((tid & 31) == 0) wsum[tid >> 5] = sq_part;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     if (rg == 0) {
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
         const float scale = sycl::rsqrt(ss / (float)S + eps);
@@ -139,28 +103,13 @@ auto &part =
     float y = sum / (1.0f + sycl::native::exp(-sum));
     if ((int)item_ct1.get_group(2) < qk_heads) {
         float sq = y * y;
-        /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
         for (int o = 16; o > 0; o >>= 1) sq +=
-            dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
                 sq, o);
         if ((item_ct1.get_local_id(2) & 31) == 0)
             part[item_ct1.get_local_id(2) >> 5] = sq;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         const float ss = part[0] + part[1] + part[2] + part[3];
         y *= sycl::rsqrt(ss + eps);
     }
@@ -182,11 +131,6 @@ gdn_ab_kernel(const float *__restrict__ x, const uint16_t *__restrict__ wa,
         (is_beta ? wb : wa) + (size_t)r * n);
     float acc = 0.0f;
     for (int j = lane; j < n / 8; j += 32) {
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         const sycl::uint4 wv = *(w4 + j);
         const sycl::float4 xa =
             *reinterpret_cast<const sycl::float4 *>(x + j * 8);
@@ -209,15 +153,9 @@ gdn_ab_kernel(const float *__restrict__ x, const uint16_t *__restrict__ wa,
             acc = sycl::fma(sycl::bit_cast<float>(wv.w() & 0xffff0000u),
                             (float)(xb.w()), acc);
     }
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) acc +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, o);
     if (lane != 0) return;
     if (is_beta) {
@@ -253,17 +191,7 @@ void fused_gdn_conv_l2(float* history, const float* qkv, const float* conv_w, fl
                                            eps);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 void fused_gdn_ab(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
@@ -289,17 +217,7 @@ void fused_gdn_ab(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
                                       n_embd, h_v);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 
 void fused_gdn_step_norm(float* state, const float* q, const float* k, const float* v, const float* gate,
@@ -330,11 +248,6 @@ void fused_gdn_step_norm(float* state, const float* q, const float* k, const flo
                                              gamma, eps, y, h_k, h_v);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 

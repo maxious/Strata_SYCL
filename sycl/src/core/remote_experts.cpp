@@ -59,27 +59,17 @@ struct DeviceScope {
     std::string error(int device) const {
         return std::string("CUDA") + std::to_string(device) +
                " experts: " + (failed_step ? failed_step : "device switch") +
-               /*
-               DPCT1009: SYCL reports errors using exceptions and does not
-               use error codes. Please replace the "get_error_string_dummy(...)"
-               with a real error-handling function.
-               */
                "(" +
                std::to_string(device) +
-               ") failed: " + dpct::get_error_string_dummy(status) +
+               ") failed: " + dpct::error_string(status) +
                " (CUDA error " + std::to_string((int)status) + ")";
     }
 };
 
 bool check(dpct::err0 result, const char *what, std::string &err, int device) {
     if (result == 0) return true;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
     err = "CUDA" + std::to_string(device) + " experts: " + what + ": " +
-          dpct::get_error_string_dummy(result);
+          dpct::error_string(result);
     return false;
 }
 } // namespace
@@ -404,22 +394,10 @@ bool RemoteExperts::begin(int64_t layer, const float *x, const int32_t *ids,
     groups_ = (int32_t) group_id_.size();
     const dpct::queue_ptr s = stream_;
     const bool staged =
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         (zero_copy_ ||
          check(DPCT_CHECK_ERROR(
                    s->memcpy(d_x_, h_x_, (size_t)n_tok * H * sizeof(float))),
                "copy input", err, device_)) &&
-        /*
-        DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API.
-        While the origin API might be synchronous, it depends on the type of
-        operand memory, so you may need to call wait() on event return by memcpy
-        API to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR(s->memcpy(d_meta_, h_meta_, sizeof(RemoteMeta))),
               "copy group metadata", err, device_);
     if (!staged) return false;
@@ -436,12 +414,6 @@ bool RemoteExperts::begin(int64_t layer, const float *x, const int32_t *ids,
                                         groups_, (int64_t) dst_.size(), d_q8_, d_scales_, d_scratch_, zero_copy_ ? z_out_ : d_out_, s);
     }
     const uint64_t compact_bytes = (uint64_t) dst_.size() * H * sizeof(float);
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     if (!zero_copy_ && !check(DPCT_CHECK_ERROR(s->memcpy(
                                   h_out_, d_out_, (size_t)compact_bytes)),
                               "copy results", err, device_)) return false;

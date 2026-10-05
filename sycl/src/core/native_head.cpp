@@ -60,23 +60,11 @@ bool NativeHead::load(const std::vector<std::string> &shards, int64_t n_in,
                 dpct::get_in_order_queue()
                     .memcpy(weights, gguf.tensor_data(*tensor), bytes)
                     .wait());
-        /*
-        DPCT1000: Error handling if-stmt was detected but could not be
-        rewritten.
-        */
         if (status != 0) {
             if (scratch) sycl::free(scratch, dpct::get_in_order_queue());
             if (weights) sycl::free(weights, dpct::get_in_order_queue());
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            /*
-            DPCT1001: The statement could not be removed.
-            */
             err = std::string("native head upload: ") +
-                  dpct::get_error_string_dummy(status);
+                  dpct::error_string(status);
             return false;
         }
         weights_ = weights;
@@ -114,27 +102,10 @@ bool NativeHead::run(const float *mixed, float *logits, void *stream,
         err = std::string("native head launch: ") + error.what();
         return false;
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaPeekAtLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 status = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (status != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("native head launch: ") +
-              dpct::get_error_string_dummy(status);
+              dpct::error_string(status);
         return false;
     }
     return true;
@@ -209,12 +180,6 @@ bool NativeEmbed::load(const std::vector<std::string> &shards, int64_t n_embd,
             if (DPCT_CHECK_ERROR(d = (void *)sycl::malloc_device(
                                      bytes_, dpct::get_in_order_queue())) !=
                     0 ||
-                /*
-                DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-                assuming in the original code the source host memory is pageable
-                memory. If the memory is not pageable, call wait() on event
-                return by memcpy API to ensure synchronization behavior.
-                */
                 DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
                     d, gguf.tensor_data(*t), bytes_).wait()) != 0) {
                 if (d) sycl::free(d, dpct::get_in_order_queue());

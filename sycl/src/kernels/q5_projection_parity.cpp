@@ -41,12 +41,6 @@ int main(int argc, char **argv) try {
         std::fprintf(stderr, "CUDA allocation failed\n");
         return 1;
     }
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dweight, source, weight_bytes).wait();
     strata::kernels::dequant_f32(7, dweight, 0, rows, cols, (float*) dfloat, nullptr);
     strata::kernels::dequant_bf16(7, dweight, 0, rows, cols, (uint16_t*) dbf16, nullptr);

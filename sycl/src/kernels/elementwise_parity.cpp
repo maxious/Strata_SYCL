@@ -108,30 +108,12 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(d_g = (float *)sycl::malloc_device(
                                    n * 4, dpct::get_in_order_queue())),
               "g");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_a, alpha.data(), n * 4).wait()),
               "ca");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_dt, dt.data(), n * 4).wait()),
               "cd");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_sa, a.data(), n * 4).wait()),
               "cs");
@@ -205,12 +187,6 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(d_x = (float *)sycl::malloc_device(
                                    n * 4, dpct::get_in_order_queue())),
               "sx");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(), n * 4).wait()),
               "csx");
@@ -242,12 +218,6 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(d_h = (uint16_t *)sycl::malloc_device(
                                    n * 2, dpct::get_in_order_queue())),
               "eh");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(), n * 4).wait()),
               "cex");
@@ -338,21 +308,9 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(d_w = (float *)sycl::malloc_device(
                                    w.size() * 4, dpct::get_in_order_queue())),
               "m rmsw");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(),
                                                                  x.size() * 4).wait()),
               "c rmsx");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_w, w.data(),
                                                                  w.size() * 4).wait()),
               "c rmsw");
@@ -386,12 +344,6 @@ int main(int argc, char** argv) {
         // and it is a fixture bug rather than a kernel bug: the oracle reads the ORIGINAL `x`, so the two
         // sides were never looking at the same input.
         const std::vector<float> want_null = ref(false, false);
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(),
                                                                  x.size() * 4).wait()),
               "c rmsx2");
@@ -463,34 +415,13 @@ int main(int argc, char** argv) {
                               out = sycl::malloc_device<float>(
                                   ((size_t)n + 2), dpct::get_in_order_queue())),
                           "embedding output");
-                    /*
-                    DPCT1124: cudaMemcpyAsync is migrated to asynchronous
-                    memcpy API. While the origin API might be synchronous, it
-                    depends on the type of operand memory, so you may need to
-                    call wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
                     check(DPCT_CHECK_ERROR(
                               stream->memcpy(dc, codes.data(), codes.size())),
                           "embedding codes upload");
-                    /*
-                    DPCT1124: cudaMemcpyAsync is migrated to asynchronous
-                    memcpy API. While the origin API might be synchronous, it
-                    depends on the type of operand memory, so you may need to
-                    call wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
                     check(
                         DPCT_CHECK_ERROR(stream->memcpy(
                             ds, scales.data(), scales.size() * sizeof(float))),
                         "embedding scales upload");
-                    /*
-                    DPCT1124: cudaMemcpyAsync is migrated to asynchronous
-                    memcpy API. While the origin API might be synchronous, it
-                    depends on the type of operand memory, so you may need to
-                    call wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
                     check(DPCT_CHECK_ERROR(
                               stream->memcpy(dof, offsets.data(),
                                              offsets.size() * sizeof(float))),
@@ -510,14 +441,6 @@ int main(int argc, char** argv) {
                                 const float fused = std::fma(code, scales[gi], offset);
                                 if (std::memcmp(&fused, &want[(size_t) i], sizeof(float)) != 0) ++fma_diff;
                             }
-                            /*
-                            DPCT1124: cudaMemcpyAsync is migrated to
-                            asynchronous memcpy API. While the origin API might
-                            be synchronous, it depends on the type of operand
-                            memory, so you may need to call wait() on event
-                            return by memcpy API to ensure synchronization
-                            behavior.
-                            */
                             check(DPCT_CHECK_ERROR(stream->memcpy(
                                       out, got.data(),
                                       got.size() * sizeof(float))),
@@ -526,14 +449,6 @@ int main(int argc, char** argv) {
                                 ds + (size_t) row * row_groups,
                                 with_offset ? dof + (size_t) row * row_groups : nullptr,
                                 n, bits, bias, group, out + 1, stream);
-                            /*
-                            DPCT1124: cudaMemcpyAsync is migrated to
-                            asynchronous memcpy API. While the origin API might
-                            be synchronous, it depends on the type of operand
-                            memory, so you may need to call wait() on event
-                            return by memcpy API to ensure synchronization
-                            behavior.
-                            */
                             check(DPCT_CHECK_ERROR(stream->memcpy(
                                       got.data(), out,
                                       got.size() * sizeof(float))),
@@ -576,14 +491,6 @@ int main(int argc, char** argv) {
                                 check(DPCT_CHECK_ERROR(
                                           stream->ext_oneapi_graph(*exec)),
                                       "embedding replay");
-                                /*
-                                DPCT1124: cudaMemcpyAsync is migrated to
-                                asynchronous memcpy API. While the origin API
-                                might be synchronous, it depends on the type of
-                                operand memory, so you may need to call wait()
-                                on event return by memcpy API to ensure
-                                synchronization behavior.
-                                */
                                 check(DPCT_CHECK_ERROR(stream->memcpy(
                                           got.data(), out,
                                           got.size() * sizeof(float))),
@@ -640,12 +547,6 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(dy = (uint16_t *)sycl::malloc_device(
                                    n * 2, dpct::get_in_order_queue())),
               "bf16 y");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR(
                   (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dx, bits.data(), n * 4).wait()),
               "bf16 cx");
@@ -675,12 +576,6 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(dq = (uint16_t *)sycl::malloc_device(
                                    64 * 2, dpct::get_in_order_queue())),
               "q8 out");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(db, blk.data(),
                                                                  blk.size()).wait()),
               "q8 cblk");

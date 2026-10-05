@@ -49,11 +49,6 @@ RopeTab rope_table_for(const RopeScaling& scaling);
 /// ggml rope_multi, is_imrope, sections {11, 11, 10, 0}: sector = pair % 32; sector % 3 == 1 -> h (sector < 33),
 /// == 2 -> w (sector < 30), == 0 -> t (sector < 33).  For pairs 0..31 all three bounds hold, so it is pair % 3.
 __dpct_inline__ int mrope_pos(const int32_t *tab, int pos, int pair) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     return tab ? *(tab + (size_t)pos * 3 + pair % 3) : pos;
 }
 /// cos and sin of rotary position p, pair `pair` (0..31) from the table (scaling and magnitude included); false
@@ -61,17 +56,7 @@ __dpct_inline__ int mrope_pos(const int32_t *tab, int pos, int pair) {
 __dpct_inline__ bool rope_tab_cs(const RopeTab &t, int p, int pair, float &c,
                                  float &s) {
     if (t.cos == nullptr || p < 0 || p >= t.max_pos) return false;
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     c = *(t.cos + (size_t)p * 32 + pair);
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     s = *(t.sin + (size_t)p * 32 + pair);
     return true;
 }

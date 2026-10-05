@@ -122,39 +122,15 @@ int ragged_rows(const Case& cs, long long n_out) {
               d_y = (float *)sycl::malloc_device((size_t)(n_out + guard) * 4,
                                                  dpct::get_in_order_queue())),
           "ry");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_xf, xf.data(),
                                                              (size_t)n_in * 4).wait()),
           "rcxf");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_codes, codes.data(), codes.size()).wait()),
           "rcc");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_scales, scales.data(), scales.size() * 4).wait()),
           "rcs");
-    /*
-    DPCT1114: cudaMemcpy is migrated to asynchronization memcpy, assuming in
-    the original code the source host memory is pageable memory. If the memory
-    is not pageable, call wait() on event return by memcpy API to ensure
-    synchronization behavior.
-    */
     check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
               d_offs, offs.data(), offs.size() * 4).wait()),
           "rco");
@@ -194,12 +170,6 @@ int ragged_rows(const Case& cs, long long n_out) {
         }
         // the guard band holds a NaN pattern; any write there shows up as a changed bit
         std::vector<uint32_t> sentinel((size_t) (n_out + guard), 0x7FC0DEADu);
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                   d_y, sentinel.data(), sentinel.size() * 4).wait()),
               "rsent");
@@ -296,12 +266,6 @@ int main(int argc, char** argv) {
         check(DPCT_CHECK_ERROR(d_xq = (uint8_t *)sycl::malloc_device(
                                    xq8k.size(), dpct::get_in_order_queue())),
               "xq");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                   d_xf, xf.data(), (size_t)n_in * 4).wait()),
               "cxf");
@@ -338,30 +302,12 @@ int main(int argc, char** argv) {
                   d_y = (float *)sycl::malloc_device(
                       (size_t)n_out * 4, dpct::get_in_order_queue())),
               "y");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                   d_codes, codes.data(), codes.size()).wait()),
               "cc");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                   d_scales, scales.data(), scales.size() * 4).wait()),
               "cs");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                   d_offs, offs.data(), offs.size() * 4).wait()),
               "co");
@@ -453,12 +399,6 @@ int main(int argc, char** argv) {
                       d_x16 = (uint16_t *)sycl::malloc_device(
                           (size_t)n_in * 2, dpct::get_in_order_queue())),
                   "x16");
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                       d_x16, x16.data(), (size_t)n_in * 2).wait()),
                   "cx16");

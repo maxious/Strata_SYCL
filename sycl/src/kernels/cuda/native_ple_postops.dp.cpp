@@ -21,6 +21,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_ple_postops.hpp"
 #include "strata/kernels/native_gr_norm.hpp"
@@ -36,16 +37,9 @@ namespace strata::kernels {
 namespace {
 constexpr int N = 2560, H = 4, D = N * H, HISTORY = 9;
 inline float warp_sum(float x) {
-    /*
-DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature masked
-sub_group function which may not be supported by all compilers or runtimes. You
-may need to adjust the code.
-*/
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1) x +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), x,
-            offset);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), x, offset);
     return x;
 }
 __dpct_inline__ void gate_kernel(const float *key, const float *query,
@@ -57,12 +51,6 @@ __dpct_inline__ void gate_kernel(const float *key, const float *query,
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
         const int d = item_ct1.get_local_id(2) + j * 512;
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         const float p = d < N ? key[item_ct1.get_group(2) * N + d] *
                                     query[item_ct1.get_group(2) * N + d]
                               : 0.0f;
@@ -81,21 +69,9 @@ __dpct_inline__ void gate_kernel(const float *key, const float *query,
     sum = lane < 16 ? partials[lane] : 0.0f;
     sum = warp_sum(sum);
     if (item_ct1.get_local_id(2) == 0) {
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         const float s = sycl::fma(scale, sum, 0.0f); // ggml SCALE's zero bias
         const float mag = sycl::sqrt(sycl::fmax(sycl::fabs(s), 1e-6f));
         const float sign = float((s > 0.0f) - (s < 0.0f));
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         gate[item_ct1.get_group(2)] =
             1.0f / (1.0f + sycl::native::exp(-sign * mag));
     }
@@ -105,12 +81,6 @@ __dpct_inline__ void broadcast_kernel(const float *value, const float *gate,
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const int i = item_ct1.get_group(2) * item_ct1.get_local_range(2) +
                   item_ct1.get_local_id(2);
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     if (i < D) gated[i] = value[i % N] * gate[i / N];
 }
 __dpct_inline__ void
@@ -129,45 +99,20 @@ conv_residual_kernel(const float *history, const float *normalized,
             sycl::vec<sycl::half, 1>(
                 sycl::bit_cast<sycl::half, unsigned short>(weights[c * 4 + k]))
                 .convert<float, sycl::rounding_mode::automatic>()[0];
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         const float term = x * w;
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         sum = k == 0 ? term : sum + term;
     }
     const float activation = sum / (1.0f + sycl::native::exp(-sum));
     conv[c] = activation;
     // Exact hidden/result alias is safe: each thread owns one element.
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     result[c] = hidden[c] + gated[c] + activation;
 }
 // ---- the batch: T tokens, the same arithmetic per element as the kernels above
 // weighted_rms_norm (native_gr_norm.cu) with the gamma row repeating every H rows (one token's H groups)
 inline float norm_warp_sum(float value) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int offset = 16; offset > 0; offset >>= 1) value +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            value, offset);
+        strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), value, offset);
     return value;
 }
 __dpct_inline__ void rms_rep_kernel(const float *__restrict__ input,
@@ -211,12 +156,6 @@ __dpct_inline__ void broadcast_batch_kernel(const float *value,
         item_ct1.get_local_id(2);
     if (i >= size_t(T) * D) return;
     const size_t t = i / D, d = i % D;
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     gated[i] = value[t * N + d % N] * gate[t * H + d / N];
 }
 // the dilated conv (taps 9, 6, 3 tokens back and this one) and the residual; a tap before the chunk reads the history
@@ -240,28 +179,10 @@ __dpct_inline__ void conv_residual_batch_kernel(const float *history,
             sycl::vec<sycl::half, 1>(
                 sycl::bit_cast<sycl::half, unsigned short>(weights[c * 4 + k]))
                 .convert<float, sycl::rounding_mode::automatic>()[0];
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         const float term = x * wk;
-        /*
-        DPCT1013: The rounding mode could not be specified and the generated
-        code may have different accuracy than the original code. Verify the
-        correctness. SYCL math built-in function rounding mode is aligned with
-        OpenCL C 1.2 standard.
-        */
         sum = k == 0 ? term : sum + term;
     }
     const float activation = sum / (1.0f + sycl::native::exp(-sum));
-    /*
-    DPCT1013: The rounding mode could not be specified and the generated
-    code may have different accuracy than the original code. Verify the
-    correctness. SYCL math built-in function rounding mode is aligned with
-    OpenCL C 1.2 standard.
-    */
     hidden[i] = hidden[i] + gated[i] + activation;
 }
 // the history after the chunk: the last nine normalized rows (older ones from the history when T < 9)
@@ -292,27 +213,10 @@ void validate(Span span) {
         throw std::invalid_argument("native PLE postops require nonnull aligned bounded spans");
 }
 void launch_check() {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error !=
         0) throw std::runtime_error(std::string("native PLE postops launch: ") +
-                                    dpct::get_error_string_dummy(error));
+                                    dpct::error_string(error));
 }
 } // namespace
 

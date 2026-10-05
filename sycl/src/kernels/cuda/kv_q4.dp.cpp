@@ -3,6 +3,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/f16_bits.hpp"
@@ -15,11 +16,6 @@ namespace strata::kernels {
 namespace {
 
 void check(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 
@@ -53,13 +49,8 @@ __dpct_inline__ void fwht256_kernel(const float *__restrict__ src,
 #pragma unroll
         for (int j = 0; j < el_w; ++j) {
             const float val = reg[j];
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const float val2 = dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const float val2 = strata::sub_group_permute_xor(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 val, h);
             reg[j] = (lane & h) == 0 ? val + val2 : val2 - val;
         }
@@ -91,21 +82,11 @@ __dpct_inline__ uint16_t q4_group(float x, int lane, uint8_t &byte) {
     float amax = sycl::fabs(x), mval = x;
 #pragma unroll
     for (int o = 16; o > 0; o >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        const float a = dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        const float a = strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             amax, o);
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        const float v = dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        const float v = strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             mval, o);
         if (a > amax || (a == amax && v > mval)) { amax = a; mval = v; }
     }
@@ -114,13 +95,8 @@ __dpct_inline__ uint16_t q4_group(float x, int lane, uint8_t &byte) {
     int q = sycl::vec<float, 1>{(x * id + 8.5f)}
                 .convert<int, sycl::rounding_mode::rtz>()[0];
     const uint8_t qc = (uint8_t) (q < 0 ? 0 : (q > 15 ? 15 : q));
-    /*
-    DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
-    const uint8_t qhi = dpct::experimental::shift_sub_group_left(
-        0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(), qc,
+    const uint8_t qhi = strata::sub_group_shift_left(
+        sycl::ext::oneapi::this_work_item::get_sub_group(), qc,
         16);
     byte = (uint8_t) (qc | (qhi << 4));
     (void) lane;
@@ -141,11 +117,6 @@ __dpct_inline__ void kv_append_q4_kernel(
     const int32_t *__restrict__ table, const int32_t *__restrict__ step,
     const float *__restrict__ kcur, const float *__restrict__ vcur,
     int kv_heads, int head_dim, int page_size, KvHostPools host) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long pos = (long long)*(step + kStepPos);
     const int h = item_ct1.get_group(2), b = item_ct1.get_group(1),
@@ -190,11 +161,6 @@ __dpct_inline__ void kv_gather_q4_kernel(
     const int32_t *__restrict__ table, const int32_t *__restrict__ ids,
     const int32_t *__restrict__ step, int kv_heads, int head_dim, int page_size,
     uint16_t *__restrict__ k_scratch, uint16_t *__restrict__ v_scratch) {
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const long long n_ids = (long long)*(step + kStepWidth);
     const int blocks_per_head = head_dim / QK4_0;                        // 8

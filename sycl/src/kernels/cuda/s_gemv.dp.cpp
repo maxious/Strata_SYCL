@@ -7,6 +7,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/s_gemv.hpp"
 
@@ -61,11 +62,6 @@ constexpr int Q8K_BLOCK_ELEMS = 256;
 
 __dpct_inline__ float q8k_at(const uint8_t *__restrict__ x, long long i) {
     const uint8_t* blk = x + (i / Q8K_BLOCK_ELEMS) * Q8K_BLOCK_BYTES;
-    /*
-    DPCT1098: The '*' expression is used instead of the __ldg call. These
-    two expressions do not provide the exact same functionality. Check the
-    generated code for potential precision and/or performance issues.
-    */
     const float d = *(const float*) blk;
     const int8_t q = ((const int8_t*) (blk + 4))[i % Q8K_BLOCK_ELEMS];
     return d * (float) q;
@@ -159,12 +155,6 @@ auto &s_iq4nl =
 /// different loader would be a second thing to get wrong, and the only difference IS the loader - the weight
 /// decode, the quad loop, the shared codebook and the reduction are identical.
 template <int CODE_BITS, bool Q8K>
-/*
-DPCT1110: The total declared local variable size in device function
-s_gemv_q8_split_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void s_gemv_q8_split_kernel(
     const uint8_t *__restrict__ x, const uint8_t *__restrict__ codes,
     const float *__restrict__ scales, const float *__restrict__ offset,
@@ -277,11 +267,6 @@ __dpct_inline__ void s_gemv_q8_split_kernel(
         const int blk_elems = Q8K ? Q8K_BLOCK_ELEMS : Q8_0_BLOCK_ELEMS;
         const uint8_t* xb = x + (i / blk_elems) * (Q8K ? Q8K_BLOCK_BYTES : Q8_0_BLOCK_BYTES);
         const int xi = (int) (i % blk_elems);
-        /*
-        DPCT1098: The '*' expression is used instead of the __ldg call.
-        These two expressions do not provide the exact same functionality. Check
-        the generated code for potential precision and/or performance issues.
-        */
         const float xd =
             Q8K ? *(const float*) xb
                 : sycl::vec<sycl::half, 1>(
@@ -334,15 +319,10 @@ __dpct_inline__ void s_gemv_q8_split_kernel(
     }
     float acc = (((acc0 + acc1) + (acc2 + acc3)) + ((acc4 + acc5) + (acc6 + acc7))) +
                 (((acc8 + acc9) + (acc10 + acc11)) + ((acc12 + acc13) + (acc14 + acc15)));
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
 #pragma unroll
     for (int step = 16; step > 0; step >>= 1) acc +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_shift_left(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             acc, step);
     if (lane == 0) y[o] = acc;
 }
@@ -493,12 +473,6 @@ namespace {
 // divisor is passed as its logarithm and the division becomes a shift.  The host wrapper refuses a
 // non-power-of-two group rather than silently computing a wrong index.
 template <int CODE_BITS>
-/*
-DPCT1110: The total declared local variable size in device function
-s_gemv_split_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void s_gemv_split_kernel(
     const uint16_t *__restrict__ x, const uint8_t *__restrict__ codes,
     const float *__restrict__ scales, const float *__restrict__ offset,
@@ -599,10 +573,6 @@ __dpct_inline__ void s_gemv_split_kernel(
 #pragma unroll
     for (int step = threads_per_row / 2; step > 0; step >>= 1) {
         if (tid < step) partial[tid] += partial[tid + step];
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     if (tid == 0) y[o] = partial[0];
@@ -795,11 +765,6 @@ bool q8k_form_ok(const SForm& form, int64_t n_in, const char* who) {
 }
 
 void finish(const char *who, void *stream) try {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream != nullptr) return;

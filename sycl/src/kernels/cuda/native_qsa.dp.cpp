@@ -25,6 +25,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_qsa.hpp"
 #include <atomic>
@@ -41,14 +42,7 @@ std::atomic<bool> enabled{false};
 __dpct_inline__ float warp_sum(float value) {
 #pragma unroll
     for (int offset = 16; offset; offset >>= 1)
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        value += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            value, offset);
+        value += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), value, offset);
     return value;
 }
 template <int BlockSize>
@@ -113,27 +107,10 @@ void buffers(const float* input, std::size_t in_bytes, const float* weight, std:
         throw std::invalid_argument("native QSA requires a stream, aligned spans, and disjoint buffers or exact input/output alias");
 }
 void check_launch() {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto result = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (result != 0)
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("native QSA launch: ") +
-                                 dpct::get_error_string_dummy(result));
+                                 dpct::error_string(result));
 }
 } // namespace
 

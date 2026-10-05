@@ -363,13 +363,16 @@ bool dispatch(const float* q, const QsaAttnPools& pools, const int32_t* ids, con
 
 bool qsa_prompt_attn_xmx(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                          const QsaShapes& s, float* attn, int64_t n_q, void* stream) {
-    // STRATA_PROMPT_ATTN_XMX=1 (64-cell chunks) or =32 (32-cell chunks); unset or 0: the caller's fallback
+    // STRATA_PROMPT_ATTN_XMX=1 (64-cell chunks) or =32 (32-cell chunks); unset or 0: the caller's fallback.
+    // The kernel additionally needs XMX units on the device, so it only runs when the runtime advertises them
+    // (llama.cpp's gpu_has_xmx / ext_intel_matrix). A probe, not the env switch, is the capability gate.
     static const int mode = [] { const char* v = std::getenv("STRATA_PROMPT_ATTN_XMX"); return v ? std::atoi(v) : 0; }();
     if (mode == 0 || n_q <= 0) return false;
     if (pools.k_q4 != nullptr || s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps ||
         !pools.page_table)
         return false;
     dpct::queue_ptr st = strata::q_of(stream);
+    if (!strata::gpu_has_xmx(st)) return false;   // no matrix units: the joint_matrix kernel cannot run
     const size_t have = st->get_device().get_info<sycl::info::device::local_mem_size>();
     const bool ch64 = mode != 32 && have >= Layout<64>::bytes;
     static bool told = false;

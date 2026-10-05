@@ -23,6 +23,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_router.hpp"
 #include <atomic>
@@ -36,37 +37,21 @@ namespace {
 std::atomic<bool> enabled{false};
 __dpct_inline__ float warp_sum(float value) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int mask = 16; mask; mask >>= 1) value +=
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             value, mask);
     return value;
 }
 __dpct_inline__ float warp_max(float value) {
 #pragma unroll
-    /*
-    DPCT1108: '__shfl_xor_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
     for (int mask = 16; mask; mask >>= 1) value = sycl::fmax(
         value,
-        dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        strata::sub_group_permute_xor(
+            sycl::ext::oneapi::this_work_item::get_sub_group(),
             value, mask));
     return value;
 }
-/*
-DPCT1110: The total declared local variable size in device function route
-exceeds 128 bytes and may cause high register pressure. Consult with your
-hardware vendor to find the total register size available and adjust the code,
-or use smaller sub-group size to avoid high register pressure.
-*/
 template <int NE>   // SYCL port: 512 (canonical) or 256 (the Coder) experts, 32 lanes x NE/32 values
 __dpct_inline__ void route(const float *__restrict__ logits,
                            int32_t *__restrict__ ids,
@@ -109,21 +94,11 @@ __dpct_inline__ void route(const float *__restrict__ logits,
         }
 #pragma unroll
         for (int mask = 16; mask; mask >>= 1) {
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const float other = dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const float other = strata::sub_group_permute_xor(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 best, mask);
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const int other_id = dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+            const int other_id = strata::sub_group_permute_xor(
+                sycl::ext::oneapi::this_work_item::get_sub_group(),
                 expert, mask);
             if (other > best || (other == best && other_id < expert)) { best = other; expert = other_id; }
         }
@@ -169,26 +144,9 @@ void native_router_top10(const float* logits, int32_t* ids, float* weights, void
                         route<512>(logits, ids, weights);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+        0) throw std::runtime_error(dpct::error_string(error));
 }
 void native_router_top10_multi(const float* logits, int32_t* ids, float* weights, int n_tok, void* stream) {
     if (!stream || n_tok < 1 || !valid(logits, (size_t) n_tok * 512 * 4) || !valid(ids, (size_t) n_tok * 10 * 4) ||
@@ -209,26 +167,9 @@ void native_router_top10_multi(const float* logits, int32_t* ids, float* weights
                         route<512>(logits, ids, weights);
                     });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+        0) throw std::runtime_error(dpct::error_string(error));
 }
 
 void native_router_top10_multi_ne(const float* logits, int32_t* ids, float* weights, int n_tok, int n_expert, void* stream) {

@@ -74,12 +74,6 @@ __dpct_inline__ void mma(TileC &c, const TileA &a, const TileB &b) {
           "r"(b.x[1]));
 }
 #endif
-/*
-DPCT1110: The total declared local variable size in device function
-score_kernel exceeds 128 bytes and may cause high register pressure. Consult
-with your hardware vendor to find the total register size available and adjust
-the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
                                   const float *__restrict__ query,
                                   const float *__restrict__ bias,
@@ -143,12 +137,7 @@ __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
             for(int ia=0;ia<2;++ia)mma(c[ia],a[ia][k],b);
         }
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
     for(int ia=0;ia<2;++ia){
 #pragma unroll
@@ -158,12 +147,7 @@ __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
             shared[h*COMBINE+i]=c[ia].x[l];
         }
     }
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     // In the reference: +0 then warp0 partial then warp1 partial, followed
     // by materialized ReLU, CONT(head0), ADD(head1), ADD(head2), ADD(head3).
     if(warp==0){
@@ -172,50 +156,14 @@ __dpct_inline__ void score_kernel(const float *__restrict__ pooled,
         float h[HEADS];
 #pragma unroll
         for(int j=0;j<HEADS;++j){
-            /*
-            DPCT1013: The rounding mode could not be specified and the
-            generated code may have different accuracy than the original code.
-            Verify the correctness. SYCL math built-in function rounding mode is
-            aligned with OpenCL C 1.2 standard.
-            */
             float v = 0.0f + shared[j * COMBINE + lane];
-            /*
-            DPCT1013: The rounding mode could not be specified and the
-            generated code may have different accuracy than the original code.
-            Verify the correctness. SYCL math built-in function rounding mode is
-            aligned with OpenCL C 1.2 standard.
-            */
             v = v + shared[j * COMBINE + ROWS + lane];
             h[j] = sycl::fmax(v, 0.0f);
         }
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         float sum = h[0] + h[1] + h[2] + h[3];
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         if (bias) sum = sum + bias[row];
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         sum = sum + (row == full && n % R ? 1e9f : 0.0f);
         // The live causal mask is +0. Invalid/padded cells are never exported.
-        /*
-        DPCT1013: The rounding mode could not be specified and the
-        generated code may have different accuracy than the original code.
-        Verify the correctness. SYCL math built-in function rounding mode is
-        aligned with OpenCL C 1.2 standard.
-        */
         sum = sum + 0.0f;
 #pragma unroll
         for (int i = row * R; i < n && i < (row + 1) * R; ++i) cells[i] = sum;
@@ -305,25 +253,8 @@ void native_qsa_score(const float* pooled,const float* query,const float* bias,
                     });
     }
 #endif
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error !=
-        0) throw std::runtime_error(dpct::get_error_string_dummy(error));
+        0) throw std::runtime_error(dpct::error_string(error));
 }
 } // namespace strata::kernels

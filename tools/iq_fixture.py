@@ -31,8 +31,15 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "third_party" / "llama.cpp" / "gguf-py"))
 sys.path.insert(0, str(ROOT / "tools"))
+# The vendored gguf-py: the repo path setup's llama.cpp download produces, or (on a checkout where that was not
+# run) the CMake FetchContent copy CMake pulls for the llama.cpp backend, which a build dir keeps under
+# sycl/build-*/_deps/strata_llamacpp-src/gguf-py.  First one that actually contains gguf/ wins.
+for cand in (ROOT / "third_party" / "llama.cpp" / "gguf-py",
+             *(ROOT / p for p in (ROOT / "sycl").glob("build-*/_deps/strata_llamacpp-src/gguf-py"))):
+    if cand.is_dir() and (cand / "gguf" / "__init__.py").is_file():
+        sys.path.insert(0, str(cand))
+        break
 
 try:
     import gguf
@@ -40,7 +47,8 @@ try:
     from gguf_writer import dequantize_q2_0, quantize_q2_0
 except ImportError as e:  # a missing numpy or vendored gguf-py must be explicit, not a traceback
     sys.stderr.write(f"iq_fixture: missing dependency: {e}\n"
-                     "numpy and the repository's vendored gguf-py (third_party/llama.cpp/gguf-py) are "
+                     "numpy and the repository's vendored gguf-py (third_party/llama.cpp/gguf-py, or a "
+                     "sycl/build-*/_deps/strata_llamacpp-src/gguf-py from the llama.cpp backend build) are "
                      "required.  The vendored copy comes with setup's llama.cpp download (the pinned "
                      "LLAMA_CPP_COMMIT zip); on a fresh checkout run setup once, or fetch that zip and "
                      "unpack its gguf-py there.\n")

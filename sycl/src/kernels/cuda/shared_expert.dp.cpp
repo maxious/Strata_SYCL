@@ -21,6 +21,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/shared_expert.hpp"
 #include "strata/kernels/bf16_gemv.hpp"
@@ -112,31 +113,13 @@ void to_f16_kernel(const float* __restrict__ in, uint16_t* __restrict__ out, int
 // A wrong scalar here is the quiet failure mode: sigmoid bounds the damage to [0,1], so a gate that should be
 // 0.5 and reads 1.0 scales the shared expert by 2x and produces perfectly finite, perfectly plausible logits.
 __dpct_inline__ double warp_sum_d(double v) {
-    /*
-DPCT1108: '__shfl_down_sync' was migrated with the experimental feature
-masked sub_group function which may not be supported by all compilers or
-runtimes. You may need to adjust the code.
-*/
-    /*
-DPCT1121: Make sure that the "v" which is used in the SYCL group
-function/algorithm is initialized.
-*/
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) v +=
-        dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v,
+        strata::sub_group_shift_left(
+            sycl::ext::oneapi::this_work_item::get_sub_group(), v,
             off);
-    /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
-    /*
-    DPCT1121: Make sure that the "v" which is used in the SYCL group
-    function/algorithm is initialized.
-    */
-    return dpct::experimental::select_from_sub_group(
-        0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
+    return strata::sub_group_select(
+        sycl::ext::oneapi::this_work_item::get_sub_group(), v, 0);
 }
 
 __dpct_inline__ void scalar_gate_kernel(const uint16_t *__restrict__ x_bf16,
@@ -333,26 +316,9 @@ void shared_expert_multi(int n_tok, const float* x, const uint16_t* x_bf16, cons
                 scale_rows_kernel(out, g, (int)n_embd);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (e != 0) throw std::runtime_error(std::string("shared_expert_multi: ") +
-                                         dpct::get_error_string_dummy(e));
+                                         dpct::error_string(e));
 }
 
 uint64_t shared_expert_scratch_bytes(int64_t n_ff) {

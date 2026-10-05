@@ -2,6 +2,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/core/verify.hpp"
+#include "strata/core/graph_audit.hpp"
 #if defined(_WIN32)
 #include <intrin.h>
 #endif
@@ -790,13 +791,6 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 native_mmvq(wq->native_type, wq->native_data, xq_, qfull_ + tb * NH * 2 * HD, (int) N, (int) (NH * 2 * HD),
                             n, cs);
                 if (qb) {
-                    /*
-                    DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous
-                    memcpy API. While the origin API might be synchronous, it
-                    depends on the type of operand memory, so you may need to
-                    call wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
                     if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                             qcur_ + tb * NH * HD, (size_t)HD * 4,
                             qfull_ + tb * NH * 2 * HD, (size_t)HD * 2 * 4,
@@ -813,13 +807,6 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 } else {
                 for (int t = tb; t < te; ++t) {
                     float* qc = qcur_ + t * NH * HD;
-                    /*
-                    DPCT1124: cudaMemcpy2DAsync is migrated to asynchronous
-                    memcpy API. While the origin API might be synchronous, it
-                    depends on the type of operand memory, so you may need to
-                    call wait() on event return by memcpy API to ensure
-                    synchronization behavior.
-                    */
                     if (DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                             qc, (size_t)HD * 4, qfull_ + t * NH * 2 * HD,
                             (size_t)HD * 2 * 4, (size_t)HD * 4, (size_t)NH,
@@ -1102,8 +1089,12 @@ std::string Verifier::profile_report() {
 bool Verifier::capture(int T, std::string &err) try {
     if (exec_[T] != nullptr) return true;
     if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;   // SYCL port: no graph, run() replays the body
+    char key[32];
+    std::snprintf(key, sizeof key, "verify.window%d", T);
+    audit::graph_capture_begin(key, cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
         err = "verify: begin capture failed";
+        audit::graph_capture_abandon(cs_);
         return false;
     }
     std::string rerr;
@@ -1111,30 +1102,21 @@ bool Verifier::capture(int T, std::string &err) try {
     dpct::experimental::command_graph_ptr graph = nullptr;
     const dpct::err0 ce =
         DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
+    audit::graph_capture_end(key, cs_, graph, (long) ce, "Verifier::capture");
     if (!ok) {
         if (graph) delete (graph);
         err = rerr;
         return false;
     }
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be rewritten.
-    */
     if (ce != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use error
-        codes. Please replace the "get_error_string_dummy(...)" with a real
-        error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("verify: end capture: ") +
-              dpct::get_error_string_dummy(ce);
+              dpct::error_string(ce);
         return false;
     }
+    size_t nn = 0;
+    dpct::experimental::get_nodes(graph, nullptr, &nn);
+    audit::graph_capture_nodes(key, nn);
     if (std::getenv("STRATA_VERIFY_NODES") != nullptr) {   // what the window graph holds
-        size_t nn = 0;
-        dpct::experimental::get_nodes(graph, nullptr, &nn);
         std::vector<dpct::experimental::node_ptr> nodes(nn);
         dpct::experimental::get_nodes(graph, nodes.data(), &nn);
         std::map<std::string, int> kinds;
@@ -1162,20 +1144,9 @@ bool Verifier::capture(int T, std::string &err) try {
             sycl::ext::oneapi::experimental::graph_state::executable>(
             graph->finalize()));
     delete (graph);
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be rewritten.
-    */
     if (ie != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use error
-        codes. Please replace the "get_error_string_dummy(...)" with a real
-        error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         err = std::string("verify: instantiate: ") +
-              dpct::get_error_string_dummy(ie);
+              dpct::error_string(ie);
         return false;
     }
     /*
@@ -1186,12 +1157,7 @@ bool Verifier::capture(int T, std::string &err) try {
     std::fprintf(
         stderr,
         "strata verify: captured the %d-token window (upload %s, sync %s)\n", T,
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use error
-        codes. Please replace the "get_error_string_dummy(...)" with a real
-        error-handling function.
-        */
-        dpct::get_error_string_dummy(ue), dpct::get_error_string_dummy(us));
+        dpct::error_string(ue), dpct::error_string(us));
     return true;
 }
 catch (sycl::exception const &exc) {
@@ -1211,8 +1177,10 @@ bool Verifier::capture_commit(std::string &err) try {
                                 (uint64_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
     const int64_t TS = (s.idx_block - 1) * ID;
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
+    audit::graph_capture_begin("verify.commit", cs_);
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
         err = "verify: begin commit capture failed";
+        audit::graph_capture_abandon(cs_);
         return false;
     }
     bool ok = true;
@@ -1254,6 +1222,7 @@ bool Verifier::capture_commit(std::string &err) try {
     dpct::experimental::command_graph_ptr graph = nullptr;
     const dpct::err0 ce =
         DPCT_CHECK_ERROR(dpct::experimental::end_recording(cs_, &graph));
+    audit::graph_capture_end("verify.commit", cs_, graph, (long) ce, "Verifier::capture_commit");
     if (!ok) {
         if (graph) delete (graph);
         return false;
@@ -1264,14 +1233,14 @@ bool Verifier::capture_commit(std::string &err) try {
                 sycl::ext::oneapi::experimental::graph_state::executable>(
                 graph->finalize())) != 0) {
         if (graph) delete (graph);
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use error
-        codes. Please replace the "get_error_string_dummy(...)" with a real
-        error-handling function.
-        */
         err = std::string("verify: commit capture: ") +
-              dpct::get_error_string_dummy(ce);
+              dpct::error_string(ce);
         return false;
+    }
+    {
+        size_t nn = 0;
+        dpct::experimental::get_nodes(graph, nullptr, &nn);
+        audit::graph_capture_nodes("verify.commit", nn);
     }
     delete (graph);
     return true;
@@ -1331,21 +1300,9 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     const dpct::err0 le = (std::getenv("STRATA_VERIFY_EAGER") != nullptr)
                               ? (record_window(T, cs_, err) ? 0 : 1)   // SYCL port: eager replay of the window body
                               : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*exec_[T]));
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be rewritten.
-    */
-    trace_ev("LAUNCHED", -1, -1, (int64_t) le);
     if (le != 0) {
         err =
-            std::string("verify: launch: ") + dpct::get_error_string_dummy(le);
+            std::string("verify: launch: ") + dpct::error_string(le);
         return false;
     }
     (void)DPCT_CHECK_ERROR(((cs_)->ext_oneapi_empty()));
@@ -1376,23 +1333,25 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
             const auto now = Clock::now();
             if (now - last_flush > std::chrono::microseconds(2000)) {
                 last_flush = now;
-                const dpct::err0 q =
-                    DPCT_CHECK_ERROR(((cs_)->ext_oneapi_empty()));
-                if (q != 1 && *seq < want) {
-                    trace_ev("NEVER-RANG", k, l, (int64_t) q);
-                    trace_dump(stderr);
+                // **`DPCT_CHECK_ERROR` DISCARDS THE VALUE OF ITS EXPRESSION.**  It evaluates `expr` as a
+                // statement and returns `dpct::success` unless the call throws, so the old
+                // `const dpct::err0 q = DPCT_CHECK_ERROR(cs_->ext_oneapi_empty())` was ALWAYS `success`:
+                // `q != 1` was always true and the emptiness test never ran.  The host then abandoned a
+                // layer after 2 ms of no progress and reported it as "graph finished", which is why a
+                // window died a dozen layers into a 40 ms graph (exp 18).  The emptiness has to be its own
+                // statement.
+                bool idle = false;
+                try {
+                    idle = cs_->ext_oneapi_empty();
+                } catch (const std::exception &e) {
+                    err = "verify: layer " + std::to_string(l) + " never rang (" + e.what() + ")";
+                    return false;
+                }
+                if (idle && *seq < want) {
                     err = "verify: layer " + std::to_string(l) +
-                          " never rang (" +
-                          /*
-                          DPCT1009: SYCL reports errors using exceptions and
-                          does not use error codes. Please replace the
-                          "get_error_string_dummy(...)" with a real
-                          error-handling function.
-                          */
-                          (q == 0
-                               ? std::string("graph finished")
-                               : std::string(dpct::get_error_string_dummy(q))) +
-                          ")";
+                          " never rang (the graph finished, host seq=" +
+                          std::to_string((unsigned) *seq) + " want=" +
+                          std::to_string((unsigned) want) + ")";
                     return false;
                 }
             }
@@ -1455,19 +1414,8 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
                      std::chrono::duration<double, std::milli>(t_done - t_launch).count());
         t_prev_end = t_done;
     }
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be rewritten.
-    */
     if (se != 0) {
-        err = std::string("verify: ") + dpct::get_error_string_dummy(se);
+        err = std::string("verify: ") + dpct::error_string(se);
         return false;
     }
     if (no_host && std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: what the window left behind
@@ -1475,14 +1423,16 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         std::vector<uint32_t> sk((size_t) Gd, 0);
         std::vector<int32_t> id0((size_t) ss.k, 0);
         std::vector<int32_t> res0((size_t) 16, 0);
-        cs_->memcpy(sk.data(), skip_, sk.size() * 4).wait();
-        cs_->memcpy(id0.data(), ids_, id0.size() * 4).wait();
-        cs_->memcpy(res0.data(), hits_.d_res, res0.size() * 4).wait();
+        // Each of these is absent on some configuration (a native pack has no `hits_.d_res`): a diagnostic
+        // that crashes before it prints is worse than no diagnostic, and it cost an afternoon here.
+        if (skip_) cs_->memcpy(sk.data(), skip_, sk.size() * 4).wait();
+        if (ids_) cs_->memcpy(id0.data(), ids_, id0.size() * 4).wait();
+        if (hits_.d_res) cs_->memcpy(res0.data(), hits_.d_res, res0.size() * 4).wait();
         std::fprintf(stderr, "verify dbg: window T=%d: host seq=%u (expected %lld), skip[]=", T, *(volatile uint32_t*) h_seq_,
                      (long long) ((le_ - lb_) * Gd));
         for (int i = 0; i < Gd; ++i) std::fprintf(stderr, " %u", sk[(size_t) i]);
         std::vector<float> w0((size_t) ss.k, 0.f);
-        cs_->memcpy(w0.data(), w_, w0.size() * 4).wait();
+        if (w_) cs_->memcpy(w0.data(), w_, w0.size() * 4).wait();
         std::fprintf(stderr, "; layer-0 weights:");
         for (size_t i = 0; i < w0.size(); ++i) std::fprintf(stderr, " %.3g", w0[i]);
         std::fprintf(stderr, "; layer-0 ids:");
@@ -1660,12 +1610,6 @@ void Verifier::fetch_dma(void* ctx, const uint8_t* const* src, int n, size_t byt
     const uint32_t want = v->cur_layer_ + 1;
     if (n <= 0) { raise_flag(v->h_flagB_, want); return; }
     uint8_t* stage = (uint8_t*) v->sink_.staging;                  // this group's half in a split window
-    /*
-    DPCT1124: cudaMemcpyAsync is migrated to asynchronous memcpy API. While
-    the origin API might be synchronous, it depends on the type of operand
-    memory, so you may need to call wait() on event return by memcpy API to
-    ensure synchronization behavior.
-    */
     for (int i = 0; i < n; ++i)
         v->copy_->memcpy(stage + (size_t)i * bytes, src[i], bytes);
     FlagSet& fs = v->flag_sets_[v->cur_layer_ % (sizeof v->flag_sets_ / sizeof v->flag_sets_[0])];
@@ -1756,20 +1700,9 @@ bool Verifier::commit(int n_keep, std::string &err, bool wait) try {
     std::atomic_thread_fence(std::memory_order_seq_cst);
     const dpct::err0 le =
         DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*commit_exec_));
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    /*
-    DPCT1001: The statement could not be removed.
-    */
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be rewritten.
-    */
     if (le != 0) {
         err = std::string("verify: commit launch: ") +
-              dpct::get_error_string_dummy(le);
+              dpct::error_string(le);
         return false;
     }
     if (!wait && next_ == nullptr) {   // left running: commit_finish() collects it (the drafter overlaps it)
@@ -1801,7 +1734,7 @@ bool Verifier::commit_finish(std::string &err) try {
     pending_commit_ = 0;
     const dpct::err0 se = DPCT_CHECK_ERROR(cs_->wait());
     if (se != 0) {
-        err = std::string("verify: commit: ") + dpct::get_error_string_dummy(se);
+        err = std::string("verify: commit: ") + dpct::error_string(se);
         return false;
     }
     if (ple_stage())   // stages that share one session must advance it once

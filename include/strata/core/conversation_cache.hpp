@@ -49,16 +49,46 @@ struct ConversationKv {
     }
 };
 
+// One layer-split stage's retained K/V, the per-stage half of ConversationKvReuse (README item 3). Declared first
+// because the reuse struct holds a vector of these.
+struct StageKvReuse {
+    std::vector<ConversationKv> kv;
+    int64_t captured_tokens = 0, unchanged_tokens = 0;
+    size_t bytes() const {
+        size_t n = kv.capacity() * sizeof(ConversationKv);
+        for (const auto& layer : kv) n += layer.bytes();
+        return n;
+    }
+};
+
 struct ConversationKvReuse {
     std::vector<ConversationKv> kv;
     // Original image extent for validation, and the earliest subsequent rewrite.
     int64_t captured_tokens = 0, unchanged_tokens = 0;
-    // With a layer split: the later stages' own retained K/V, one per stage, same extents (empty: none)
-    std::vector<ConversationKvReuse> stages;
+    // A layer split's later stages' retained K/V, parallel to SavedConversation::stages. Without this every later
+    // stage is re-copied in full on every park, which costs every conversation *rewrite* - regenerate, branch,
+    // compaction - and not just a switch.  One entry per stage, same extents (empty: none).  Declared last so the
+    // aggregate form stays {kv, captured, unchanged, stages}.
+    std::vector<StageKvReuse> stages;
     size_t bytes() const {
-        size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(ConversationKvReuse);
+        size_t n = kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(StageKvReuse);
         for (const auto& layer : kv) n += layer.bytes();
         for (const auto& s : stages) n += s.bytes();
+        return n;
+    }
+};
+
+// One layer-split stage's parked state: its own layer range, its own running state and its own K/V. Under a split
+// every layer's state lives on exactly one card, so a restore that filled only the primary would leave the later
+// stages reading another conversation's K/V - that is why the single-image form below was refused under a split.
+// The DRAFT layer belongs to the LAST stage (the drafter is bound there), so only that stage's image carries it.
+struct SavedStage {
+    int64_t layer_lo = 0, layer_hi = 0;
+    ConversationCheckpoint live;      // this carve's gdn/ple/tails/dead/block_pos, with the conversation's ids
+    std::vector<ConversationKv> kv;   // this stage's own layers, plus the draft layer on the stage that owns it
+    size_t bytes() const {
+        size_t n = live.bytes() + kv.capacity() * sizeof(ConversationKv);
+        for (const auto& k : kv) n += k.bytes();
         return n;
     }
 };
@@ -127,16 +157,20 @@ struct SavedConversation {
     ConversationCheckpoint live;
     std::vector<ConversationCheckpoint> checkpoints;
     std::vector<ConversationKv> kv; // main layers followed by the draft layer
+    // A layer split's LATER stages, in stage order (the fields above hold the primary's). Empty on a single card,
+    // which keeps that path byte for byte as it was.
+    std::vector<SavedStage> stages;
     bool cvec = true;
     // with a layer split, the later stages' own images, one per stage, in stage order
     std::vector<SavedConversation> stage_images;
 
     size_t bytes() const {
         size_t n = live.bytes() + checkpoints.capacity() * sizeof(ConversationCheckpoint) +
-                   kv.capacity() * sizeof(ConversationKv);
-        for (const auto& s : stage_images) n += s.bytes();
+                   kv.capacity() * sizeof(ConversationKv) + stages.capacity() * sizeof(SavedStage);
         for (const auto& c : checkpoints) n += c.bytes();
         for (const auto& k : kv) n += k.bytes();
+        for (const auto& s : stages) n += s.bytes();
+        for (const auto& s : stage_images) n += s.bytes();
         return n;
     }
 };
@@ -177,11 +211,26 @@ public:
                 std::vector<std::vector<ConversationKv>>&& stage_kv = {}) {
         reuse_ = {};
         ConversationKvReuse candidate{std::move(kv), tokens, tokens, {}};
-        for (auto& k : stage_kv) candidate.stages.push_back(ConversationKvReuse{std::move(k), tokens, tokens, {}});
+        for (auto& k : stage_kv) candidate.stages.push_back(StageKvReuse{std::move(k), 0, 0});
+        for (auto& s : candidate.stages) { s.captured_tokens = tokens; s.unchanged_tokens = tokens; }
+        if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
+    }
+    void retain(std::vector<ConversationKv>&& kv, int64_t tokens) { retain(std::move(kv), {}, tokens); }
+    // A split's park hands back every stage's K/V, so the next park can keep the unchanged prefix on each card
+    // instead of re-copying stages 1..N in full (README item 3).
+    void retain(std::vector<ConversationKv>&& kv, std::vector<StageKvReuse>&& stages, int64_t tokens) {
+        reuse_ = {};
+        ConversationKvReuse candidate;
+        candidate.kv = std::move(kv);
+        candidate.stages = std::move(stages);
+        candidate.captured_tokens = tokens;
+        candidate.unchanged_tokens = tokens;
+        for (auto& st : candidate.stages) { st.captured_tokens = tokens; st.unchanged_tokens = tokens; }
         if (enabled() && candidate.bytes() <= budget_ - bytes_) reuse_ = std::move(candidate);
     }
     void limit_reuse(int64_t first_dirty) {
         reuse_.unchanged_tokens = std::min(reuse_.unchanged_tokens, first_dirty);
+        // Every stage's retained prefix is bounded by the same first rewrite as the primary's.
         for (auto& s : reuse_.stages) s.unchanged_tokens = std::min(s.unchanged_tokens, first_dirty);
         if (reuse_.unchanged_tokens <= 0) reuse_ = {};
     }

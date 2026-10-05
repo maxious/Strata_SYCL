@@ -102,21 +102,9 @@ int main(int argc, char** argv) {
                   d_y = (float *)sycl::malloc_device(
                       (size_t)s.n_out * 4, dpct::get_in_order_queue())),
               "y");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_x, x.data(),
                                                                  x.size() * 2).wait()),
               "cx");
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d_w, w.data(),
                                                                  w.size() * 2).wait()),
               "cw");
@@ -157,12 +145,6 @@ int main(int argc, char** argv) {
             // Round the fp16 value to bf16 - i.e. give the kernel a bf16 activation whose VALUES came through
             // fp16.  That is the whole difference between the two contracts at this call site.
             for (size_t i = 0; i < fp16_as_f32.size(); ++i) x[i] = bf16_from_f32(fp16_as_f32[i]);
-            /*
-            DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-            assuming in the original code the source host memory is pageable
-            memory. If the memory is not pageable, call wait() on event return
-            by memcpy API to ensure synchronization behavior.
-            */
             check(DPCT_CHECK_ERROR((dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(
                       d_x, x.data(), x.size() * 2).wait()),
                   "cx2");

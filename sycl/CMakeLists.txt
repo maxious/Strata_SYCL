@@ -164,11 +164,50 @@ target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_ker
 
 # cuBLAS -> oneMKL through dpct::blas (needs the MKL SYCL BLAS domain)
 strata_resolve(_prefill src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
-add_library(strata_prefill STATIC ${_prefill}
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp)   # upstream's fused int8 kernels: not built here
+# upstream's fused int8 kernels, stubbed: not built here (they are the CUDA fused-GR path)
+set(_prefill_stub ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp)
+# prompt-speed plan step 2b, the SYCL port: the same pinned checkout the CPU experts come from also carries
+# ggml-sycl - moe_mmq.dp.cpp (the CUDA build's src/prefill/moe_mmq.cu) takes its quantizer (quantize.hpp's
+# quantize_row_q8_1_sycl) and dot products (vecdotq.hpp) against ggml-common.h's block types in SYCL declaration
+# mode, where the top-level build's strata_mmq uses the same checkout's ggml-cuda.  Without the checkout (no
+# STRATA_NATIVE_EXPERTS) the file stays out and prefill.cpp's stub MMQ applies.
+if(STRATA_NATIVE_EXPERTS)
+  list(APPEND _prefill ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_mmq.dp.cpp)
+endif()
+add_library(strata_prefill STATIC ${_prefill} ${_prefill_stub})
 target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_options(strata_prefill PUBLIC -qmkl=sequential)
 target_link_libraries(strata_prefill PUBLIC strata_engine)
+if(STRATA_NATIVE_EXPERTS)
+  if(STRATA_GGML_DIR)
+    set(_strata_gg ${STRATA_GGML_DIR}/ggml)
+  else()
+    set(_strata_gg ${strata_llamacpp_SOURCE_DIR}/ggml)
+  endif()
+  target_include_directories(strata_prefill PRIVATE
+    ${_strata_gg}/src/ggml-sycl ${_strata_gg}/src ${_strata_gg}/include ${STRATA_ROOT}/third_party/ggml)
+  target_compile_definitions(strata_prefill PUBLIC STRATA_PREFILL_MMQ=1)
+  # ggml-common.h's SYCL declaration mode (the block types + codebook grids), moe_mmq.dp.cpp only: the other
+  # prefill sources include no ggml header
+  target_compile_definitions(strata_prefill PRIVATE GGML_COMMON_DECL_SYCL)
+endif()
+
+# --- oneDNN (optional, opt-in): the fused Dequantize->MatMul graph for the prompt path (README P0b #1) -------
+# Default OFF so the base build is untouched; STRATA_SYCL_DNNL=1 links it on.  oneDNN 3.11.4 ships in
+# /opt/intel/oneapi/dnnl/2026.0 (its CMake package is picked up once /opt/intel/oneapi/setvars.sh is sourced).
+# Strata's SYCL port targets Intel only, so the llama.cpp vendor-matching dance is unnecessary.
+# The fused path lives in strata_prefill (which already owns the prompt GEMM path and the -qmkl oneMKL link).
+option(STRATA_SYCL_DNNL "Link oneDNN for the fused dequant+matmul prompt-path experiment" OFF)
+if(STRATA_SYCL_DNNL)
+  find_package(dnnl CONFIG QUIET)
+  if(dnnl_FOUND)
+    target_link_libraries(strata_prefill PRIVATE DNNL::dnnl)
+    target_compile_definitions(strata_prefill PRIVATE STRATA_SYCL_DNNL=1)
+    message(STATUS "Strata SYCL: linked oneDNN ${dnnl_VERSION}")
+  else()
+    message(WARNING "STRATA_SYCL_DNNL=1 but no oneDNN found on PATH/LD_LIBRARY_PATH (source /opt/intel/oneapi/setvars.sh); building without it")
+  endif()
+endif()
 
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
@@ -179,7 +218,7 @@ option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)
 if(STRATA_SYCL_PARITY)
   enable_testing()
   foreach(p IN ITEMS dequant_s2 s2_gemv iq shared_expert gr gdn s2_gemv_q8 sampler rope quantize_act router_top10
-                     s_gemv elementwise bf16_gemv s_gemv_q8k qsa ple kv_q8 kv_stream kv_q4 cvec)
+                     s_gemv elementwise bf16_gemv s_gemv_q8k qsa kv_q8 kv_stream kv_q4 cvec)
     strata_resolve(_src src/kernels/${p}_parity.cpp)
     add_executable(${p}_parity ${_src})
     target_include_directories(${p}_parity PRIVATE ${STRATA_ROOT}/src/kernels)   # the oracle .inc fixtures
@@ -245,6 +284,12 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(conversation_snapshot_test PRIVATE strata_engine)
   add_test(NAME conversation_snapshot_test COMMAND conversation_snapshot_test)
   set_tests_properties(conversation_snapshot_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120)
+  # the capture audit (src/core/graph_audit.hpp): each of its assertions must be SHOWN to fire (forked children,
+  # abort on a null graph / an overlapping begin / a re-capture / a moved node count).
+  strata_resolve(_src src/core/graph_audit_test.cpp)
+  add_executable(graph_audit_test ${_src})
+  target_link_libraries(graph_audit_test PRIVATE strata_engine)
+  add_test(NAME graph_audit_test COMMAND graph_audit_test)
   # the prompt-attention parity takes a context length, not --selftest, and needs the tensor-core kernel (not
   # ported yet: it reports "refused the pools" here). Built, not registered.
   strata_resolve(_src src/kernels/qsa_prompt_attn_parity.cpp)
@@ -256,14 +301,50 @@ if(STRATA_SYCL_PARITY)
   add_executable(kv_hybrid_parity ${_src})
   target_include_directories(kv_hybrid_parity PRIVATE ${STRATA_ROOT}/src/kernels)
   target_link_libraries(kv_hybrid_parity PRIVATE strata_kernels)
+  add_executable(dequant_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/dequant_bench.cpp)   # prompt dequant GB/s (README P0 lever)
+  target_link_libraries(dequant_bench PRIVATE strata_kernels)
   add_executable(mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_bench.cpp)   # dense mmvq timing
   target_link_libraries(mmvq_bench PRIVATE strata_kernels)
+  # P0 #2 avenue 1: time the *no-unpack* ceiling (Q8_0 wide32 byte decode) vs Q6_K unpack-in-kernel at the engine's
+  # ncols; if pre-unpacking the Q6_K rows to signed bytes is much faster, that is the avenue-1 win.
+  add_executable(q6k_preunpack_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_bench.cpp)
+  target_link_libraries(q6k_preunpack_bench PRIVATE strata_kernels)
+  # the Q6K->Q6U pre-unpack + routed-decode correctness gate (P0 #2 avenue 1, exp 27/28): the no-bit-unpack decode
+  # and the routing must reproduce the packed Q6_K path within fp32 rounding.
+  add_executable(q6k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_parity.cpp)
+  target_link_libraries(q6k_preunpack_parity PRIVATE strata_kernels)
+  add_test(NAME q6k_preunpack_parity COMMAND q6k_preunpack_parity)
+  # the Q5K->Q5U pre-unpack + routed-decode correctness gate (P0 #5, exp 30): the min-offset no-bit-unpack decode
+  # must reproduce the packed Q5_K path within fp32 rounding; and its bench.
+  add_executable(q5k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q5k_preunpack_parity.cpp)
+  target_link_libraries(q5k_preunpack_parity PRIVATE strata_kernels)
+  add_test(NAME q5k_preunpack_parity COMMAND q5k_preunpack_parity)
+  add_executable(q5k_preunpack_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q5k_preunpack_bench.cpp)
+  target_link_libraries(q5k_preunpack_bench PRIVATE strata_kernels)
+  # the P0b #2/#3 A/B: oneMKL dense-FP16 GEMM on a persistent weight copy vs native_mmvq at the decode batch (ncols
+  # 1..8). Links oneMKL BLAS directly (like onednn_gemm_bench) so building the bench never pulls the whole engine.
+  find_package(MKL CONFIG QUIET)
+  if(MKL_FOUND)
+    add_executable(decode_xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/decode_xmx_gemm_bench.cpp)
+    target_link_libraries(decode_xmx_gemm_bench PRIVATE strata_kernels MKL::MKL_SYCL::BLAS)
+  endif()
   add_executable(mmvq_sg_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_sg_bench.cpp)   # SIMD16 vs 32 decode mmvq
   target_link_libraries(mmvq_sg_bench PRIVATE strata_kernels)
   add_executable(q6k_align_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_align_bench.cpp)   # Q6_K block alignment
   target_link_libraries(q6k_align_bench PRIVATE strata_kernels)
+  add_executable(reorder_esimd_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/reorder_esimd_bench.cpp)   # P0-L1 Q8_0 reorder+ESIMD slice
+  target_link_libraries(reorder_esimd_bench PRIVATE strata_kernels)
+  add_test(NAME reorder_esimd_bench COMMAND reorder_esimd_bench --selftest)   # the reorder+ESIMD decode correctness gate
   add_executable(gr_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gr_bench.cpp)   # fused GR read timing
   target_link_libraries(gr_bench PRIVATE strata_kernels)
+  # the QSA block scorer and top-k alone (qsa_select_bench.cpp), for the long-context top-k fit: the register kernel's
+  # TK_PER_MAX is 33 on the Intel build against HIP's 66, so 262K cells falls to the wide kernel. Needs prefill for
+  # the dispatch the kernels share.
+  add_executable(qsa_select_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/qsa_select_bench.cpp)
+  target_link_libraries(qsa_select_bench PRIVATE strata_kernels strata_prefill)
+  # the GDN recurrence alone, its variants selected by env (DPCT1053 lead: the key-head kernel's cp.async)
+  add_executable(gdn_rec_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/gdn_rec_bench.cpp)
+  target_link_libraries(gdn_rec_bench PRIVATE strata_prefill)
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
   add_executable(xmx_int8_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_int8_bench.cpp)   # int8 XMX IQ4_NL GEMM prototype
@@ -272,6 +353,37 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(sel_scores_bench PRIVATE strata_kernels strata_prefill)
   add_executable(attn_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/attn_bench.cpp)   # prompt QSA attention variants
   target_link_libraries(attn_bench PRIVATE strata_kernels)
+  # the XMX capability probe (llama.cpp's gpu_has_xmx / ext_intel_matrix) over every visible GPU; needs only the
+  # matrix header, so it links nothing else
+  add_executable(xmx_probe_test ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_probe_test.cpp)
+  target_link_libraries(xmx_probe_test PRIVATE strata_includes)
+  add_test(NAME xmx_probe_test COMMAND xmx_probe_test)
+  # FP16-vs-INT8 oneMKL XMX GEMM at the prompt expert shapes; the measurement that decides whether an INT8
+  # dequant+gemm prompt path is worth building (prefill/gemm.dp.cpp f16 vs a hypothetical dequant-to-int8)
+  add_executable(int8_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/int8_gemm_bench.cpp)
+  target_link_libraries(int8_gemm_bench PRIVATE strata_includes strata_prefill)   # -qmkl for the oneMKL GEMM
+  # the whole INT8 expert path on real Q2_0 rows (dequant-to-int8 + oneMKL INT8 vs the FP16 path), fidelity included:
+  #   int8_path_bench <shard1.gguf> [layer] [T] [reps]
+  add_executable(int8_path_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/int8_path_bench.cpp)
+  target_include_directories(int8_path_bench PRIVATE ${STRATA_ROOT}/third_party/ggml)
+  target_link_libraries(int8_path_bench PRIVATE strata_kernels strata_prefill)
+  # device-to-device (P2P) transfer between two Intel cards, the handoff Strata's layer split uses
+  add_executable(p2p_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/p2p_bench.cpp)
+  target_link_libraries(p2p_bench PRIVATE strata_includes)
+  # oneDNN feasibility probe (README P0b #1): what matmul impl / Dequantize->MatMul partition does oneDNN pick
+  # on this device?  Prints impl_info_str per GPU; "ref" means oneDNN has no JIT kernel here (llama.cpp #28985
+  # disables oneDNN in that case).  Only builds under the STRATA_SYCL_DNNL opt-in, which links DNNL::dnnl.
+  if(STRATA_SYCL_DNNL AND TARGET DNNL::dnnl)
+    add_executable(onednn_probe ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/onednn_probe.cpp)
+    target_link_libraries(onednn_probe PRIVATE strata_includes DNNL::dnnl)
+    add_test(NAME onednn_probe COMMAND onednn_probe --allow-none)
+    # the dense-F16 library A/B (reframed P0b #1): oneDNN matmul vs the oneMKL GEMM the prompt path uses (Gemm::f16).
+    # Links oneMKL BLAS directly (dpct::blas::gemm) + DNNL::dnnl; deliberately not strata_prefill, so building the
+    # bench never pulls in the whole engine compile.
+    find_package(MKL REQUIRED)
+    add_executable(onednn_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/onednn_gemm_bench.cpp)
+    target_link_libraries(onednn_gemm_bench PRIVATE strata_includes MKL::MKL_SYCL::BLAS DNNL::dnnl)
+  endif()
   # one native expert three ways on real GGUF rows (ggml reference, CPU path, GPU native_expert_grouped):
   #   native_expert_parity <shard1.gguf> [layer ...]
   if(STRATA_NATIVE_EXPERTS)

@@ -25,8 +25,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
-#include "strata/sycl_queue.hpp"
 #include "strata/kernels/native_gr_norm.hpp"
+#include "strata/sycl_math.hpp"
+#include "strata/sycl_queue.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -40,13 +41,7 @@ namespace {
 __dpct_inline__ float norm_warp_sum(float value) {
 #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        value += dpct::experimental::permute_sub_group_by_xor(
-            0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
+        value += strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(),
             value, offset);
     }
     return value;
@@ -139,27 +134,10 @@ void native_gr_rms_norm_weighted(const float* input, const float* gamma, float* 
                 weighted_rms_norm<1024>(input, gamma, output, n_cols, epsilon);
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const auto error = 0;
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (error != 0)
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw std::runtime_error(std::string("native GR RMSNorm launch: ") +
-                                 dpct::get_error_string_dummy(error));
+                                 dpct::error_string(error));
 }
 
 } // namespace strata::kernels

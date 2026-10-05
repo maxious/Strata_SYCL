@@ -32,11 +32,6 @@ void check(bool ok, const char* label) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", label); std::exit(1); }
 }
 void cuda_check(dpct::err0 e) {
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
 }
 struct Fixture {
     ModelGeometry g;
@@ -137,7 +132,9 @@ struct Fixture {
     ~Fixture() {
         for (void *p : device)
             DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
-        for (void *p : host) DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));   // SYCL port: dpct wrote free(p) for cudaFreeHost
+        // host == malloc_host USM: must be released with sycl::free, not C free (dpct wrote free(p) for cudaFreeHost)
+        for (void *p : host)
+            DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
     }
 };
 bool equal(const ConversationKv& a,const ConversationKv& b) {

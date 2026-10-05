@@ -143,11 +143,18 @@ no backend seam to slot into.
      - helper headers renamed since dpct 2025.3 (`entangle`, `chunked_partition`);
      - graph introspection and `cudaGraphUpload`, which have no SYCL equivalents;
      - `%globaltimer` (the stage profiler reads zeros).
-4. **`sycl/tools/build.sh`:** configure and build with icpx inside the image. Two compiler flags are load-bearing:
+4. `sycl/tools/build.sh` - configure + build with icpx inside the image. It does `source /opt/intel/oneapi/setvars.sh`
+   itself (the oneAPI environment init; some installs name it `setenv.sh`). That step is load-bearing for both the
+   build **and every run**: it puts the oneAPI tools and the MKL / Level-Zero / OpenCL libraries on `PATH` and
+   `LD_LIBRARY_PATH` and registers `OCL_ICD_FILENAMES`, so without it `icpx` and oneMKL are not visible and a built
+   `*_parity` binary fails with `No device of requested type available` (or the `libsycl.so`/MKL include errors in
+   the build). A handwritten build must `source /opt/intel/oneapi/setvars.sh` first; `int8_gemm_bench`, `xmx_gemm_bench`
+   and the parity suite all assume it (oneMKL headers resolve only with it sourced).
+   Two compiler flags are load-bearing:
    - `-fp-model=precise`: icpx defaults to a fast FP model.
    - `-cl-fp32-correctly-rounded-divide-sqrt` for the device compiler. The Arc's fp32 divide is not correctly
      rounded by default (OpenCL allows 2.5 ulp), and Strata's quantizers are byte-exact against ggml through
-     `amax / 127`. Without the flag `quantize_act_parity` has 303k mismatches; with it, none.
+     `amax / 127`. Measured: without it `quantize_act_parity` has 303k mismatches, with it none.
 
 **Parity tests.** The whole tree builds and links: the `strata` binary plus the kernel parity tests.
 
@@ -276,7 +283,7 @@ port's JIT result across runs on the B70 (the segfault above was llama.cpp's); t
 - `STRATA_PLE_TRACE=1` traces each PLE gather.
 - `STRATA_DBG_NAN=1` reports the first non-finite values per layer, including the experts' fp16 GEMM inputs.
 
-**Two traps worth knowing.**
+**Three traps worth knowing.**
 
 - **`--prefill-until N` with a native pack** does not feed the rest of the prompt through the token loop (that
   loop is skipped for native packs). The tokens after N are dropped and the model free-runs. Compare output tokens
@@ -284,6 +291,10 @@ port's JIT result across runs on the B70 (the segfault above was llama.cpp's); t
 - **Identical greedy runs can decode at two speeds.** One PLE read stall lands either in the prompt's PLE wait or
   in the first decode round. It is a once-per-process cost, not lost throughput, so compare runs on time to first
   token plus decode.
+- **Serve stops at the model's end-of-turn token; a one-shot run only with `--stop-eos`.** benchy v1's prompt sizes
+  over 2,185 tokens are `long.ids[:2000]` repeated, and the model ends the turn right away on that text on one and
+  on two cards - the "256 output tokens" of a one-shot row start with `<|im_end|>`, while the same run in serve mode
+  reports 1. Compare rows on time to first token, never on the token count alone: docs/sycl-experiments/32.
 
 ### How the prompt path uses VRAM
 
@@ -364,6 +375,144 @@ the products. Every hand-written joint_matrix kernel so far is correct but loses
   - The dequant it would save is small at expert size.
   - Not ported.
 
+**OneDNN (2026-10-04, B60): linked opt-in, dense-F16 A/B is a no-win.** The README P0b #1 fusion premise is
+blocked - oneDNN's `Dequantize` reads only standard s8/u8 tensors, not ggml block types, and llama.cpp never fuses
+a block dequant into oneDNN (it converts to F16 first). `STRATA_SYCL_DNNL=1` links `DNNL::dnnl` (default off) with
+`onednn_probe` (oneDNN reports `jit:gemm:any` on the B60) and `onednn_gemm_bench`: dense FP16 oneDNN matmul is
+numerically identical to oneMKL (~2-6e-7 vs fp64 ref, exact on integer grid) and faster at large batch (gu T=512
+1.76x) but slower at the engine's real per-expert routed `ne` (gu T=16-32: 0.73-0.78x). OneMKL stays. Full numbers
+to the plan's P0b item and the column-major-layout trap: docs/sycl-experiments/24.
+
+**Dense-decode XMX (2026-10-04, B60): dequant-then-XMX-GEMM is a no-win for the decode matvec (README P0b #2/#3, exp
+25).** The Q6_K decode MMVQ is PIPE-bound (exp 23) and leaves the matrix units idle, so the one untried XMX-as-decode
+was measured: a persistent-FP16 copy of the weights + oneMKL dense FP16 GEMM at the decode batch
+(`decode_xmx_gemm_bench`, 2560x2560, ncols 1..8, verified vs fp64 ~1.4e-7). At the engine's real decode ncols it is
+*slower* (ncols=1..4: 39.9/38.0/34.4 us vs native_mmvq 21.4/23.9/29.7, i.e. 0.54-0.86x) - XMX's launch/backend
+overhead dwarfs a single-column matvec - and only crosses over at the fat drafter window (ncols=6: 1.33x, ncols=8:
+2.39x), which costs 2x dense VRAM plus ~12 us materialization. `native_mmvq` stays the decode path; P0 #2's XMX
+avenue is closed, leaving the pipe-arithmetic slimming (P0 #2 avenue 1) and the NCOLS-unroll-to-loop (avenue 2) as
+the open decode levers. `decode_xmx_gemm_bench` stays in the tree. docs/sycl-experiments/25.
+
+**Q6_K NCOLS-unroll -> column loop (2026-10-04, B60): the loop fixes the register blow-up but is a drafter-window
+lever, not the primary decode (README P0 #2 avenue 2, exp 26).** `native_mmvq_q6k_wide_loop_kernel` (activation
+fused into the dot, `#pragma unroll 1`) behind opt-in `STRATA_MMVQ_LOOP=1` for NCOLS>=5 flattens the superlinear
+columns tail - ncols 6/7/8 go 35.9/39.4/55.5 -> 33.5/37.5/40.4 us (1.07x/1.05x/1.37x; the 7->8 jump drops from +41%
+to +8%, which is exp 22's 6272 B spill disappearing) with bit-identical output. ncols=1-4 are untouched by the
+NCOLS>=5 gate (1.00x), ncols=5 is a 0.98x regression, and the engine's dominant ncols=1 decode is unchanged - so it
+stays opt-in for a wide-MTP drafter and the primary P0 #2 decode lever remains avenue 1 (lighter Q6_K unpack/scale
+= ops per weight byte on the pipe). docs/sycl-experiments/26.
+
+**Q6_K decode pre-unpack (2026-10-04, B60): the 6-bit unpack IS the pipe cost - pre-unpacking once to signed bytes is
+~2x and VALIDATED as avenue 1 (exp 27).** The a2 Q6_K wide kernel's ISA has dp4a at only 32 of 985 instr on the SAME
+ALU int pipe as the bfn/xor/shl + per-byte-mov unpack (~4x its count), because ql/qh's mismatched byte alignment
+forces the per-byte gather. Timing the no-unpack ceiling - signed-byte weights through the shipped Q8_0 `wide32`
+kernel, the exact decode shape of a pre-unpacked Q6_K - against native_mmvq_q6k is 2.06x at ncols=1 (19.1 -> 9.3
+us, the engine's primary decode) and 1.6-2.1x across the curve (memory not the limit: byte path at 749 GB/s, Send
+0%). The lighter formulation is to NOT unpack per token: pre-unpack Q6_K to `{d'=d*scale, 32 int8}` at weight load
+and decode with the existing load+dp4a path, at a persistent ~1.30x weight buffer. This is not the parked
+memory-reorder (exp 12/22); it removes the ALU unpack, not a memory stall. WIRING is the next step.
+q6k_preunpack_bench stays as the regression measure. docs/sycl-experiments/27.
+
+**Pre-unpacked Q6_K decode, wired DEFAULT ON (2026-10-04, B60): exp 28.** `STRATA_MMVQ_PREUNPACK=0` opts out to the
+packed path; with no env the engine pre-unpacks each Q6_K tensor once at load (`native_q6k_preunpack` -> `Q6U`
+signed-byte blocks with the two fp32 per-16 scales, transcribed from dequant.hpp) and routes `native_mmvq(14)` -
+which is the dense decode (layer.cpp:154), verify, the head, shared-expert and PLE - through the no-bit-unpack
+kernel (`Wide32Q6U` = Q8_0 wide32 with two scales). Correctness: `q6k_preunpack_parity` passes all shapes
+(max-rel ~1e-7 vs the packed oracle, routed path identical). Speed: the deployed Q6U decode is 2.05x at ncols=1
+(19.1 -> 9.4 us) and 1.58-2.10x across, matching the Q8_0 ceiling. The packed path stays available and bit-identical
+(mmvq_bench unchanged) under the opt-out. Persistent ~1.25x weight buffer; the pre-unpack runs once at load outside
+graph capture. End-to-end decode tok/s + output parity over a real model still to be confirmed on the runtime/bench
+box. docs/sycl-experiments/28.
+
+**Pre-unpacked Q6_K/Q5_K decode: DEFAULT OFF after the end-to-end A/B (2026-10-05, B60): exp 36.** The two entries
+above shipped default-on on their kernel numbers (2.05x / 1.29x at ncols=1). The engine-level A/B on the Coder IQ1_M
+- the model whose dense decode is Q6_K x128, the case the change was built for - says the opposite: **42.2 -> 38.0
+tok/s, a 12.4% decode LOSS**, reproducible over three alternating reps with token-identical output. The mechanism is
+memory, not arithmetic: the pre-unpacked copies are +163 matrices / **2.53 GiB** of extra dense VRAM, and on a 32 GB
+card that is the **expert cache**: 9,478 -> 8,152 slots, RAM mirror 5.37 -> 7.90 GiB, streamed over PCIe every token
+(prompt experts pulled: 2,972 with it off, 5,533 with it on). At **matched slot counts** the arms are within 1%
+(38.39/38.44 packed vs 38.03/38.03), so the kernel is worth what the bench says and the regression was the cache.
+The kernel is still faster on every shape the model actually decodes (1.04-2.27x; the largest, 2560x10240, only
+1.04x at ncols=1), which is why this is a default and not a revert. **`STRATA_MMVQ_PREUNPACK=1` now opts in**; the
+parity gates stay registered. The route that could make it pay on a 32 GB card is shrinking the block: the scales
+are fp32 in a 40-byte block, so bf16/fp16 scales would halve the 2.53 GiB within the same ~1e-7.
+docs/sycl-experiments/36.
+
+**QSA top-k at long context: `TK_PER_MAX = 66` on SYCL (2026-10-05, B60): exp 37.** The register top-k holds
+`4 * 1024 * TK_PER` cells and `TK_PER_MAX` was 66 under HIP but 33 everywhere else, so the shipped 262,144 context
+fell to the wide kernel on Intel (every key re-read per radix pass). Two dead ends had to be cleared first:
+`qsa_select_bench` was never a CMake target, and `TK_PER_MAX` was *unreachable* on SYCL because the dispatch measured
+the fit against `TK_PER` whenever the CUDA-only "counted" path was false. With the fit reachable and the width at 66:
+**135,168 cells 0.257 -> 0.138 ms (1.86x), 200,000 0.353 -> 0.177 (1.99x), 262,144 0.541 -> 0.224 (2.42x)**, ids
+identical to the reference in every case; a capacity of 131,072 or less is unchanged (0.059/0.117 ms, both builds
+bit-identical). Prompt-path check: **535.5 vs 543.1 tok/s** on an 8,000-token dual prompt - 1.4%, inside the noise
+floor, so the wider fit is free where it does not apply. `private_alloca` was not needed; `-DSTRATA_TK_PER_MAX=<n>`
+overrides. ctest 29/29, graph goldens unchanged. docs/sycl-experiments/37, /38.
+
+**Prompt stages already overlap on 2x B60 (2026-10-05): exp 38.** Per-stage GPU timelines sum to 18.66 s against a
+14.94 s wall on an 8,000-token dual prompt - **1.25x of concurrency**, because `prefill.cpp` already runs the next
+stage's chunk on a `std::future`. The prompt's remaining 0.75x is the dependent chain (stage 1 reads stage 0's
+residual), not idle scheduling, and two chunks show wall ~2x their GPU timeline: the real bound is `--stream-experts`
+pulling blobs over PCIe. Trap: a prompt shorter than `--prefill` is a *single* chunk, so the archive's "adjacent
+chunks" question cannot be answered at 2,185 tokens - and the phase shares are then meaningless.
+
+**MMVQ cache policy: not expressible on icpx 2026.1 (2026-10-05): exp 39.** Every spelling of
+`sycl_ext_intel_cache_controls` (`read_hint` on a launch property, the spec's two-entry L1/L2+L3 form, a single
+entry, and `annotated_ptr`) compiles and then fails at the **SPIR-V device link** with `InvalidLlvmModule: CacheControl
+LoadINTEL requires exactly 2 extra operands`, once per kernel, reproducible in a 12-line kernel. exp 22's null sweep
+is therefore permanent rather than untested. `-DSTRATA_MMVQ_CACHE_MODE` (default 0 = no hints) is kept in the source
+for a fixed compiler; modes 1-3 do not link here. Note the contrast with the top-k width above: ordinary compile-time
+kernel tuning works on this compiler, the cache-control intrinsics do not.
+
+**`intel::kernel_args_restrict` on the MMVQ: measured NULL (2026-10-05): exp 40.** The attribute compiles and links
+on this toolchain (a missing `main` in the first test mimicked an unsupported extension), and it applies - the object
+md5 differs - but `mmvq_bench` is bit-identical at every ncols (19.1/21.5/26.1/55.3 us at 1/2/4/8). The kernels already
+declare `__restrict__` on w and x by hand (88 sites, 0 uses of the attribute) and the decode is pipe-bound, not
+alias-bound. `-DSTRATA_MMVQ_RESTRICT_ATTR=1` is kept, default off; it is an unchecked assertion, so it must not go
+near a kernel that accumulates in place.
+
+**Peer access on the B60 pair: supported, and already in use (2026-10-05): exp 40.** `p2p_bench` now probes and
+enables it: `can_access_peer` is **true both directions**, and `enable_peer_access` plus the identical copy is
+**1.00x** (7.7-7.8 GB/s each way, round-trip clean) - the plain `sycl::memcpy` between the two contexts is already on
+the peer path. That corrects exp 03's "silent no-op" reading: the 34 us hand-off is not a missing peer path, and
+7.7 GB/s is above the pair's own 13.8 GB/s host-to-device figure. The `--peer-device` expert tier stays a plumbing
+change, not a bandwidth project.
+
+**Conversation parking on a layer split: implemented and measured (2026-10-05): exp 41.** The refusal is gone; a
+split parks one image per stage (`SavedStage`), each captured and restored on the card that owns those layers, the
+drafter's image riding on the last stage (`mtp.bind(last_st ...)`), with per-stage RAM accounting and all stages
+validated before any is restored. Two prefix-disjoint 4,000-token conversations alternating on 2x B60, split auto ->
+K=22, `--conversation-cache-mib 0` vs `8192`: **a switch goes 7021.7 -> 3684.4 ms (1.91x) and 6435.6 -> 2184.9 ms
+(2.95x)**, park 108-141 ms (298-417 MB), restore **32-36 ms** - not the ~200x the raw copy time suggests, because a
+restore returns only a checkpoint prefix (2,185 / 3,278 of 4,000 tokens) and the rest is re-read. First visits are
+unchanged (7367.6 / 7396.6 ms), as they must be. **One generated token differs** (request 4, position 2, other 11
+identical; requests 1-3 bit-identical) and the rounding explanation is unsupported - request 3 had a different reuse
+split and matched - so it is undiagnosed; `STRATA_SNAPSHOT_VERIFY=1` is the next step. Known gap:
+`conversations.retain()` recycles only the primary's K/V, so later stages re-copy in full on every park
+(`reused_kv_bytes=0`), which costs every conversation *rewrite* (regenerate, branch, compaction) and not just a
+switch. ctest 29/29. docs/sycl-experiments/41.
+
+**Pre-unpacked Q5_K decode, default-on (2026-10-04, B60): P0 #5 (exp 30).** A mass-ulw analysis counted the real
+GGUF shards: the Flash-Next dense decode is Q6_K x128 (shipped), Q4_K x47, Q5_K x35, IQ4_NL x47, IQ4_XS x42, Q8_0 x1;
+Q3_K/Q2_K/Q2_0 only in the non-target Qwen-27B/gemma shards. Implemented Q5_K: pre-unpack to `Q5U {dsc=d*sc, mn1=mn*m,
+code5 qs[32]}` (min-offset analog of Q6_K) once, route native_mmvq(13) through the no-bit-unpack decode via the
+shared dense-K-quant registry, default-on like Q6_K. Correctness: q5k_preunpack_parity PASSes all shapes (~1e-7).
+Speed: 1.29x at ncols=1 (15.6 -> 12.1 us), 1.12-1.29x across (smaller than Q6_K's ~2x: 5-bit unpack removes less
+ALU and the min ones-dp4a is retained). Parked: Q4_K (cheap nibble unpack + irreducible min ones-dp4a, ~1.2x best),
+Q3_K (~2x-plausible but 0 Flash-Next tensors), Q2_0/IQ4_XS (low value / LUT-bound), Q8_0 (already byte wide32). Key
+trap: Q81Block.ds[1] is the FLOAT sum, NOT the int8-code sum the m*sum(a) term needs - use a ones-dp4a. Analysis
+reports + a GGUF dense-usage counter: sycl/bench/reports/p05/ + sycl/tools/gguf_count_dense_usage.py.
+docs/sycl-experiments/30.
+
+**i-quant dequant speed half (2026-10-04, B60): measured null - P0 #3's dequant half parked (exp 31).** Baseline
+(2560x1280): IQ4_NL 75, IQ4_XS 76, IQ3_XXS 87, IQ2_S 183, IQ2_XS 246, Q2_0 472 GB/s - the i-quants ~4-6x below Q2_0
+(bandwidth-bound). The bottleneck is the codebook *select* over the compile-time constexpr int8 `kvalues_iq4nl` (a
+register select-tree, NOT a memory gather - so "put the LUT in registers" is already true). A register-table hoist of
+`d*codebook[16]` (removing per-value convert+mul) is bit-identical (dequant_bench checksum unchanged) but NULL (~75
+GB/s). `iq4nl_lut4`-style 4-way-bucket magic is ~comparable in compares to a 16-entry select-tree, so no headroom
+there either. Reverted; Q2_0 stays the prompt dequant pick. Confirms exp 04/11's LUT-bound finding at source level.
+docs/sycl-experiments/31.
+
 ### Serving the port
 
 `serve/server.py --engine strata` runs the SYCL engine unchanged through `sycl/serve/strata-sycl.sh`. That script
@@ -422,7 +571,8 @@ destructor ran after the runtime's teardown began.
 ### Status of the planned work
 
 1. **Expert dot products on XMX in integer mode** for decode: parked (see XMX above). Today it is scalar dp4a,
-   ALU-bound.
+   ALU-bound. A decode window (up to 6 tokens) fits one INT8 DPAS (1-8 rows); three `joint_matrix` versions
+   (opt-in `STRATA_EXPERT_XMX=1`, do not enable) were 1.4x and 2-3x slower than dp4a, the third hung the GPU.
 2. **Experts missing from VRAM read from pinned host memory over PCIe instead of the SSD:** done (the host mirror).
 3. **KV streaming from 64K up:** done.
 4. **QSA block selection:** done another way - oneMKL fp32 GEMM tiles (above), not XMX.
@@ -436,6 +586,8 @@ destructor ran after the runtime's teardown began.
    - The same treatment followed for Q4_K, Q5_K, IQ4_XS, Q8_0 and IQ4_NL ("Decode round 2" in
      INTEL_PERFORMANCE.md). The aligned-load helper only loads its second chunk when the address is unaligned, so it
      never reads a 16-byte chunk without a needed byte and cannot cross a page at the end of an allocation.
+   - **IQ4_XS is not load-alignment-bound**: a `load16_a2` variant measured 2-9% slower (identical checksums) - it
+     is LUT/ALU-bound at ~150-190 GB/s. See docs/sycl-experiments/04-decode-loads-alignment.md.
    - Switches back to the old paths:
 
      | switch | restores |
@@ -445,6 +597,16 @@ destructor ran after the runtime's teardown began.
      | `STRATA_PLAN_PARALLEL=0` | the serial resident plan |
      | `STRATA_GR_DOWN_DIRECT=0` | GR down staging its activations in local memory |
      | `STRATA_MMVQ_WIDE_K=0` | the old K-quant kernels |
+
+**P0-L1 slice: SoA reorder + ESIMD decode for Q8_0 (2026-10-03, B60).** llama.cpp's decode layout move, ported
+   as a standalone A/B (`reorder_esimd_bench`, docs/sycl-experiments/12); produces the SoA layout llama.cpp uses
+   and runs its `q8_0_mac_stripe` ESIMD kernel. Output matches the AOS Wide32Q8 path within float rounding (rel
+   ~4e-7). CORRECTED VERDICT (the first measurement had a bench bug - it ran the single-column ESIMD kernel once
+   against AOS's nc columns, over-reporting a 2.1x win): single column is a wash (0.88-1.14x, faster only on the
+   tall 6144x2560 projection), and multi-column (cols 2/4/6, the spec/MTP verify window) is 0.25-0.63x SLOWER
+   because the ESIMD DMMV is single-column and must be re-launched per column, losing AOS's column-vectorization.
+   The port is correct (`reorder_esimd_bench --selftest` green) but is NOT wired into production - it would
+   regress the multi-column decode. Parked as not-a-win on B60; do not reopen without new measurements.
 
    - Some of these change the summation order. A long greedy continuation can then flip at a near-tie.
 6. **INT8 prompt GEMMs:** experts dequantized to INT8, run as oneMKL/oneDNN INT8 on XMX. Open. A fused int8 kernel
@@ -492,6 +654,114 @@ mirror. They are refreshed by re-migration, not by hand:
    doorbell waits that had lost their spin bound.
 7. **Check outputs.** Compare greedy output tokens against the previous build: Coder 20 / 2,185-token prompts,
    IQ2_XS, and a 40K prompt.
+
+**Two-speed runs, explained (2026-09-30).** Identical greedy runs decode at either ~45 or ~39 tok/s. A per-gather
+trace of the PLE reader (`STRATA_PLE_TRACE=1`) shows the slow runs pay one 226 ms PLE read stall in the first
+decode round, after the window graphs are captured; every other read and round matches the fast runs. Prompt time
+plus decode time is the same in both modes (4.95-5.17 s): the stall lands either in the prompt's PLE wait or in the
+first decode round, so it is a once-per-process cost, not lost throughput. Ruled out: NVMe APST, the I/O scheduler
+(`none`), CPU starvation (93% idle during decode), I/O thread count. Compare runs on time to first token + decode.
+6. INT8 prompt GEMMs: experts dequantized to INT8, oneMKL/oneDNN INT8 on XMX (half the dequant bytes, 2x rate).
+   **Measured 2026-10-03 (int8_gemm_bench + dequant_bench, B60, Q2_0 shards in place).** Two facts that make this
+   the open prompt lever and make Q2_0 the type to build it on: (a) INT8 oneMKL GEMM is **1.4-2.2x faster than
+   FP16, bit-exact** at the expert shapes (down 1.4-1.7x, gate/up 1.9-2.2x at T>=96) - reconfirms exp 02; (b) the
+   dequant that gated it is cheap for Q2_0 and not for the i-quants: `dequant_bench` reads **Q2_0 419-473 GB/s
+   (bandwidth-bound) vs IQ4_NL 68-75, IQ2_XS 192, IQ2_S 183 GB/s (LUT-bound)**. The i-quants pay the LUT-bound
+   dequant that made exp 02/11 "dequant-bound"; Q2_0 removes it, so the INT8 GEMM win is realizable on Q2_0.
+   Consequence: **prefer Q2_0 on the SYCL path** (README.sycl.md, model picker note).
+   **Built and refuted (2026-10-03, `int8_path_bench`, B60, one real Q2_0 expert, 4 layers).** The whole INT8
+   expert path now exists - `Gemm::int8`, `iq_quant_gu_i8` / `iq_quant_i8` (Q2_0 -> int8 + one scale per output
+   row), `quantize_act_i8`, `scale_rows_i8`, wired into the prefill's FP16 branch behind `STRATA_PREFILL_INT8=1` -
+   and the int8 GEMM rate above is real. The *expert* is not faster: it is **0.42-0.64x the FP16 path**, and lossy.
+   Where the FP16 expert (~0.051 ms at T=96) spends 0.014 ms dequantizing and 0.032 ms in the two GEMMs, the INT8
+   path spends **0.065 ms requantizing the weights** - two full passes over each row (a max scan and the write)
+   plus a subgroup reduce, where the FP16 dequant makes one - 0.025 ms on the two activation quantizations and
+   0.009 ms on the two rescaling epilogues, while the two GEMMs save only ~0.012 ms. The "half the dequant bytes"
+   note missed the other half of the trade: int8 writes half the bytes but reads the block codes twice, and the
+   per-expert batch a routed expert actually sees (ne ~ T/51) is far too small for a GEMM-rate win to matter.
+   Fidelity, against a FP16 path that is **exact** for Q2_0: one scale per row cannot carry the per-64 block
+   scales, so gate/up comes out 1.0% (median) and down 2.4% off, p90 6.5% / 15.2%. Parked opt-in, default off;
+   the FP16 dequant+oneMKL path stands and Q2_0 stays the pick for its cheap dequant alone. End to end the same
+   way: a 5-token prompt on the Q2_0 pack (warm, `--prefill 128`, two runs each) takes 501.7 / 523.3 ms with
+   `STRATA_PREFILL_INT8=1` against 397.0 / 395.8 ms without it - the wiring and both paths run, and the int8 one
+   is 1.29x the slower of the two.
+7. Fewer graph nodes per decode round (~2,500 at ~5 us): norm+rope, scores+top-k, gate+quantize fused.
+
+**Read-side blockage (P2): oneDNN/MKL SDPA must not fight graph capture.** llama.cpp's own note (fattn-onednn.cpp,
+issue #26413) says **"MKL GEMM calls are incompatible with SYCL graph capture replay"** - that build keeps
+`GGML_SYCL_GRAPH=ON` and the server reuses captured graphs, so any prompt node routed through an MKL SDPA would
+break that replay. Strata's prompt path captures its window and draft graphs once at load (`generate.cpp` warm
+block, `STRATA_WARM_GRAPHS=0` to opt out), and the P1 oneDNN fused-XMX SDPA A/B must therefore be checked against
+`STRATA_WARM_GRAPHS` before it is kept: run the A/B with graphs on AND off, and make sure the victory (if any) is
+not an artifact of the SDPA node escaping capture.
+8. Wider speculation (two draft branches per verify window): the kernels are latency-bound, so it is nearly free.
+9. A model bigger than VRAM: the original Qwen3.8-Flash-Next IQ2_XS (35.5 GB of experts; the same path suits Q2_0
+   and Swift 1.5) on the B70 with 23 GB of RAM. ~24 GB of experts in VRAM, the rest (~10-12 GB) in the pinned host
+   mirror the device plan reads over PCIe (item 2). The port has the IQ2_XS/IQ3_XXS/Q2_0 expert kernels. Open: whether
+   a 10+ GB pinned mirror fits beside everything else in 23 GB, and decode with that share of experts on a Gen3 x8
+   link (3.6 GB mirrored measured 40.9 tok/s; expect less). Needs the 68 GB download.
+   **Done (2026-10-01)**: shard 1 downloaded (39.2 GB; shard 2 is byte-identical to the Coder's, so a hard link),
+   a native pack (`tools/iq_pack.py`, 6 s), the original model's expert profile, the same MTP draft layer. 18,329 of
+   24,576 experts in VRAM (24.6 GiB), 6,247 in the pinned host mirror (8.4 GiB, 9 s to fill), host RAM never below
+   12 GB free. **Decode 50.8 tok/s** on the 19-token prompt and **60.6** after 2,184 tokens, prompt 549 tok/s;
+   coherent, correct answers on both. Q2_0 and Swift 1.5 (similar size) should behave the same; IQ3_XXS/IQ3_S
+   (43-50 GB of experts) would need 19-26 GB mirrored, more than 23 GB of RAM allows.
+
+**A DPCT migration-marker sweep (2026-10-03, B60): the GDN cp.async lead refuted, the barrier family audited
+clean (exp 14).** The port carries 1,151 DPCT markers across 33 codes. The largest cluster (DPCT1114/1124, 318:
+"cudaMemcpy migrated to asynchronous memcpy, assuming an in-order queue") is risk-free by construction -
+`strata::q_of` falls back to `dpct::get_in_order_queue()`, so does the second-GPU expert path
+(`remote_experts.cpp:148`), and nothing in `sycl/src` ever calls `get_out_of_order_queue`. Two leads were worked:
+
+- **DPCT1053, the GDN key-head kernel's `cp.async` pipeline: parked, no code.** `prefill/kernels.dp.cpp` forces
+  `STRATA_GDN_CP_ASYNC 0` ("plain copies"), so the staging CUDA measured at 1.41x on a 4080 Super is absent from
+  the SYCL port - but the kernel itself is **6.0-7.3x SLOWER** than the default column kernel here (new
+  `gdn_rec_bench`, B60: T=2048 26.48 vs 3.65 ms; its CUDA win was wave-quantization-specific, 64 work-groups
+  against an SM count, which does not transfer to 160 EUs). And the phase it targets is tiny: the engine's own
+  phase timer on a 2047-token prompt (GPU timeline 22,271 ms) puts `gdn recurrence` at **127 ms (0.6%)** against
+  `gemm down` 11,187 (50.2%), `dequant` 2,910 (13.1%), `host grouping` 2,304 (10.3%). A perfect 1.4x would be
+  0.16% end to end. The A/B also confirms the port's existing choice: the default `cols_pipe` beats plain `cols`
+  (1.08-1.30x) and `rec_heads` (1.4-1.6x).
+- **DPCT1118 (75 markers, "group functions in non-converged control flow"): audited, 0 of 187 divergent.** A
+  brace-stack parser over every file carrying the marker finds no group call under a thread-dependent guard.
+  Three shapes explain the markers: the barrier is a sibling of the `if` (reduction ladders;
+  `if (lane == 0) { ... }` before the barrier), the early return tests a work-group id (`o = get_group(2)`, so
+  the whole group leaves together), and `continue` precedes the *next* iteration's barrier (`fused_gr`) or a
+  compile-time `if (STAGE_X)`. Corroborated by `ctest` **25/27** - both failures are the documented ones
+  (`ple_parity`'s missing fixture, `s2_expert_grouped_parity`'s grouped-path kernel bug).
+
+**Round 2 (exp 15): the two remaining perf-flavoured codes are closed without an engine change.**
+**DPCT1110 does not predict register pressure.** Intel's IGC dumps the final ISA including the allocator's own
+spill report (`IGC_ShaderDumpEnable=1 IGC_ForceIgnoreCaching=1 NEO_CACHE_PERSISTENT=0` + `IGC_DumpToCustomDir`;
+the cache-busting matters - on a program-cache hit only the `.spv` is dumped and the `.asm` never appears).
+Measured on the B60, all kernels `numGRF=128`: the **flagged** `native_mmvq_multi_kernel`, `s_gemv` (3 variants)
+and `sampler_greedy/one_block/split_merge` spill **0 B**, while the **unflagged** `native_mmvq_q6k_wide` spills
+384 B - the marker counts declared locals, not what the allocator does, so the 46-site list was the wrong list.
+The one flagged spiller is `sampler_split_part_kernel` at **2176 B** (`float s[32]` is exactly the 128-byte
+threshold); it runs once per *token*, and the ~1 MB of logits it must scan is ~5 us against a 12.8 ms decode
+token, so the whole kernel is ~0.1% and that bounds any win. **DPCT1098**: every one of the 42 sites is a plain
+dereference of an already-`const __restrict__` chain, which is the whole of the read-only contract a compiler
+needs - Xe has a unified L1 and SYCL/SPIR-V exposes no `__ldg` counterpart, so nothing was lost.
+
+**Round 3 - the cleanup (exp 16): 1,151 markers -> 255, and the error path fixed.** The migration's
+`dpct::get_error_string_dummy` returned the literal `"<FIXME: Placeholder>"` and ignored its argument, while
+`DPCT_CHECK_ERROR` caught the exception, printed `what()`, and then threw the text away - so **92 call sites**
+across 31 files reported a placeholder where the real message existed. `DPCT_CHECK_ERROR` now stores `what()` in
+`dpct::last_error()` and `dpct::error_string(ec)` returns it; the dummy is gone from the tree. The marker blocks
+for the audited families were then deleted (DPCT1114/1124 318, DPCT1009/1010 217, DPCT1000/1001 128, DPCT1118
+75, DPCT1013 71, DPCT1110 46, DPCT1098 42 - 897 blocks), following the DPCT1065/1108/1121 precedent, and the
+in-order-queue invariant those 318 memcpy notes repeated now lives once at the top of `sycl_queue.hpp`.
+**DPCT1013 was checked against the CUDA originals**, not guessed: `__fadd_rn` (43) / `__fmul_rn` (28) /
+`__fsub_rn` (1) / `__fdiv_rn` (3) are round-to-nearest-even, which is the C++/SYCL default, so the marker is moot
+for them; the only 3 `__fdividef` (CUDA's approximate divide, in `shared_expert.cu`'s `--use_fast_math`
+reproductions) are sites where the port's `/` is *more* accurate. 255 markers remain, all records worth keeping:
+DPCT1049 (58, work-group sizes - 1024 is the Xe limit, so they pass here but would not on a narrower device),
+DPCT1026/1027 (47, intentional removals), DPCT1048/1106/1025/1083/1024/1093/1078/1053 and the small ones.
+Verified: full build exit 0, `ctest` 25/27 unchanged.
+
+**Keeping up with upstream.** A merge of upstream `main` into `b70` leaves the copies in `sycl/` behind
+wherever upstream touched a file they mirror. They are refreshed by re-migration, not by hand (done for
+0.1.25-0.1.27, 2026-09-30):
 
 What each merge needed:
 
@@ -559,6 +829,61 @@ What each merge needed:
 
 ## Bugs worth remembering
 
+**How each failing test gets its data** (so a checkout can make them go green):
+- `iq_parity`: its ten i-quants run against deterministically generated fixtures. CMake now auto-generates them
+  into `<build>/--selftest/` (via `tools/iq_fixture.py`, which locates the vendored gguf-py in the repo or the
+  llama.cpp FetchContent checkout), so on a built tree the test passes with no manual step. Generate by hand with
+  `python tools/iq_fixture.py --out <dir>` and run `iq_parity <dir>`.
+- `ple_parity`: needs a real Q2_0 GGUF shard (default `../../Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf`,
+  or `STRATA_PLE_GGUF`), the packed `pack/full/dense.bin`, and `bench/micro/ple_{in,out}.bin` captures. This model
+  is ~13 GB and not committed to the repo (gitignored `logs/`); point the env var at a downloaded shard.
+  **Fixed (2026-10-03): the port had it registered BARE.** The parity loop did `add_test(NAME ple_parity COMMAND
+  ple_parity --selftest)` with the build directory as the working directory, so the test looked for
+  `bench/micro/ple_{in,out}.bin` under `sycl/build-b60/` and could never find it, on any machine. Upstream wires
+  it with `--in`/`--out` from `STRATA_PLE_FIXTURE_DIR` and `WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}`. The
+  port now does the same, and registers the test only when the capture is actually there - the binary still exits
+  2 without it, so a missing fixture can never look like a pass, and CMake says so at configure time:
+  `ple_parity NOT registered: no ggml capture in <dir>`. The capture is a CUDA-side artifact
+  (`ple_layer_xcheck`) and `bench/micro/*.bin` is gitignored, so a port-only machine legitimately has nothing to
+  run here. Suite: 26 tests, all pass.
+- `s2_expert_grouped_parity`: was recorded as "a real kernel bug". It is not one - it is float order, and the
+  old assertion asked for the impossible. The grouped entry point runs `gu_grouped_t_kernel` (a chunk's gate and
+  up rows paired, accumulating `dw*dx*(sum c*x - sum x)` per entry) where `STRATA_OLD_GROUPED` runs
+  `gu_grouped_kernel` (`chunk_dot` per row). Those are the **same expression** - `chunk_dot` returns
+  `dw*dx*(s-hx)` with the same exact dp4a sums - compiled into two kernels, so they agree to float contraction
+  and not to the bit: **measured worst 1.5e-07 of the row scale**, and with fp16 scales the packed output is
+  bitwise identical. A wrong sum would be percent-level. **Fixed (2026-10-03)** by asserting the real contract:
+  the per-hit cases keep their byte-for-byte check, and the grouped cases are held to the double-precision
+  reference on **both** runs (worst 9.7e-08 of sum|term|, 0 rows outside tolerance, each) with the old-vs-new
+  difference reported and bounded at 1e-5. That is a stronger check than the bitwise compare it replaces.
+- `conversation_snapshot_test`: was a dpct-migrated double-free (host-USM pointers freed with C `free`); fixed with
+  `sycl::free` in `~Fixture()`. Passes.
+
+**The 0.1.32 merge (2026-10-01).** Upstream 0.1.31 -> 0.1.32 (89 commits) by the same steps; the hash-only
+differences are now canonicalized before `git merge-file` (the port's kernel-name hashes are kept), which left 10
+files with real conflicts. What it needed:
+
+- **Upstream's async commit** (`set_commit_async` / `wait_commit`) maps onto the port's own deferred commit
+  (`commit(n, err, false)` + `commit_finish`); `wait_commit` is `commit_finish`.
+- **Upstream's new hyper-connection read variants** (split / staged, chosen per card by a bit-for-bit self-test at
+  start) are not used by the port, which keeps its sliced down / split norm read; the self-test segfaulted on the
+  B70, so on SYCL it runs only with `STRATA_HC_CHECK=1` (open). The port's split-norm kernel was renamed
+  (`gr_norm_split_port_kernel`): upstream now has one of the same name.
+- Two kernel names collided after hash canonicalization (renamed), and fused_gr's per-block shared-memory query is
+  a fixup now.
+- **Result:** every output identical to 0.1.31 (Coder 19 / 2,184-token prompts and IQ2_XS, 256 greedy tokens),
+  same speeds (Coder 77.7-78.1 / 75.7 tok/s, IQ2_XS 58.5), 40K prompt 1,201 tok/s then 65.1 tok/s decode.
+  `kv_hybrid_parity` and `qsa_prompt_attn_parity` pass (the tests now turn on the XMX prompt attention they
+  check); `iq_multi_parity` (IQ2_XS) and `s2_expert_grouped_parity` as before.
+
+**The 0.1.33 merge (2026-10-01).** Upstream 0.1.32 -> 0.1.33 (17 commits): no shared file conflicted (the Intel
+code is all in `sycl/`); six engine files changed upstream and were merged by the same re-migration (only those six:
+the other files dpct produced differently were left alone). Two conflicts: `--resident-cpu-experts` (upstream's new
+`resident_cpu_explicit` beside the port's `--stream-experts`) and the prompt attention's compute-capability check
+(the port keeps its XMX dispatch). `sycl/setup_intel.py` and `sycl/serve/server_intel.py` ran unchanged against the
+new setup.py and server.py. Every output identical (Coder, IQ2_XS, the 40K prompt with borrowing); `gr_parity` and
+`qsa_prompt_attn_parity` pass.
+
 **Prompt-slot borrowing: the hang (fixed 2026-10-01).** From 0.1.31 on, a prompt that borrowed cache slots stopped
 in its first full chunk, with the GPU at 100% and the host waiting on the compute queue.
 
@@ -599,6 +924,51 @@ expert cache ("no room").
   saw 0 bytes free.
 - The call is restored, and `tools/fixups.py` re-applies it after a re-migration.
 - Found and tested on 2x B70 by tmking01 in the upstream PR review.
+
+**Load time (2026-10-02).** Starting a model is mostly the expert cache's fill from the GGUF (`--stream-experts`):
+the Coder's 23.4 GiB of experts took 64-76 s, the IQ2_XS's 24.9 GiB 91 s, because the fill read each expert's
+three slices, copied the blob and waited for the copy before the next read. It is a pipeline now: the slots are
+admitted in profile order first (the same placement), the reads go in file order by up to 8 threads into
+page-locked batches of 64, and a batch's copies run while the next one is read. Cold page cache: 76.2 s -> 18.8 s
+(0.33 -> 1.34 GB/s); a whole Coder start from the engine's launch to its first token 82 s -> 26 s, the IQ2_XS
+120 s -> 41 s (its 8.2 GB host mirror is ~9 s of the rest). Output identical. `STRATA_FILL_SERIAL=1` is the old fill.
+
+**0.1.35 and seven open upstream PRs (2026-10-02).** Upstream main 0.1.33 -> 0.1.35 merged as before, then seven open
+PRs ported into `sycl/` ahead of upstream (one dpct run of main + all of them, 3-way merged into only the files they
+touch; `sycl/tools/merge_upstream.py`). Their header changes live in `sycl/include` until upstream merges them.
+
+| PR | what | on the B70 |
+|---|---|---|
+| #385 (sergqwer) | stager: a buffer's first job of a generation waits for the previous DMA from it | race fix; same output |
+| #463 (constantindjonkam) | decode waits for an adaptive swap before reading the residency table | determinism fix |
+| #453 (architectds) | the drafter's batched K/V on the KV-streaming ring | 128K int8: 888 -> 895 tok/s prompt, 66.6 -> 67.0 decode |
+| #374 (sergqwer) | the first chunk's PLE rows read beside layer 0 | part of the 2,184-token prompt's 784 -> 825 tok/s |
+| #363 (BlueKingMuch) | the PCIe expert call: group stride, fused SwiGLU + q8_1 | IQ2_XS decode +1.7%; re-done on the port's lane kernels |
+| #407 (sergqwer) | `--adapt-tuned` (opt-in) | neutral here; stays opt-in |
+| #413 (BlueKingMuch) | DeltaNet recurrence per key head | bit-identical but 8% slower prompt here: off (`STRATA_GDN_KEYHEAD=1`) |
+
+#374 needed two port fixes: its next-chunk read assumed every chunk is the full chunk length (the port's first chunk
+is 256 tokens: the second chunk's rows were read from the wrong place), and its host wait on the PLE upload's event,
+now inside the layer loop, deadlocked the prompt past ~4K tokens under the Level Zero v2 adapter (the stager's bug
+again): the upload is marked by a polled sequence number now. #413's gate is an NVIDIA SM-count rule and its parity
+test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 19 / 2,184 tokens, IQ2_XS, 40K).
+
+**Not ported yet (2026-10-01).**
+
+- Three kernels carry inline PTX (`mma.sync` tensor-core matrix ops, `ldmatrix`, `cp.async`):
+  `qsa_prompt_attn`, `qsa_select`'s block scores, `native_qsa_score`. The SYCL build takes the "older card"
+  fallback the CUDA build uses below sm_80. `qsa_prompt_attn` also has an XMX version (`joint_matrix`, opt-in
+  `STRATA_PROMPT_ATTN_XMX=1`): correct, but slower than the fallback (see "XMX prompt attention v2").
+- The ggml MMQ prefill path (`moe_mmq.cu`) is not built. **Decided 2026-10-03 (experiments 09 + 10):** the SYCL
+  i-quant prompt matmul was ported (mmvq `mul_mat_vec_q_iq*_q8_1` kernels behind `strata::prefill::mmq`),
+  parity-exact and CUDA-free, but a measured ~6x prefill regression (73 vs 571.7 tok/s at 1,280 tokens). Then
+  researched for the GEMM-shaped INT8 path: **llama.cpp has none for SYCL i-quants** (MMQ disabled,
+  `supports_mmq`->false; reorder-MMVQ = Q1_0..Q6_K only; the only GEMM-shaped i-quant path is CUDA
+  `mmq-load-tiles.cuh`, tensor-core-tuned, and the B60's dp4a measured 0.24-0.37x of oneMKL FP16). MMQ stays
+  **opt-in** (`STRATA_PREFILL_MMQ=1`); the FP16 dequant+oneMKL path is the accepted prompt frontier at
+  571.7 tok/s.
+- AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
+  compiling on the first window).
 
 ## Not done
 

@@ -22,6 +22,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/sampler.hpp"
 #include "strata/core/coupled_draft.hpp"
@@ -136,10 +137,6 @@ sampler_greedy_kernel(const float *__restrict__ logits, int n_vocab,
 #pragma unroll
         for (int w = item_ct1.get_local_id(2); w < bits_words;
              w += item_ct1.get_local_range(2)) penal_bits[w] = 0u;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
         for (int i = item_ct1.get_local_id(2); i < hlen;
@@ -148,10 +145,6 @@ sampler_greedy_kernel(const float *__restrict__ logits, int n_vocab,
                 dpct::atomic_fetch_or<
                     sycl::access::address_space::generic_space>(
                     &penal_bits[hrow[i] >> 5], 1u << (hrow[i] & 31));
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     auto hit_count = [&](int v, uint8_t *dpct_local) -> int {
@@ -169,22 +162,8 @@ sampler_greedy_kernel(const float *__restrict__ logits, int n_vocab,
         if (s > bv) { bv = s; best = v; }
     }
     for (int off = 16; off > 0; off >>= 1) {
-        /*
-        DPCT1108: '__shfl_down_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        const float ov = dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(), bv,
-            off);
-        /*
-        DPCT1108: '__shfl_down_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        const int oi = dpct::experimental::shift_sub_group_left(
-            0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-            best, off);
+        const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
+        const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), best, off);
         if (ov > bv || (ov == bv && oi < best)) { bv = ov; best = oi; }
     }
     auto &sv = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
@@ -201,22 +180,8 @@ sampler_greedy_kernel(const float *__restrict__ logits, int n_vocab,
             lane < nw ? sv[lane] : sycl::bit_cast<float, int>(0xff800000);
         int wi = lane < nw ? si[lane] : n_vocab;
         for (int off = 16; off > 0; off >>= 1) {
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const float ov = dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                wv, off);
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const int oi = dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                wi, off);
+            const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wv, off);
+            const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wi, off);
             if (ov > wv || (ov == wv && oi < wi)) { wv = ov; wi = oi; }
         }
         // A tie between two `-inf` candidates leaves `wi == n_vocab`, and the serial version answered 0.
@@ -411,12 +376,6 @@ auto &sv = *sycl::ext::oneapi::group_local_memory_for_overwrite<float[32]>(
 /// sweep is O(k) per logit per round, O(k^2 x n_vocab) per row (47 M shared-memory compares at k = 20, 500 M at
 /// 64), and the double-precision tail runs on all 1,024 threads where one warp suffices - GeForce issues FP64 at
 /// 1/64 of FP32.  The kernels after this one remove both and select the same list in the same order.
-/*
-DPCT1110: The total declared local variable size in device function
-sampler_kernel exceeds 128 bytes and may cause high register pressure. Consult
-with your hardware vendor to find the total register size available and adjust
-the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
                                     int n_vocab, int n_tokens,
                                     const int *__restrict__ history,
@@ -452,10 +411,6 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
 #pragma unroll
         for (int w = item_ct1.get_local_id(2); w < bits_words;
              w += item_ct1.get_local_range(2)) penal_bits[w] = 0u;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
         for (int i = item_ct1.get_local_id(2); i < hlen;
@@ -464,10 +419,6 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
                 dpct::atomic_fetch_or<
                     sycl::access::address_space::generic_space>(
                     &penal_bits[hrow[i] >> 5], 1u << (hrow[i] & 31));
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     auto hit_count = [&](int v, uint8_t *dpct_local) -> int {
@@ -511,31 +462,13 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
             if (s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const float ov = dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                bv, off);
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const int oi = dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                best, off);
+            const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
+            const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), best, off);
             if (ov > bv || (ov == bv && oi < best)) { bv = ov; best = oi; }
         }
         const int warp = (int)(item_ct1.get_local_id(2) >> 5),
                   lane = (int)(item_ct1.get_local_id(2) & 31);
         if (lane == 0) { sv[warp] = bv; si[warp] = best; }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (warp == 0) {
             const int nw = (int)((item_ct1.get_local_range(2) + 31) >> 5);
@@ -543,34 +476,12 @@ __dpct_inline__ void sampler_kernel(const float *__restrict__ logits,
                 lane < nw ? sv[lane] : sycl::bit_cast<float, int>(0xff800000);
             int wi = lane < nw ? si[lane] : n_vocab;
             for (int off = 16; off > 0; off >>= 1) {
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
-                const float ov = dpct::experimental::shift_sub_group_left(
-                    0xFFFFFFFFu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), wv,
-                    off);
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
-                const int oi = dpct::experimental::shift_sub_group_left(
-                    0xFFFFFFFFu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), wi,
-                    off);
+                const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wv, off);
+                const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wi, off);
                 if (ov > wv || (ov == wv && oi < wi)) { wv = ov; wi = oi; }
             }
             if (lane == 0) { sel_ids[i] = (wi < n_vocab) ? wi : 0; sel_logit[i] = wv; }
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
 
@@ -656,22 +567,8 @@ __dpct_inline__ void take_first(float &bv, int &bi, float ov, int oi) {
 __dpct_inline__ void warp_first(float &bv, int &bi) {
 #pragma unroll
     for (int off = 16; off > 0; off >>= 1) {
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        const float ov = dpct::experimental::permute_sub_group_by_xor(
-            kFullMask, sycl::ext::oneapi::this_work_item::get_sub_group(), bv,
-            off);
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
-        const int oi = dpct::experimental::permute_sub_group_by_xor(
-            kFullMask, sycl::ext::oneapi::this_work_item::get_sub_group(), bi,
-            off);
+        const float ov = strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
+        const int oi = strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), bi, off);
         take_first(bv, bi, ov, oi);
     }
 }
@@ -709,14 +606,7 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
         if (lane == 0)
 #pragma unroll
             for (int i = 0; i < k; ++i) sum += ex[i];
-        /*
-        DPCT1108: '__shfl_sync' was migrated with the experimental feature
-        masked sub_group function which may not be supported by all compilers or
-        runtimes. You may need to adjust the code.
-        */
-        sum = dpct::experimental::select_from_sub_group(
-            kFullMask, sycl::ext::oneapi::this_work_item::get_sub_group(), sum,
-            0);
+        sum = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, 0);
         sycl::group_barrier(sycl::ext::oneapi::this_work_item::
                                 get_sub_group()); // lane 0 has read every `ex`
                                                   // before it is overwritten
@@ -732,14 +622,7 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
                 if (cum >= (double) p.top_p) { cut = i + 1; break; }
             }
         }
-        /*
-        DPCT1108: '__shfl_sync' was migrated with the experimental feature
-        masked sub_group function which may not be supported by all compilers or
-        runtimes. You may need to adjust the code.
-        */
-        cut = dpct::experimental::select_from_sub_group(
-            kFullMask, sycl::ext::oneapi::this_work_item::get_sub_group(), cut,
-            0);
+        cut = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), cut, 0);
         if (cut < p.min_keep) cut = p.min_keep < k ? p.min_keep : k;
         n_keep = cut;
         sycl::group_barrier(sycl::ext::oneapi::this_work_item::
@@ -765,13 +648,7 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
     if (lane == 0)
 #pragma unroll
         for (int i = 0; i < n_keep; ++i) sum += ex[i];
-    /*
-    DPCT1108: '__shfl_sync' was migrated with the experimental feature
-    masked sub_group function which may not be supported by all compilers or
-    runtimes. You may need to adjust the code.
-    */
-    sum = dpct::experimental::select_from_sub_group(
-        kFullMask, sycl::ext::oneapi::this_work_item::get_sub_group(), sum, 0);
+    sum = strata::sub_group_select(sycl::ext::oneapi::this_work_item::get_sub_group(), sum, 0);
     sycl::group_barrier(sycl::ext::oneapi::this_work_item::get_sub_group());
 #pragma unroll
     for (int i = lane; i < n_keep; i += 32) ex[i] = ex[i] / sum;
@@ -798,12 +675,6 @@ inline void sampled_tail_warp(const int *sel_ids, const float *sel_logit, int k,
 /// same list in the same order.  An empty round leaves (-inf, id 0) as before, and every round after it is empty
 /// in both versions (nothing after -inf beats -inf).  O(k x n_vocab) per row instead of O(k^2 x n_vocab), then warp
 /// 0 runs the tail.  `STRATA_SAMPLER_ONE_BLOCK=1`, and the fallback when the split path cannot run.
-/*
-DPCT1110: The total declared local variable size in device function
-sampler_one_block_kernel exceeds 128 bytes and may cause high register pressure.
-Consult with your hardware vendor to find the total register size available and
-adjust the code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
                          const int *__restrict__ history, int history_len,
@@ -828,10 +699,6 @@ sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
 #pragma unroll
         for (int w = item_ct1.get_local_id(2); w < bits_words;
              w += item_ct1.get_local_range(2)) penal_bits[w] = 0u;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
 #pragma unroll
         for (int i = item_ct1.get_local_id(2); i < hlen;
@@ -840,10 +707,6 @@ sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
                 dpct::atomic_fetch_or<
                     sycl::access::address_space::generic_space>(
                     &penal_bits[hrow[i] >> 5], 1u << (hrow[i] & 31));
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
     auto hit_count = [&](int v, uint8_t *dpct_local) -> int {
@@ -879,29 +742,11 @@ sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
             if ((s < prev_v || (s == prev_v && v > prev_i)) && s > bv) { bv = s; best = v; }
         }
         for (int off = 16; off > 0; off >>= 1) {
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const float ov = dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                bv, off);
-            /*
-            DPCT1108: '__shfl_down_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
-            const int oi = dpct::experimental::shift_sub_group_left(
-                0xFFFFFFFFu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                best, off);
+            const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), bv, off);
+            const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), best, off);
             if (ov > bv || (ov == bv && oi < best)) { bv = ov; best = oi; }
         }
         if (lane == 0) { sv[warp] = bv; si[warp] = best; }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         if (warp == 0) {
             const int nw = (int)((item_ct1.get_local_range(2) + 31) >> 5);
@@ -909,34 +754,12 @@ sampler_one_block_kernel(const float *__restrict__ logits, int n_vocab,
                 lane < nw ? sv[lane] : sycl::bit_cast<float, int>(0xff800000);
             int wi = lane < nw ? si[lane] : n_vocab;
             for (int off = 16; off > 0; off >>= 1) {
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
-                const float ov = dpct::experimental::shift_sub_group_left(
-                    0xFFFFFFFFu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), wv,
-                    off);
-                /*
-                DPCT1108: '__shfl_down_sync' was migrated with the
-                experimental feature masked sub_group function which may not be
-                supported by all compilers or runtimes. You may need to adjust
-                the code.
-                */
-                const int oi = dpct::experimental::shift_sub_group_left(
-                    0xFFFFFFFFu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), wi,
-                    off);
+                const float ov = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wv, off);
+                const int oi = strata::sub_group_shift_left(sycl::ext::oneapi::this_work_item::get_sub_group(), wi, off);
                 if (ov > wv || (ov == wv && oi < wi)) { wv = ov; wi = oi; }
             }
             if (lane == 0) { sel_ids[i] = (wi < n_vocab) ? wi : 0; sel_logit[i] = wv; }
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         // An empty round leaves (-inf, 0): nothing comes after it, as nothing was left untaken.
         prev_v = sel_logit[i];
@@ -1013,13 +836,6 @@ __dpct_inline__ void warp_merge_lists(const sycl::int2 *lists, int nl,
 /// and runs `k` warp-argmax rounds over them with the threshold of `sampler_one_block_kernel` - no shared memory
 /// and no block barrier per round.  Warp 0 then merges the four warp lists into the block's list in `cand`
 /// (row-major: row t, block b, entry i at `(t * n_blocks + b) * k + i`, as (id, value bits)).
-/*
-DPCT1110: The total declared local variable size in device function
-sampler_split_part_kernel exceeds 128 bytes and may cause high register
-pressure. Consult with your hardware vendor to find the total register size
-available and adjust the code, or use smaller sub-group size to avoid high
-register pressure.
-*/
 __dpct_inline__ void
 sampler_split_part_kernel(const float *__restrict__ logits, int n_vocab,
                           const int *__restrict__ history, int history_len,
@@ -1049,10 +865,6 @@ sampler_split_part_kernel(const float *__restrict__ logits, int n_vocab,
 #pragma unroll
         for (int w = item_ct1.get_local_id(2); w < kSplitBlockSpan / 32;
              w += item_ct1.get_local_range(2)) bits[w] = 0u;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
         for (int i = item_ct1.get_local_id(2); i < hlen;
              i += item_ct1.get_local_range(2)) {
@@ -1062,10 +874,6 @@ sampler_split_part_kernel(const float *__restrict__ logits, int n_vocab,
                     sycl::access::address_space::generic_space>(
                     &bits[(h - blo) >> 5], 1u << ((h - blo) & 31));
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
         item_ct1.barrier(sycl::access::fence_space::local_space);
     }
 
@@ -1203,12 +1011,7 @@ __dpct_inline__ void coupled_penalize_kernel(
 #pragma unroll
     for (int w = item_ct1.get_local_id(2); w < words;
          w += item_ct1.get_local_range(2)) seen[w] = 0u;
-    /*
-    DPCT1065: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
+    item_ct1.barrier(sycl::access::fence_space::local_space);
     for (int i = item_ct1.get_local_id(2); i < h;
          i += item_ct1.get_local_range(2)) {
         const int v = hrow[i];
@@ -1299,11 +1102,6 @@ bool stream_capturing(void *stream) try {
         sycl::ext::oneapi::experimental::queue_state::executing;
     if (DPCT_CHECK_ERROR(
             (st = strata::q_of(stream)->ext_oneapi_get_state())) != 0) {
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use
-        the error codes. The cudaGetLastError function call was replaced with 0.
-        You need to rewrite this code.
-        */
         (void)0;
         return true;
     }
@@ -1336,11 +1134,6 @@ sycl::int2 *split_scratch(void *stream, size_t entries) {
     static std::vector<sycl::int2 *> retired;
     int device = 0;
     if (DPCT_CHECK_ERROR(device = dpct::get_current_device_id()) != 0) {
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use
-        the error codes. The cudaGetLastError function call was replaced with 0.
-        You need to rewrite this code.
-        */
         (void)0;
         return nullptr;
     }
@@ -1360,20 +1153,10 @@ sycl::int2 *split_scratch(void *stream, size_t entries) {
     sycl::int2 *ptr = nullptr;
     if (DPCT_CHECK_ERROR(ptr = sycl::malloc_device<sycl::int2>(
                              want, dpct::get_in_order_queue())) != 0) {
-        /*
-        DPCT1010: SYCL uses exceptions to report errors and does not use
-        the error codes. The cudaGetLastError function call was replaced with 0.
-        You need to rewrite this code.
-        */
         (void)0;
         want = entries;
         if (DPCT_CHECK_ERROR(ptr = sycl::malloc_device<sycl::int2>(
                                  want, dpct::get_in_order_queue())) != 0) {
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not
-            use the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             (void)0;
             slot->failed = entries;
             return nullptr;
@@ -1645,11 +1428,6 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                 });
         }
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
@@ -1659,11 +1437,6 @@ namespace {
 int coupled_blocks(int nv) { return (nv + kSplitBlockSpan - 1) / kSplitBlockSpan; }
 int coupled_kpart(int nv) { return nv < kSelMax ? nv : kSelMax; }
 void coupled_check(const char* what) {
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaGetLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     const dpct::err0 e = 0;
 }
 }  // namespace

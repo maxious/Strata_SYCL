@@ -43,7 +43,7 @@ distrobox:?*)
 esac
 if [ "$(id -u)" != 0 ] && [ $warm = 0 ]; then
     echo "benchy v1: re-running with sudo (it drops the page cache before each run; --warm to run without)" >&2
-    exec sudo --preserve-env=STRATA_SYCL_ROOT,STRATA_SYCL_IMAGE,STRATA_SYCL_RUNNER,STRATA_SYCL_BIN,ONEAPI_DEVICE_SELECTOR "$0" "$@"
+    exec sudo --preserve-env=STRATA_SYCL_ROOT,STRATA_SYCL_IMAGE,STRATA_SYCL_RUNNER,STRATA_SYCL_BIN,ONEAPI_DEVICE_SELECTOR,SPLIT_DEVICES "$0" "$@"
 fi
 rc=0
 python3 "$here/tools/perf_matrix.py" "$@" || rc=$?

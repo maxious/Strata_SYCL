@@ -12,21 +12,9 @@ namespace strata::core {
 namespace {
 
 void check(dpct::err0 e, const char *what) {
-    /*
-    DPCT1000: Error handling if-stmt was detected but could not be
-    rewritten.
-    */
     if (e != 0) {
-        /*
-        DPCT1009: SYCL reports errors using exceptions and does not use
-        error codes. Please replace the "get_error_string_dummy(...)" with a
-        real error-handling function.
-        */
-        /*
-        DPCT1001: The statement could not be removed.
-        */
         throw CudaError(
-            std::string(what) + ": " + dpct::get_error_string_dummy(e), (int)e);
+            std::string(what) + ": " + dpct::error_string(e), (int)e);
     }
 }
 
@@ -264,12 +252,7 @@ std::string device_code_error() try {
     DPCT1026: The call to cudaGetLastError was removed because this
     functionality is redundant in SYCL.
     */
-    /*
-    DPCT1009: SYCL reports errors using exceptions and does not use error
-    codes. Please replace the "get_error_string_dummy(...)" with a real
-    error-handling function.
-    */
-    return dpct::get_error_string_dummy(e);
+    return dpct::error_string(e);
 #endif
 }
 catch (sycl::exception const &exc) {
@@ -413,11 +396,6 @@ DeviceArena::DeviceArena(uint64_t bytes, int ordinal, bool poison)
                         });
                 });
             }
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not
-            use the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
             check(0, "poison_kernel");
         }
         check(DPCT_CHECK_ERROR(

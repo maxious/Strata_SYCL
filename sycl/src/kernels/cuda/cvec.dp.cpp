@@ -2,6 +2,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/sycl_queue.hpp"
 #include "strata/kernels/cvec.hpp"
 
@@ -43,21 +44,9 @@ bool upload_here(std::string &err) try {
             0 ||
         DPCT_CHECK_ERROR(t.on = sycl::malloc_device<int>(
                              1, dpct::get_in_order_queue())) != 0 ||
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
             t.dir, g_dir_host.data(), g_dir_host.size() * sizeof(float)).wait()) !=
             0 ||
-        /*
-        DPCT1114: cudaMemcpy is migrated to asynchronization memcpy,
-        assuming in the original code the source host memory is pageable memory.
-        If the memory is not pageable, call wait() on event return by memcpy API
-        to ensure synchronization behavior.
-        */
         DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(
             t.s, g_s_host.data(), g_s_host.size() * sizeof(float)).wait()) != 0 ||
         DPCT_CHECK_ERROR(dpct::get_in_order_queue()
@@ -81,12 +70,6 @@ __dpct_inline__ float sigmoidf_(float x) {
 }
 
 // one block per (stream, token): the pending write, then h . v over the stream, then the update
-/*
-DPCT1110: The total declared local variable size in device function
-cvec_kernel exceeds 128 bytes and may cause high register pressure. Consult with
-your hardware vendor to find the total register size available and adjust the
-code, or use smaller sub-group size to avoid high register pressure.
-*/
 __dpct_inline__ void
 cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
             const float *__restrict__ s_l, const int *__restrict__ on, int mode,
@@ -120,53 +103,21 @@ cvec_kernel(float *__restrict__ R, const float *__restrict__ dir,
             float[THREADS / 32]>(
             sycl::ext::oneapi::this_work_item::get_work_group<3>());
 #pragma unroll
-        /*
-        DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-        feature masked sub_group function which may not be supported by all
-        compilers or runtimes. You may need to adjust the code.
-        */
         for (int o = 16; o > 0; o >>= 1) dot +=
-            dpct::experimental::permute_sub_group_by_xor(
-                0xffffffffu, sycl::ext::oneapi::this_work_item::get_sub_group(),
-                dot, o);
+            strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), dot, o);
         if ((item_ct1.get_local_id(2) & 31) == 0)
             part[item_ct1.get_local_id(2) >> 5] = dot;
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         if (item_ct1.get_local_id(2) < 32) {
             float p = item_ct1.get_local_id(2) < THREADS / 32
                           ? part[item_ct1.get_local_id(2)]
                           : 0.0f;
 #pragma unroll
-            /*
-            DPCT1108: '__shfl_xor_sync' was migrated with the experimental
-            feature masked sub_group function which may not be supported by all
-            compilers or runtimes. You may need to adjust the code.
-            */
             for (int o = 16; o > 0; o >>= 1) p +=
-                dpct::experimental::permute_sub_group_by_xor(
-                    0xffffffffu,
-                    sycl::ext::oneapi::this_work_item::get_sub_group(), p, o);
+                strata::sub_group_permute_xor(sycl::ext::oneapi::this_work_item::get_sub_group(), p, o);
             if (item_ct1.get_local_id(2) == 0) part[0] = p;
         }
-        /*
-        DPCT1118: SYCL group functions and algorithms must be encountered in
-        converged control flow. You may need to adjust the code.
-        */
-        /*
-        DPCT1065: Consider replacing sycl::nd_item::barrier() with
-        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
-        better performance if there is no access to global memory.
-        */
-        item_ct1.barrier();
+        item_ct1.barrier(sycl::access::fence_space::local_space);
         dot = part[0] * s;   // s (h . v)
     }
 #pragma unroll
@@ -286,11 +237,6 @@ void cvec_apply(float *R, int64_t layer, int64_t T, int64_t r_ld,
                         });
             });
     }
-    /*
-    DPCT1010: SYCL uses exceptions to report errors and does not use the
-    error codes. The cudaPeekAtLastError function call was replaced with 0. You
-    need to rewrite this code.
-    */
     if (0 != 0) throw std::runtime_error("cvec_apply: launch failed");
 }
 catch (sycl::exception const &exc) {
