@@ -763,18 +763,26 @@ MoeBufs moe_bufs(size_t T, int64_t n_expert, bool fused) {
 uint64_t moe_set_bytes(size_t T, int64_t n_expert, bool fused) {
     const MmqPlan& mp = mmq_plan();
     const MoeBufs mb = moe_bufs(T, n_expert, fused);
+    const bool i8 = int8_env();   // carve takes the int8 buffers and Xs/Hh beside them; a counter that skips them
+                                  // makes `init` pick a chunk its own take sequence cannot hold ("do not fit")
     Alloc a; a.count_only = true; bool ok = true;
     a.take<float>(T * n_expert, ok); a.take<float>(T * K, ok); a.take<int32_t>(T * K, ok); a.take<int32_t>(T * K, ok);
     a.take<int32_t>(T * K, ok);
-    if (mp.fallback) a.take<uint16_t>(T * K * N, ok);
+    if (mp.fallback || i8) a.take<uint16_t>(T * K * N, ok);
     a.take<float>(mb.gu, ok);
-    if (mp.fallback) a.take<uint16_t>(T * K * 640, ok);
+    if (mp.fallback || i8) a.take<uint16_t>(T * K * 640, ok);
     a.take<float>(T * K * N, ok); a.take<float>(T * 640, ok);
     a.take<float>(T * 640, ok); a.take<uint16_t>(T * 640, ok); a.take<float>(T * N, ok); a.take<float>(T, ok);
     if (mp.any) {
         a.take<uint8_t>(mb.xq, ok);
         a.take<float>(mb.h, ok);
         a.take<uint8_t>(mb.hq, ok);
+    }
+    if (i8) {
+        a.take<int8_t>(T * K * N, ok);      // Xq8
+        a.take<int8_t>(T * K * 640, ok);    // Hq8
+        a.take<float>(T * K, ok);           // sx
+        a.take<float>(T * K, ok);           // sh
     }
     return a.used;
 }
@@ -1430,7 +1438,10 @@ uint64_t Prefill::bytes_needed(const core::ModelGeometry& g, const core::Session
     const int64_t max_blocks = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
     o.take<uint8_t>((size_t) std::max({gdn_set_bytes(T), qsa_set_bytes(T, cap, max_blocks, 256, 32, s),
                                        moe_set_bytes(T, g.n_expert, fused_layout(T, true))}), ok);
-    for (int i = 0; i < DQ; ++i) { o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok); }
+    for (int i = 0; i < DQ; ++i) {
+        o.take<uint16_t>(1280 * 2560, ok); o.take<uint16_t>(2560 * 640, ok);
+        if (int8_env()) { o.take<float>(1280, ok); o.take<float>(2560, ok); }   // sgu[i], sd[i]
+    }
     if (mmq_plan().any) {
         const MmqPlan& mp = mmq_plan();
         o.take<int32_t>(T * K, ok);
