@@ -44,6 +44,8 @@ static_assert(sizeof(Q6KBlockMirror) == 210, "the transform reads the GGUF Q6_K 
 
 struct Q6kDpasBuf { const uint8_t* tiles; const int8_t* scales; const uint16_t* d; };
 std::unordered_map<const void*, Q6kDpasBuf> g_q6k_dpas;
+float* g_dpas_partial = nullptr;   // the KS partials per tile, grown on demand
+std::size_t g_dpas_partial_bytes = 0;
 int g_q6k_dpas_enabled = 0;
 
 std::size_t q6k_dpas_tiles_bytes(int n_in, int n_out) {
@@ -119,91 +121,109 @@ void native_q6k_vnni_tiles(const void* weights, void* buf, int n_in, int n_out, 
         .wait();
 }
 
+// One work-item per 16-row tile, K split KS ways. The KS partials go to DISTINCT GLOBAL slots and a second
+// kernel sums them: no local memory and no barrier anywhere in the path, because the local-memory combine in this
+// translation unit is bistable - adding an unrelated global store makes one column count correct, adding a barrier
+// breaks it again (docs/sycl-experiments/42-...md), so the combine must not depend on work-group scheduling at all.
 template <int NC, int KS>
 static void launch_q6k_dpas(const uint8_t* __restrict__ tiles, const int8_t* __restrict__ sc,
                             const uint16_t* __restrict__ dh, const uint8_t* __restrict__ xq, float* __restrict__ y,
-                            int n_in, int n_out, sycl::queue* q) {
+                            float* __restrict__ partial, int n_in, int n_out, sycl::queue* q) {
     constexpr int NT = 16, K = 32;
     const int bpr = n_in / 256, ng = n_in / 32, ntiles = n_out / NT;
-
     q->submit([&](sycl::handler& cgh) {
-        sycl::local_accessor<float, 1> red(sycl::range<1>((size_t) KS * NC * NT), cgh);
-        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>((size_t) ntiles * KS), sycl::range<1>(KS)),
-                         [=](sycl::nd_item<1> it) [[intel::sycl_explicit_simd]] {
-            const int tile = (int) (it.get_group(0) / KS);
-            const int lid = (int) it.get_local_id(0);
-            const int row0 = tile * NT;
-            esimd_q6k::simd<uint32_t, 128> half_mask = 0u;
+        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>((std::size_t) ntiles * KS), sycl::range<1>(KS)),
+            [=](sycl::nd_item<1> it) [[intel::sycl_explicit_simd]] {
+                const int tile = (int) it.get_group(0), lid = (int) it.get_local_id(0);
+                const int row0 = tile * NT;
+                esimd_q6k::simd<uint32_t, 128> half_mask = 0u;
 #pragma unroll
-            for (int i = 64; i < 128; ++i) half_mask[i] = 0xFFFFFFFFu;   // keep kd 4..7 (the upper 16 of K)
-            esimd_q6k::simd<float, NC * NT> Cf = 0.0f;
-            for (int sb = lid; sb < bpr; sb += KS) {
-                esimd_q6k::simd<uint32_t, NT> rows;
+                for (int i = 64; i < 128; ++i) half_mask[i] = 0xFFFFFFFFu;
+                esimd_q6k::simd<float, NT> Cf[NC];
 #pragma unroll
-                for (int n = 0; n < NT; ++n) rows[n] = (uint32_t) (row0 + n < n_out ? row0 + n : n_out - 1);
-                int8_t scl[NT][16];
-                float dsp[NT];
-                {
+                for (int m = 0; m < NC; ++m) Cf[m] = 0.0f;
+                for (int sb = lid; sb < bpr; sb += KS) {
+                    esimd_q6k::simd<uint32_t, NT> rows;
 #pragma unroll
-                    for (int n = 0; n < NT; ++n) dsp[n] = sycl::bit_cast<sycl::half>(*(const uint16_t*) (dh + (size_t) rows[n] * bpr + sb));
+                    for (int n = 0; n < NT; ++n) rows[n] = (uint32_t) (row0 + n < n_out ? row0 + n : n_out - 1);
+                    float dsp[NT];
+                    int8_t scl[NT][16];
 #pragma unroll
                     for (int n = 0; n < NT; ++n) {
-                        const uint8_t* sp = (const uint8_t*) (sc + ((size_t) rows[n] * bpr + sb) * 16);
+                        dsp[n] = sycl::bit_cast<sycl::half>(*(const uint16_t*) (dh + (size_t) rows[n] * bpr + sb));
+                        const int8_t* sp = sc + ((size_t) rows[n] * bpr + sb) * 16;
 #pragma unroll
-                        for (int i = 0; i < 16; ++i) scl[n][i] = (int8_t) sp[i];
+                        for (int i = 0; i < 16; ++i) scl[n][i] = sp[i];
+                    }
+                    for (int j = 0; j < 8; ++j) {
+                        const uint8_t* tp = tiles + (((std::size_t) tile * bpr + sb) * 8 + j) * (NT * K);
+                        const esimd_q6k::simd<uint32_t, 128> Xt = esimd_q6k::block_load<uint32_t, 128>((const uint32_t*) tp);
+                        esimd_q6k::simd<uint32_t, 128> Xl = Xt & ~half_mask, Xh = Xt & half_mask;
+                        const esimd_q6k::simd<int8_t, NT * K> Blo = Xl.template bit_cast_view<int8_t>();
+                        const esimd_q6k::simd<int8_t, NT * K> Bhi = Xh.template bit_cast_view<int8_t>();
+                        esimd_q6k::simd<float, NT> rs0 = 0.0f, rs1 = 0.0f;
+#pragma unroll
+                        for (int n = 0; n < NT; ++n) {
+                            rs0[n] = (float) scl[n][2 * j] * dsp[n];
+                            rs1[n] = (float) scl[n][2 * j + 1] * dsp[n];
+                        }
+                        const int g8 = sb * 8 + j;
+#pragma unroll
+                        for (int m = 0; m < NC; ++m) {
+                            const uint8_t* xb = xq + ((std::size_t) m * ng + g8) * 36;
+                            const esimd_q6k::simd<int8_t, K> A =
+                                esimd_q6k::block_load<int8_t, K>((const int8_t*) (xb + 4));
+                            const float dx = sycl::bit_cast<sycl::half>(*(const uint16_t*) xb);
+                            const esimd_q6k::simd<int, NT> C0 = xmx_q6k::dpas<8, 1, int>(Blo, A);
+                            const esimd_q6k::simd<int, NT> C1 = xmx_q6k::dpas<8, 1, int>(Bhi, A);
+                            Cf[m] += (esimd_q6k::convert<float>(C0) * rs0 + esimd_q6k::convert<float>(C1) * rs1) * dx;
+                        }
                     }
                 }
-                for (int j = 0; j < 8; ++j) {
-                    const uint8_t* tp = tiles + (((size_t) tile * bpr + sb) * 8 + j) * (NT * K);
-                    esimd_q6k::simd<uint32_t, 128> Xt = esimd_q6k::block_load<uint32_t, 128>((const uint32_t*) tp);
-                    esimd_q6k::simd<uint32_t, 128> Xl = Xt & ~half_mask, Xh = Xt & half_mask;
-                    esimd_q6k::simd<int8_t, NT * K> Blo = Xl.template bit_cast_view<int8_t>();
-                    esimd_q6k::simd<int8_t, NT * K> Bhi = Xh.template bit_cast_view<int8_t>();
-                    esimd_q6k::simd<float, NT> rs0 = 0.0f, rs1 = 0.0f;
+                float* part = partial + ((std::size_t) tile * KS + lid) * (NC * NT);
 #pragma unroll
-                    for (int n = 0; n < NT; ++n) {
-                        rs0[n] = (float) scl[n][2 * j] * dsp[n];
-                        rs1[n] = (float) scl[n][2 * j + 1] * dsp[n];
-                    }
-                    const int g8 = sb * 8 + j;
-                    for (int m = 0; m < NC; ++m) {
-                        const uint8_t* xb = xq + ((size_t) m * ng + g8) * 36;
-                        const esimd_q6k::simd<int8_t, K> A = esimd_q6k::block_load<int8_t, K>((const int8_t*) (xb + 4));
-                        const float dx = (float) sycl::bit_cast<sycl::half>(*(const uint16_t*) xb);
-                        esimd_q6k::simd<int, NT> C0 = xmx_q6k::dpas<8, 1, int>(Blo, A);
-                        const esimd_q6k::simd<int, NT> C1 = xmx_q6k::dpas<8, 1, int>(Bhi, A);
-                        Cf.template select<NT, 1>(m * NT) +=
-                            (esimd_q6k::convert<float>(C0) * rs0 + esimd_q6k::convert<float>(C1) * rs1) * dx;
-                    }
-                }
-            }
-            float* sh = red.get_multi_ptr<sycl::access::decorated::no>().get();
+                for (int m = 0; m < NC; ++m)
 #pragma unroll
-            for (int i = 0; i < NC * NT; ++i) sh[lid * (NC * NT) + i] = Cf[i];
-            it.barrier(sycl::access::fence_space::local_space);
-            if (lid != 0) return;
-#pragma unroll
-            for (int m = 0; m < NC; ++m)
-#pragma unroll
-                for (int n = 0; n < NT; ++n) {
-                    float v = 0.0f;
-#pragma unroll
-                    for (int k = 0; k < KS; ++k) v += sh[k * (NC * NT) + m * NT + n];
-                    if (row0 + n < n_out) y[(size_t) m * n_out + row0 + n] = v;
-                }
-        });
+                    for (int n = 0; n < NT; ++n) part[m * NT + n] = Cf[m][n];
+            });
     });
+    // sum the KS partials of each tile and store; one work-group per tile, no local memory
+    q->submit([&](sycl::handler& cgh) {
+        cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>((std::size_t) ntiles), sycl::range<1>(KS)),
+            [=](sycl::nd_item<1> it) [[intel::sycl_explicit_simd]] {
+                const int tile = (int) it.get_group(0), lid = (int) it.get_local_id(0);
+                const int row0 = tile * NT;
+                for (int m = 0; m < NC; ++m)
+#pragma unroll
+                    for (int n = 0; n < NT; ++n) {
+                        float v = 0.0f;
+#pragma unroll
+                        for (int k = 0; k < KS; ++k) v += partial[((std::size_t) tile * KS + k) * (NC * NT) + m * NT + n];
+                        if (row0 + n < n_out) y[(std::size_t) m * n_out + row0 + n] = v;
+                    }
+            });
+    });
+    q->wait();
 }
-
-
 
 void native_mmvq_q6k_dpas(const void* tiles, const void* scl, const void* d, const void* x_q8_1, float* y,
                           int n_in, int n_out, int ncols, void* stream) {
     const int bpr = n_in / 256;
     sycl::queue* q = strata::q_of(stream);
-#define STRATA_DPAS(NC, KS) \
-    launch_q6k_dpas<NC, KS>((const uint8_t*) tiles, (const int8_t*) scl, (const uint16_t*) d, \
-                            (const uint8_t*) x_q8_1, y, n_in, n_out, q)
+#define STRATA_DPAS(NC, KS)                                                    \
+    do {                                                                       \
+        const int ntiles = n_out / 16;                                         \
+        const std::size_t floats = (std::size_t) ntiles * KS * NC * 16;         \
+        if (g_dpas_partial_bytes < floats * 4) {                                \
+            if (g_dpas_partial) sycl::free(g_dpas_partial, *q);                 \
+            g_dpas_partial = (float*) sycl::malloc_device(floats * 4, *q);     \
+            g_dpas_partial_bytes = g_dpas_partial ? floats * 4 : 0;            \
+        }                                                                       \
+        if (g_dpas_partial)                                                     \
+            launch_q6k_dpas<NC, KS>((const uint8_t*) tiles, (const int8_t*) scl, \
+                                    (const uint16_t*) d, (const uint8_t*) x_q8_1, y, g_dpas_partial,        \
+                                    n_in, n_out, q);                            \
+    } while (0)
 // One work-item per 16-row tile (KS = 1) in the engine path. The K-split was tried three ways and the
 // combine is wrong in this translation unit at KS > 1: local memory gives rel 0.87 against the shipped kernel where
 // KS = 1 gives 1.7e-07, a scalar atomic_ref is not available under explicit SIMD, and a two-pass reduce over distinct

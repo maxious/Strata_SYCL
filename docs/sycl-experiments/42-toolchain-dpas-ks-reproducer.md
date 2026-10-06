@@ -122,3 +122,54 @@ Not yet tried, and the next things to try:
 So the defect needs KS > 1 in this kernel, is not the local-memory or barrier mechanism (exact in isolation), and
 survives every source, codegen, launch, flag and formulation difference that has been tried. The reproducer below
 is the honest state: a real, small, unexplained failure with the search space already narrowed.
+
+## Diagnosis update (2026-10-06, evening): the defect is the per-work-item PARTIALS, and the kernel is bistable
+
+Two more experiments, both at KS = 8, changed the diagnosis.
+
+**1. Adding an unrelated global store flips the result.** With a debug block that writes a few values to a global
+buffer before the combine, `ncols 1` went from rel 8.76e-01 to **rel 1.51e-08** in the same binary, and stayed correct
+with the debug branch *not* taken. Nothing about the computation changed - only the code around it.
+
+**2. Removing local memory and the barrier entirely changes nothing.** The combine was rewritten as two kernels with
+**no `local_accessor`, no `barrier`, no atomics**: each work-item writes its partial to a distinct global slot and a
+second kernel sums them. It still reports **rel 8.70e-01** at KS = 8, and is **exact (rel 1.67e-07, 0 failures) at
+KS = 1**.
+
+Taken together these move the fault decisively:
+
+- it is **not the combine** (local memory, barrier, atomics and a barrier-free two-pass all fail identically);
+- it is **not local memory or barriers as mechanisms** (the 40-line isolation is exact);
+- it is **not codegen** (2,317 identical .asm lines), **not spills** (no annotations), **not a flag** (`-DMKL_ILP64`);
+- it therefore lives in **the per-work-item partial**, i.e. in the strided `for (sb = lid; sb < bpr; sb += KS)` loop
+  that runs the DPAS - which only executes when a work-group has more than one work-item;
+- and it is **bistable under trivial edits** (a global store fixes it; adding a barrier breaks it again), which is a
+  scheduling/visibility sensitivity localised to this kernel shape in this binary, not a logic error.
+
+At KS = 1 the loop is `sb = 0..bpr-1` in one work-item and everything is exact, which is why the shipped default is
+KS = 1 and why the engine A/B loses: the boost only exists at KS > 1.
+
+### The next experiment, with the oracle already in place
+
+`q6k_dpas_parity` at `-DSTRATA_DPAS_KS_N=8` is a pass/fail oracle that builds in one step. The decisive measurement is
+to **write each lid's partial to a distinct global slot (already done in the two-pass) and compare it against the same
+partial computed on the host** for the same tile and block set. That splits the remaining space cleanly:
+
+| result | conclusion | what to do |
+|---|---|---|
+| lid 0 correct, lids 1..KS-1 wrong | the strided block loop is mis-executed with >1 work-item per group | replace the stride with **contiguous chunks** (`sb = lid * chunk + it`), which is a one-line change and keeps the same partial layout |
+| all lids wrong | the DPAS operand path is wrong for any multi-work-item group | abandon the K-split; the only remaining parallelism is **8-row tiles** (`N=8` is a legal DPAS execution size, so twice the tiles and still one work-item per tile) |
+| all lids correct but y wrong | the second kernel's read/store | trivially fixable |
+
+A cheaper first probe of the same hypothesis, needing no new code: the rel values are almost exactly `1 - 1/KS`
+(measured 8.76e-01 / 7.37e-01 / 4.85e-01 against 0.875 / 0.75 / 0.5), i.e. **only one in KS of the output rows is
+right**. Whether that one is tile 0 (a launch/grid effect) or every KS-th tile (a store effect) is one `printf` in the
+two-pass reduce kernel, and it points straight at the table above.
+
+### What the boost is worth even if this is fixed
+
+From step 1's measurements, at KS = 8 the prize is 0.909 ms per 4-token spec-4 window (~1% of a 45-52 ms round) and
+1.6 ms per token at ncols 1 (~4-6%), against ~168 expert-cache slots (~-0.49 tok/s) the tiles cost. So a fix is worth
+chasing for **non-speculative decode** (net positive, ~+1.9 tok/s) and is **net negative at spec 4** (~+0.19 vs
+-0.49 tok/s). The engine runs spec 4 by default, so the honest answer to "will this path work" is: only if the tiles
+can come from somewhere that is not the expert cache, or if decode runs without speculation.

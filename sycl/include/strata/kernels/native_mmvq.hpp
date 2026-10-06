@@ -135,6 +135,7 @@ void native_mmvq_register_q6k_dpas(const void* packed, const void* buf, int n_in
 void native_mmvq_unregister_q6k_dpas(const void* packed);
 void native_mmvq_clear_q6k_dpas();
 void native_mmvq_set_q6k_dpas(bool enabled);
+void native_mmvq_q6k_dpas_set_dbg(float* p, int groups);   // STRATA_DPAS_DBG: the kernel's own launch report
 // device transform: Q6KBlock array (n_out * n_in/256) -> Q6UBlock array (n_out * n_in/32).
 void native_q6k_preunpack(const void* weights, void* unpacked, int n_in, int n_out, void* stream);
 // decode on a pre-unpacked Q6UBlock buffer (the no-bit-unpack path).
