@@ -110,3 +110,15 @@ Not yet tried, and the next things to try:
    re-materialise the scale vectors inside the group so fewer registers are live across the store.
 3. Read `//.spill size` for the two kernels from the ISA dumps already on disk
    (`/home/maxious/exp42-harness/isa/`) to confirm or refute the pressure hypothesis before changing code.
+
+### Also excluded (2026-10-06, after the isolation)
+
+- **Register pressure / spills.** The ISA dumps carry no spill annotations at all (`grep -c spill` = 0 in both
+  kernels), only a scratch-location declaration, so the pressure hypothesis is unsupported as IGC reports it.
+- **The one compile-flag difference between the two TUs.** The bench TU is compiled with `-DMKL_ILP64` and
+  `strata_kernels` is not; rebuilding the engine TU with `-DCMAKE_CXX_FLAGS=-DMKL_ILP64` at KS = 8 still reports
+  rel 8.70e-01, so that flag is not it either.
+
+So the defect needs KS > 1 in this kernel, is not the local-memory or barrier mechanism (exact in isolation), and
+survives every source, codegen, launch, flag and formulation difference that has been tried. The reproducer below
+is the honest state: a real, small, unexplained failure with the search space already narrowed.
