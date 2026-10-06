@@ -264,3 +264,36 @@ editing the kernel. The three things that make it actionable for whoever does:
 
 Until that is resolved the engine path stays at KS = 1: correct, parity-gated, and **2.84x slower end to end**, which
 is the number that keeps the switch off.
+
+## CLOSED (2026-10-06): no feasible path to a noticeable boost on this engine
+
+The integration is finished and measured, and the answer is negative. Everything below is in the tree; nothing here
+is expected to be revisited unless the toolchain changes.
+
+**What was built.** A device-side Q6_K to DPAS-order transform at weight load, a parallel-buffer registry, and a
+decode matvec, behind `STRATA_Q6K_DPAS=1` with `STRATA_Q6K_DPAS_MIN_BYTES=8 MiB` (the shape threshold the bench
+measured). Default off. `q6k_dpas_parity` gates it against the shipped AOS kernel.
+
+**The numbers that close it.**
+
+| | |
+|---|---|
+| bench kernel (its own TU, KS=8) | **1.98x** the shipped AOS dp4a kernel at 12288x2560 - the algorithm and hardware path are real |
+| engine, one work-item per tile | exact (rel 1.6e-07) and **2.84x slower end to end**: 39.10 -> 13.75 tok/s at matched reported expert-cache slots |
+| engine, K-split (KS 2/4/8) | wrong in every formulation tried (rel ~ 1 - 1/KS) |
+| engine, 8-row tiles | **impossible**: int8 DPAS on this device is K=32, N=16 only |
+
+The K-split is the only source of parallelism left (N=8 would have doubled the work-item count, and it does not
+exist), and it is the one thing measured wrong: bistable under trivial edits, correct in the bench TU with
+byte-identical generated code. That is a toolchain escalation, recorded in
+[42-toolchain-dpas-ks-reproducer.md](42-toolchain-dpas-ks-reproducer.md).
+
+**And the ceiling, which is why this is closed rather than parked.** The dense Q6_K matvecs are ~0.9 ms of a 45-52 ms
+spec-4 round (~1%), and the +330 MB of tiles costs ~168 expert-cache slots, which the measured slot curve prices at
+~-0.49 tok/s against a ~+0.19 tok/s prize: **net negative on the engine's default configuration**. The ~4-6% case
+exists only at ncols=1, i.e. decode without speculation, which is not how the engine runs. So even a perfect kernel
+does not buy a noticeable boost here, and the switch stays off.
+
+**What remains in the tree.** The bench harness (`xmx_mmvq_bench`) as the instrument, the parity test as the gate,
+and the wiring itself left in place but inert and ctest-gated - removing it is one commit if a future session prefers
+a tree with no DPAS path at all.

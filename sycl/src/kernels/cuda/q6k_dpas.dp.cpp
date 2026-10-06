@@ -1,3 +1,11 @@
+// exp 42: the DPAS int8 Q6_K decode path - CLOSED, INERT, DEFAULT OFF. Kept as the gate and the record, not
+// as a live lever: the bench kernel is 1.98x the shipped AOS dp4a kernel, but wired into the engine one work-item per
+// tile is exact and 2.84x slower end to end (39.10 -> 13.75 tok/s at matched expert-cache slots), and the K-split
+// that would supply the parallelism is wrong at every width in this toolchain while int8 DPAS here is N=16 only, so
+// no 8-row tile exists. Even a perfect kernel is ~1% of a spec-4 round and net negative after the tiles' cost in
+// expert-cache slots. Do not enable STRATA_Q6K_DPAS. Findings: docs/sycl-experiments/42-dpas-mmvq-reordered-q6k.md
+// and 42-toolchain-dpas-ks-reproducer.md; the gate is q6k_dpas_parity.
+//
 // exp 42: the DPAS int8 Q6_K decode path - the one-time AOS -> DPAS-order transform, the tile registry, and the
 // decode matvec itself.
 //
