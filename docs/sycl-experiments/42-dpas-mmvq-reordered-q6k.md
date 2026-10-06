@@ -202,3 +202,33 @@ the remaining suspect is the launch geometry or the local-memory reduction in th
 `bpr >= 8 -> KS = 8`; the engine picks KS from the same rule, and 2560 gives bpr = 10, so two of the eight
 work-items take two blocks and six take one - a reduction bug there would corrupt *most* rows while leaving row 0 of
 each tile intact, which is what the numbers show).
+
+### Step 3 - the engine A/B, measured on the Coder (2026-10-06)
+
+Both arms, same binary (verified fresh: nothing under sycl/src or sycl/include is newer than it), same prompt, same
+256 generated tokens, same `--expert-cache 5000`, single card, run back to back:
+
+| arm | STRATA_Q6K_DPAS | reported expert cache | VRAM | decode |
+|---|---:|---:|---:|---:|
+| A | 0 (shipped) | 6,519 slots | 12.40 GiB | 256 tokens in 6,547 ms -> **39.10 tok/s** |
+| B | 1 | 6,519 slots | 12.40 GiB | 256 tokens in 18,624 ms -> **13.75 tok/s** |
+
+The two arms report the **same** slot count, so this is already a matched-slots comparison and no hint calibration
+was needed: the sizer counts slots, and the DPAS arm's +330 MB of tiles came out of headroom rather than the cache.
+
+**The wired path is 2.84x slower end to end.** That is not a surprise in hindsight and it is exactly what the K-split
+defect predicts: the engine path runs one work-item per 16-row tile (KS = 1), so the 12,288-row projection runs on 768
+work-items of a kernel whose bench counterpart at KS = 8 is 1.98x the shipped one. The bench number and the engine
+number are the same kernel at two occupancies.
+
+**So the ordering is now: fix the combine, then re-run this A/B.** Until then the honest verdict on the objective's
+success criterion - "beats the two-projection + swiglu sequence at ncols 1-8, then an engine A/B at matched slots" -
+is **not met**: the bench criterion is met at KS = 8 and the engine criterion is failed at KS = 1, and the K-split is
+what separates them. Nothing moves by default, which is where the switch already sits.
+
+The defect to root-cause, stated as precisely as the evidence allows: **with KS > 1 the partial combine is wrong in
+sycl/src/kernels/cuda/q6k_dpas.dp.cpp and right in sycl/src/kernels/xmx_mmvq_bench.cpp, from the same source and the
+same compile flags.** Local memory, a scalar atomic (unavailable under explicit SIMD) and a two-pass reduce over
+distinct global partial slots have all failed the same way; KS = 1 is exact (1.6e-07). The next experiment is to diff the
+generated device code for the two TUs (icpx -fsycl-dump-device-code, or the VSCLDISASSEMBLY/ `-g` route this tree
+already uses for ISA dumps) and find what differs in the combine, rather than to keep trying formulations.
