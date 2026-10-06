@@ -210,7 +210,12 @@ void native_mmvq_q6k_dpas(const void* tiles, const void* scl, const void* d, con
 // global partial slots failed the same way. The identical kernel reduces correctly inside xmx_mmvq_bench, so this is a
 // property of this build's code path, not of the algorithm - and until it is root-caused the engine path stays
 // single-work-item, which is correct but leaves the GPU underfilled (160 tiles for 2560 rows).
-#define STRATA_DPAS_KS(NC) STRATA_DPAS(NC, 1)
+// STRATA_DPAS_KS_N selects how many work-items split one tile's blocks (see the note above): 1 is correct, >1 is
+// wrong in this toolchain, and the value is a compile-time switch so a reproducer needs no source edit.
+#ifndef STRATA_DPAS_KS_N
+#define STRATA_DPAS_KS_N 1
+#endif
+#define STRATA_DPAS_KS(NC) STRATA_DPAS(NC, STRATA_DPAS_KS_N)
     switch (ncols) {
         case 1: STRATA_DPAS_KS(1); break;
         case 2: STRATA_DPAS_KS(2); break;

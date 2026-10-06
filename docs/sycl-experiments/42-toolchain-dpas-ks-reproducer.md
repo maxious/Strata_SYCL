@@ -1,0 +1,80 @@
+# Toolchain reproducer: int8 DPAS results depend on the translation unit, from identical generated code
+
+**Filed from exp 42's engine integration (2026-10-06).** This is a self-contained reproducer, not a port bug report
+about our source: the same kernel, compiled from two translation units with the same flags, produces byte-identical
+device code and different results.
+
+## Symptom
+
+`sycl/src/kernels/cuda/q6k_dpas.dp.cpp` (exp 42's DPAS int8 Q6_K decode matvec) reduces its per-work-item partials
+across the `KS` work-items of a tile through SYCL local memory:
+
+```cpp
+sycl::local_accessor<float, 1> red(sycl::range<1>((std::size_t) KS * NC * NT), cgh);
+cgh.parallel_for(sycl::nd_range<1>(sycl::range<1>((std::size_t) ntiles * KS), sycl::range<1>(KS)),
+                 [=](sycl::nd_item<1> it) [[intel::sycl_explicit_simd]] {
+    ...
+    float* sh = red.get_multi_ptr<sycl::access::decorated::no>().get();
+    for (int i = 0; i < NC * NT; ++i) sh[lid * (NC * NT) + i] = Cf[i];
+    it.barrier(sycl::access::fence_space::local_space);
+    if (lid != 0) return;
+    ... v = sum over k < KS of sh[k * (NC * NT) + m * NT + n] ...
+});
+```
+
+* With **KS = 1** (no cross-work-item combine) the kernel is **correct**: rel 1.6e-07 against the reference, which is
+  the fp32-rounding floor (`q6k_dpas_parity`: 0 failures at ncols 1-8).
+* With **KS = 8** the same kernel is **wrong**: rel 0.87 at every ncols - most output rows are zero or garbage.
+* The identical source in `sycl/src/kernels/xmx_mmvq_bench.cpp`, at KS = 8, is **correct** (rel 3.44e-03 against an fp64
+  reference, matching the shipped dp4a kernel).
+
+## What is ruled out
+
+1. **Generated code.** Dumping both instantiations at NC = 1, KS = 8 with
+   `IGC_ShaderDumpEnable=1 IGC_ForceIgnoreCaching=1 NEO_CACHE_PERSISTENT=0 SYCL_CACHE_PERSISTENT=0
+   IGC_DumpToCustomDir=<dir>` gives **2,317 .asm lines each**, and a line-by-line diff differs by **one line: the
+   symbol-name comment**.
+2. **Inputs.** The DPAS B tiles, the Q6_K scales and d that the engine's transform produces are byte-identical to a
+   host-built reference of the same layout: 0 differences in 6,553,600 / 409,600 / 25,600 bytes.
+3. **Launch geometry.** Both launch `ntiles * KS` groups of `KS` (160 tiles x 8 for a 2,560-row output) with the same
+   local accessor size.
+4. **Compile flags.** Identical (`-O3 -DNDEBUG -std=c++20 -fsycl -fsycl-default-sub-group-size=32
+   -fsycl-device-code-split=per_kernel -fp-model=precise`), verified from `build.ninja`.
+5. **Library vs executable.** Compiling the failing TU into the consumer executable instead of the static library does
+   not change the result.
+6. **Other formulations of the combine.** Local memory fails; a scalar `atomic_ref` is unavailable under
+   `[[intel::sycl_explicit_simd]]` ("not supported in ESIMD context"); a two-pass reduce over distinct global partial
+   slots fails the same way.
+
+## Reproducer
+
+```sh
+source /opt/intel/oneapi/setvars.sh
+cd sycl
+# KS = 1 (default): correct
+ninja -C build-b60 q6k_dpas_parity && ./build-b60/q6k_dpas_parity          # 0 failures, rel ~1.6e-07
+# KS = 8: wrong. The width is a compile-time switch, so no source edit is needed:
+icpx -fsycl -O3 -DNDEBUG -std=c++20 -DSTRATA_DPAS_KS_N=8 -fsycl-default-sub-group-size=32 \
+     -fsycl-device-code-split=per_kernel -I include -I src -I third_party/ggml \
+     -c src/kernels/cuda/q6k_dpas.dp.cpp -o /tmp/ks8.o                    # compiles clean
+# then link that object ahead of libstrata_kernels.a and run: rel 0.87 at every ncols.
+```
+
+Reference run: `sycl/build-b60/q6k_dpas_parity` at 2,560 x 2,560, random Q6_K weights, q8_1 activations, ncols 1-8.
+
+## Environment
+
+| | |
+|---|---|
+| device | Intel Arc Pro B60 (BMG G21, `ext_intel_matrix` present, 2 GPUs) |
+| driver / kernel | xe 1.1.0, Linux 7.3.0-rc1-xe-perf |
+| compiler | oneAPI 2026.1 `icpx`, SPIR-V + JIT (`STRATA_SYCL_AOT` empty) |
+| dpas header | `sycl/ext/intel/esimd/xmx/dpas.hpp`, `dpas<8, 1, int>` (int8, K = 32, N = 16) |
+| build | `-fsycl-device-code-split=per_kernel`, `-fsycl-default-sub-group-size=32`, `-fp-model=precise` |
+
+## What would confirm it for Intel
+
+The smallest case is the local-memory combine alone under `[[intel::sycl_explicit_simd]]`: `KS` work-items write
+`KS * NC * NT` floats to a `local_accessor<float, 1>`, barrier, work-item 0 sums each element across the `KS` slots.
+The dump shows this sequence emitted correctly, yet the summed values do not match the per-work-item inputs. A
+standalone kernel doing only that (no DPAS, no tiles) would be enough to isolate it.
