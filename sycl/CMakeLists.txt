@@ -149,6 +149,7 @@ foreach(k IN LISTS _kernel_cu)
 endforeach()
 strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
+list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/q6k_dpas.dp.cpp)   # exp 42: DPAS int8 Q6_K decode, its own TU
 add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
@@ -314,6 +315,11 @@ if(STRATA_SYCL_PARITY)
   add_executable(q6k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_parity.cpp)
   target_link_libraries(q6k_preunpack_parity PRIVATE strata_kernels)
   add_test(NAME q6k_preunpack_parity COMMAND q6k_preunpack_parity)
+  # exp 42: the DPAS int8 Q6_K decode path as wired into the engine, against the shipped AOS dp4a kernel. NOT a
+  # ctest: the wiring does not yet reproduce the AOS kernel (see docs/sycl-experiments/42-...md), so registering it
+  # would put a red test in the suite for a path that is opt-in and off. Run it by hand before enabling STRATA_Q6K_DPAS.
+  add_executable(q6k_dpas_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_dpas_parity.cpp)
+  target_link_libraries(q6k_dpas_parity PRIVATE strata_kernels)
   # the Q5K->Q5U pre-unpack + routed-decode correctness gate (P0 #5, exp 30): the min-offset no-bit-unpack decode
   # must reproduce the packed Q5_K path within fp32 rounding; and its bench.
   add_executable(q5k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q5k_preunpack_parity.cpp)

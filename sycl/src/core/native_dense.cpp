@@ -224,6 +224,15 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
             return false;
         }
         // All checks and allocations finish before publishing any reference.
+        // exp 42: the DPAS int8 decode path, opt-in. Registered only for shapes whose packed size clears
+        // STRATA_Q6K_DPAS_MIN_BYTES, because the tile buffer costs the pre-unpack's VRAM class and the small
+        // shapes lose on the kernel (exp 42: 2560x512 is 0.44x, 2560x640 ~0.6x, 6144x2560 is 1.47x).
+        const bool dpas = std::getenv("STRATA_Q6K_DPAS") != nullptr &&
+                          std::atoi(std::getenv("STRATA_Q6K_DPAS")) != 0;
+        static const std::size_t dpas_min_bytes =
+            std::getenv("STRATA_Q6K_DPAS_MIN_BYTES") ? (std::size_t) std::atoll(std::getenv("STRATA_Q6K_DPAS_MIN_BYTES"))
+                                                      : (std::size_t) 8 * 1024 * 1024;
+        bool dpas_any = false;
         const bool preunpack = q6k_preunpack_enabled();
         bool preunpacked_any = false;
         weights_.reserve(pending.size() + (preunpack ? 1 : 0));
@@ -247,6 +256,25 @@ bool NativeDense::load(const std::vector<std::string>& shards, WeightTable& tabl
                     preunpacked_any = true;
                 }
             }
+        }
+        if (dpas && dpas_min_bytes) {
+            for (auto& item : pending) {
+                if (item.type != 14 || item.ref->native_data == nullptr) continue;
+                const int ni = (int) item.ref->ne0, no = (int) item.ref->ne1;
+                const std::size_t packed = (std::size_t) ni / 256 * 210 * no;
+                const std::size_t dbytes = strata::kernels::native_mmvq_q6k_dpas_bytes(ni, no);
+                if (packed < dpas_min_bytes || dbytes == 0) continue;
+                void* t = nullptr;
+                auto st = DPCT_CHECK_ERROR(t = (void*) sycl::malloc_device(dbytes, dpct::get_in_order_queue()));
+                if (st == 0 && t) {
+                    strata::kernels::native_q6k_vnni_tiles(item.ref->native_data, t, ni, no, &dpct::get_in_order_queue());
+                    dpct::get_in_order_queue().wait();      // finished before any decode uses it
+                    strata::kernels::native_mmvq_register_q6k_dpas(item.ref->native_data, t, ni, no);
+                    weights_.push_back(t);                    // keep alive for this NativeDense's lifetime
+                    dpas_any = true;
+                }
+            }
+            if (dpas_any) strata::kernels::native_mmvq_set_q6k_dpas(true);
         }
         if (preunpacked_any) strata::kernels::native_mmvq_set_q6k_preunpack(true);
         scratch_ = scratch.release();

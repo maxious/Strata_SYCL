@@ -125,6 +125,16 @@ struct Q6UBlock {
 // size of the pre-unpacked Q6_K buffer for an n_in x n_out matrix.
 // NOTE: it maps the packed Q6_K type (14) to its pre-unpacked form; not a general type helper.
 std::size_t native_mmvq_q6k_preunpack_bytes(int n_in, int n_out);
+// exp 42: the DPAS int8 decode path. The buffer is [tiles][scales][d] as laid out by native_q6k_vnni_tiles, and
+// STRATA_Q6K_DPAS=1 turns the dispatch on for the shapes whose packed bytes clear STRATA_Q6K_DPAS_MIN_BYTES.
+std::size_t native_mmvq_q6k_dpas_bytes(int n_in, int n_out);
+void native_q6k_vnni_tiles(const void* weights, void* buf, int n_in, int n_out, void* stream);
+void native_mmvq_q6k_dpas(const void* tiles, const void* scl, const void* d, const void* x_q8_1, float* y,
+                          int n_in, int n_out, int ncols, void* stream);
+void native_mmvq_register_q6k_dpas(const void* packed, const void* buf, int n_in, int n_out);
+void native_mmvq_unregister_q6k_dpas(const void* packed);
+void native_mmvq_clear_q6k_dpas();
+void native_mmvq_set_q6k_dpas(bool enabled);
 // device transform: Q6KBlock array (n_out * n_in/256) -> Q6UBlock array (n_out * n_in/32).
 void native_q6k_preunpack(const void* weights, void* unpacked, int n_in, int n_out, void* stream);
 // decode on a pre-unpacked Q6UBlock buffer (the no-bit-unpack path).

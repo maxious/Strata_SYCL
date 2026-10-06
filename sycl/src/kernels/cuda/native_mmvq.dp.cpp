@@ -2568,6 +2568,11 @@ void native_mmvq_register_q6k_preunpack(const void* packed, const void* unpacked
 void native_mmvq_unregister_q6k_preunpack(const void* packed) { g_q6k_preunpack.erase(packed); }
 void native_mmvq_clear_q6k_preunpack() { g_q6k_preunpack.clear(); }
 
+// exp 42 (opt-in, STRATA_Q6K_DPAS=1): a registered VNNI tile buffer decodes on the matrix pipe. The kernel and
+// its registry live in q6k_dpas.dp.cpp; the shape gate lives at registration, so anything registered here is a shape
+// the bench measured as a win.
+bool native_mmvq_q6k_dpas_lookup(const void* packed, const void** tiles, const void** scl, const void** d);
+
 std::size_t native_mmvq_q6k_preunpack_bytes(int n_in, int n_out) {
     return (std::size_t) n_out * (n_in / 32) * sizeof(Q6UBlock);
 }
@@ -2731,6 +2736,13 @@ void native_mmvq_q5k_unpacked(const void* weights, const void* x_q8_1, float* y,
 
 void native_q6_k_mmvq(const void* weights, const void* x_q8_1, float* y,
                       int n_in, int n_out, int ncols, void* stream) {
+    if (ncols >= 1 && ncols <= 8 && n_in % 256 == 0 && n_out % 16 == 0) {
+        const void *tl, *sc, *dd;
+        if (native_mmvq_q6k_dpas_lookup(weights, &tl, &sc, &dd)) {
+            native_mmvq_q6k_dpas(tl, sc, dd, x_q8_1, y, n_in, n_out, ncols, stream);
+            return;
+        }
+    }
     // OPT-IN P0 #2 avenue 1 (exp 27/28): a registered pre-unpacked Q6U buffer decodes through the no-bit-unpack path.
     if (g_q6k_preunpack_enabled && ncols >= 1 && ncols <= 8) {
         auto it = g_q6k_preunpack.find(weights);
