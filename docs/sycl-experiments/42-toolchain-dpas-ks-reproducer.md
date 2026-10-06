@@ -173,3 +173,39 @@ From step 1's measurements, at KS = 8 the prize is 0.909 ms per 4-token spec-4 w
 chasing for **non-speculative decode** (net positive, ~+1.9 tok/s) and is **net negative at spec 4** (~+0.19 vs
 -0.49 tok/s). The engine runs spec 4 by default, so the honest answer to "will this path work" is: only if the tiles
 can come from somewhere that is not the expert cache, or if decode runs without speculation.
+
+## 8-row tiles: not possible on this device (measured, 2026-10-06)
+
+The redesign that would have avoided the cross-work-item combine entirely - N=8 tiles, twice as many work-items,
+one per tile - was built and measured, and the device says no.
+
+**The 8-row kernel is wrong** (rel 2.4-2.9 at every ncols), with the transform's output byte-identical to the host
+reference, so the fault is the operand layout rather than the data. Rather than guess the layout, a probe measured it
+(`/home/maxious/exp42-harness/dpas_n8_layout.cpp`): fill B with 1, set A to all 1, and perturb byte classes to see
+which lane moves. A correct K=32/N=8 int8 matmul must return 32 in every lane. It returns
+
+    75 -45 20 20 20 20 20 20
+
+and the residue sweep shows consecutive dwords feeding different lanes across 16 lanes' worth of dwords: the operand is
+being consumed as a 512-byte block, not a 256-byte one.
+
+**N=8 is not a legal int8 DPAS shape here.** `dpas<8, 1, int>` is fixed by the header's own constraint -
+`_M * _K * AElemBitSize == 64 * sizeof(signed char) * 8 * AFactorForDPASW` - and asking for K=64/N=8 to keep the
+512-byte block fails to compile with *"no viable conversion from simd<int, 16> to simd<int, 8>"*: the API hands back
+N=16 whatever the byte count. int8 DPAS on this device is K=32, N=16, full stop.
+
+That closes the door on this route: 8-row tiles padded to N=16 with eight zero rows would halve the DPAS work while
+adding **no** work-items, and the work-item count is the entire source of the parallelism. **The K-split is the only
+remaining lever for this kernel**, and it is the one thing measured wrong.
+
+So the honest summary of where the DPAS lever stands:
+
+| route | status |
+|---|---|
+| bench kernel (KS=8, own TU) | correct and 1.98x the shipped kernel - the proof the algorithm and the hardware path work |
+| engine, one work-item per tile | exact (1.6e-07) but 2.84x slower end to end: 160 work-items for a 24 GiB card |
+| engine, K-split (KS 2/4/8) | wrong in every formulation tried; rel ~ 1 - 1/KS |
+| engine, 8-row tiles | **impossible**: int8 DPAS is N=16 only |
+
+and the prize even when it works is ~1% of a spec-4 round (net negative after the tile VRAM's expert-cache cost),
+~4-6% at ncols 1.
