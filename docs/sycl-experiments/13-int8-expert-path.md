@@ -108,6 +108,27 @@ already bandwidth-bound (419-473 GB/s of the card's ~608), while IQ4_NL reads 12
 bandwidth. That is a Strata-side kernel project on the types the port does *not* recommend - so it no longer
 justifies repacking anyone onto Q2_0 for a GEMM reason.
 
+## Fix (2026-10-06): the prompt path's counters did not count the int8 buffers
+
+The two hand-kept counts that size the borrowed chunk - `moe_set_bytes` for the region and `bytes_needed` for the
+whole loan, which the block above them documents as "the same `take` sequence `init` uses" - omitted every buffer
+`carve` takes when `STRATA_PREFILL_INT8=1`: `Xq8`, `Hq8`, `sx`, `sh`, and `Xs`/`Hh`, which the int8 branch takes
+even when MMQ covers every layer. They are 96 KB a token at this artifact's K=10 / N=2560 (221 MB at a 2,304-token
+chunk, 394 MB at 4,096). The region is `max(gdn, qsa, moe)`, so what the loan was short by is the part above the
+old max - 70 MB at chunk 2,304, 131 MB at 4,096 - against the count's 8 MiB slack.
+
+Measured on the B60, Q2_0 pack, 256K config (`--max-context 262144 --vram-reserve-mib 2048 --prefill 4096`, warm,
+one run each; the before build is d672fe2, the after one is the same tree plus this fix):
+
+| build | prompt | loan | result |
+|---|---|---|---|
+| before | 2,185 tokens | 1024 slots (1.32 GiB) | `prefill: device buffers for a chunk of 2304 tokens do not fit` |
+| after | 2,185 tokens | 1077 slots (1.39 GiB) | prefill 2,184 tokens in 2 chunks, 327.3 tok/s; decode 32.1 tok/s |
+| after | 8,000 tokens | 1680 slots (2.16 GiB) | prefill 7,999 tokens in 3 chunks, 530.3 tok/s; decode 35.6 tok/s |
+
+The loan is a function of the chunk alone: the same config without the int8 path borrows 1585 slots (2.04 GiB)
+for a 4,096-token chunk, so the 1,680-slot loan above is the added terms.
+
 ## Reproduce
 
 ```sh
