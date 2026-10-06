@@ -232,3 +232,35 @@ same compile flags.** Local memory, a scalar atomic (unavailable under explicit 
 distinct global partial slots have all failed the same way; KS = 1 is exact (1.6e-07). The next experiment is to diff the
 generated device code for the two TUs (icpx -fsycl-dump-device-code, or the VSCLDISASSEMBLY/ `-g` route this tree
 already uses for ISA dumps) and find what differs in the combine, rather than to keep trying formulations.
+
+### The K-split defect is not in the source (ISA evidence, 2026-10-06)
+
+Dumped the generated code for both instantiations of the *same* kernel at NC = 1, KS = 8, with the tree's IGC route
+(`IGC_ShaderDumpEnable=1 IGC_ForceIgnoreCaching=1 NEO_CACHE_PERSISTENT=0 SYCL_CACHE_PERSISTENT=0
+IGC_DumpToCustomDir=<dir>`):
+
+| | kernel | .asm lines |
+|---|---|---:|
+| `xmx_dpas_q6k_kernel<1, 8, false>` (bench, **correct**) | xmx_mmvq_bench.cpp | 2,317 |
+| `launch_q6k_dpas<1, 8>` (engine TU, **wrong**) | q6k_dpas.dp.cpp | 2,317 |
+
+A line-by-line diff of the two dumps differs by **one line: the symbol-name comment**. The generated code is
+identical, the `nd_range` geometry is identical (`ntiles * KS` groups of `KS`, both computing ntiles = 160 for 2,560
+rows), the local accessor is the same size, and the input buffers are byte-identical to a host-built reference
+(0 differences in 6,553,600 tile bytes, 409,600 scale bytes, 25,600 d bytes). Yet one returns rel 0.87 and the other
+3.44e-03.
+
+**So this is a toolchain defect, not a source or tuning difference**, and it is not something the port can fix by
+editing the kernel. The three things that make it actionable for whoever does:
+
+1. The reproducer is small and already committed: build `q6k_dpas_parity` with `STRATA_DPAS_KS` selecting KS = 8 and
+   it reports rel 0.87 at every ncols; the same kernel at KS = 1 reports 1.6e-07.
+2. The ISA dumps to attach are the two `.asm` files above (`/home/maxious/exp42-harness/isa/{bench,dpas8}`) - identical
+   output from identical source is the whole bug report.
+3. The one environmental difference left between the two binaries is that the failing one links the kernel from
+   `strata_kernels` and runs it from an engine-shaped call site, while the working one has the kernel in its own
+   executable; with the kernel compiled *into the consumer executable* the failure persisted, so the difference is
+   narrower than "library vs executable" and is not yet identified.
+
+Until that is resolved the engine path stays at KS = 1: correct, parity-gated, and **2.84x slower end to end**, which
+is the number that keeps the switch off.
