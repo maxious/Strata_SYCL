@@ -215,6 +215,7 @@ add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
 
 # --- the kernel parity self-tests (each runs on the card and compares against a CPU reference) ---------------------
+set(STRATA_DPAS_KS_N "1" CACHE STRING "work-items per DPAS tile (1 = correct; >1 is under investigation)")
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)
 if(STRATA_SYCL_PARITY)
   enable_testing()
@@ -319,6 +320,8 @@ if(STRATA_SYCL_PARITY)
   # This is the gate to re-run before enabling STRATA_Q6K_DPAS, and it is what caught the K-split combine defect.
   add_executable(q6k_dpas_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_dpas_parity.cpp)
   target_link_libraries(q6k_dpas_parity PRIVATE strata_kernels)
+  # the DPAS K-split width, so a reproducer can select it from the command line: -DSTRATA_DPAS_KS_N=8
+  target_compile_definitions(strata_kernels PUBLIC STRATA_DPAS_KS_N=${STRATA_DPAS_KS_N})
   add_test(NAME q6k_dpas_parity COMMAND q6k_dpas_parity)
   # the Q5K->Q5U pre-unpack + routed-decode correctness gate (P0 #5, exp 30): the min-offset no-bit-unpack decode
   # must reproduce the packed Q5_K path within fp32 rounding; and its bench.

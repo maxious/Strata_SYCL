@@ -78,3 +78,35 @@ The smallest case is the local-memory combine alone under `[[intel::sycl_explici
 `KS * NC * NT` floats to a `local_accessor<float, 1>`, barrier, work-item 0 sums each element across the `KS` slots.
 The dump shows this sequence emitted correctly, yet the summed values do not match the per-work-item inputs. A
 standalone kernel doing only that (no DPAS, no tiles) would be enough to isolate it.
+
+## Update (2026-10-06, later): the local-memory mechanism is exonerated
+
+A 40-line isolation of exactly the failing construct - KS work-items each fill their own slot of a
+local_accessor<float, 1>, barrier, work-item 0 sums the KS slots - is **exact** on this device in both shapes:
+
+    A  scalar local memory, explicit_simd    exact (0 wrong)
+    C  simd<float,16> local memory, explicit_simd    exact (0 wrong)
+
+(/home/maxious/exp42-harness/shm_probe.cpp.) So the combine mechanism is fine and this is **not** a general
+local-memory or barrier defect. The width sweep with the flag shows the failure appears at every KS above 1:
+
+| STRATA_DPAS_KS_N | rel at ncols 1 |
+|---:|---:|
+| 1 | **1.6e-07 (correct)** |
+| 2 | 4.85e-01 |
+| 4 | 7.37e-01 |
+| 8 | 8.76e-01 |
+
+which narrows it: it needs KS > 1 *in this kernel*, while the same shape works in isolation. The remaining
+difference between them is **register pressure** - the real kernel holds the 512-byte DPAS tiles and the DPAS
+operands live across the same function where the isolation holds a handful of scalars - so the leading
+hypothesis is a spill or scheduling interaction around the local-memory store, not the store itself.
+
+Not yet tried, and the next things to try:
+
+1. `reqd_work_group_size(KS, 1, 1)` with `range<1>(ntiles)` instead of `nd_range` - the classic fix for
+   work-group-size-dependent scheduling, and it changes the launch shape the compiler sees.
+2. Reducing live state at the barrier: accumulate the per-column DPAS results into a small array first, or
+   re-materialise the scale vectors inside the group so fewer registers are live across the store.
+3. Read `//.spill size` for the two kernels from the ISA dumps already on disk
+   (`/home/maxious/exp42-harness/isa/`) to confirm or refute the pressure hypothesis before changing code.
