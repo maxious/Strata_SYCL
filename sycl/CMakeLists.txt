@@ -315,11 +315,11 @@ if(STRATA_SYCL_PARITY)
   add_executable(q6k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_preunpack_parity.cpp)
   target_link_libraries(q6k_preunpack_parity PRIVATE strata_kernels)
   add_test(NAME q6k_preunpack_parity COMMAND q6k_preunpack_parity)
-  # exp 42: the DPAS int8 Q6_K decode path as wired into the engine, against the shipped AOS dp4a kernel. NOT a
-  # ctest: the wiring does not yet reproduce the AOS kernel (see docs/sycl-experiments/42-...md), so registering it
-  # would put a red test in the suite for a path that is opt-in and off. Run it by hand before enabling STRATA_Q6K_DPAS.
+  # exp 42: the DPAS int8 Q6_K decode path as wired into the engine must reproduce the shipped AOS dp4a kernel.
+  # This is the gate to re-run before enabling STRATA_Q6K_DPAS, and it is what caught the K-split combine defect.
   add_executable(q6k_dpas_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_dpas_parity.cpp)
   target_link_libraries(q6k_dpas_parity PRIVATE strata_kernels)
+  add_test(NAME q6k_dpas_parity COMMAND q6k_dpas_parity)
   # the Q5K->Q5U pre-unpack + routed-decode correctness gate (P0 #5, exp 30): the min-offset no-bit-unpack decode
   # must reproduce the packed Q5_K path within fp32 rounding; and its bench.
   add_executable(q5k_preunpack_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q5k_preunpack_parity.cpp)

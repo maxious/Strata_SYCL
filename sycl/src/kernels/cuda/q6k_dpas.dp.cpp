@@ -204,13 +204,13 @@ void native_mmvq_q6k_dpas(const void* tiles, const void* scl, const void* d, con
 #define STRATA_DPAS(NC, KS) \
     launch_q6k_dpas<NC, KS>((const uint8_t*) tiles, (const int8_t*) scl, (const uint16_t*) d, \
                             (const uint8_t*) x_q8_1, y, n_in, n_out, q)
-#define STRATA_DPAS_KS(NC)                                                     \
-    do {                                                                      \
-        if (bpr >= 8) STRATA_DPAS(NC, 8);                                      \
-        else if (bpr >= 4) STRATA_DPAS(NC, 4);                                 \
-        else if (bpr >= 2) STRATA_DPAS(NC, 2);                                 \
-        else STRATA_DPAS(NC, 1);                                               \
-    } while (0)
+// One work-item per 16-row tile (KS = 1) in the engine path. The K-split was tried three ways and the
+// combine is wrong in this translation unit at KS > 1: local memory gives rel 0.87 against the shipped kernel where
+// KS = 1 gives 1.7e-07, a scalar atomic_ref is not available under explicit SIMD, and a two-pass reduce over distinct
+// global partial slots failed the same way. The identical kernel reduces correctly inside xmx_mmvq_bench, so this is a
+// property of this build's code path, not of the algorithm - and until it is root-caused the engine path stays
+// single-work-item, which is correct but leaves the GPU underfilled (160 tiles for 2560 rows).
+#define STRATA_DPAS_KS(NC) STRATA_DPAS(NC, 1)
     switch (ncols) {
         case 1: STRATA_DPAS_KS(1); break;
         case 2: STRATA_DPAS_KS(2); break;
