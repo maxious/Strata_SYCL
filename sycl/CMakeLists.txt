@@ -283,6 +283,8 @@ if(STRATA_SYCL_PARITY)
   target_link_libraries(kv_hybrid_parity PRIVATE strata_kernels)
   add_executable(mmvq_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_bench.cpp)   # dense mmvq timing
   target_link_libraries(mmvq_bench PRIVATE strata_kernels)
+  add_executable(qsa_select_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/qsa_select_bench.cpp)   # the QSA block scorer + top-k alone
+  target_link_libraries(qsa_select_bench PRIVATE strata_kernels strata_prefill)
   add_executable(mmvq_sg_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/mmvq_sg_bench.cpp)   # SIMD16 vs 32 decode mmvq
   target_link_libraries(mmvq_sg_bench PRIVATE strata_kernels)
   add_executable(q6k_align_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/q6k_align_bench.cpp)   # Q6_K block alignment
