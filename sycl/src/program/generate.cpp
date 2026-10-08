@@ -4688,10 +4688,17 @@ int main(int argc, char **argv) try {
     unsigned long long* mirror_table_d = nullptr;   // [n_layers][n_expert] device-readable mirror addresses (0 = none)
     int64_t unmirrored_misses = 0;
     if (o.stream_experts && srcp == &gguf_src && o.expert_cache > 0) {
+        // A layer split mirrors only the first stage's layers: that pinned memory belongs to the first GPU's dpct
+        // device, so a later stage must not read it - neither its own profile fill (blob() hands out the mirror copy
+        // once there is one) nor its kernels through the mirror table. Before, every later stage's experts were
+        // mirrored first (at a 2-card split: 13-18 GiB of pinned RAM for experts its own cache then held anyway)
+        // and its fill copied from the first card's pinned memory; two Arc Pro B70s hung right there (#1054).
+        const int64_t mirror_end = multi_gpu ? split_at[0] : g.n_layers;
         std::vector<std::pair<int64_t, int64_t>> miss;
         for (const auto& pr : profile)   // the profile's order: the most-routed misses first, if the cap is reached
-            if (xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident) miss.push_back({pr.first, pr.second});
-        for (int64_t l = 0; l < g.n_layers; ++l)                     // pairs the profile does not list at all
+            if (pr.first < mirror_end && xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident)
+                miss.push_back({pr.first, pr.second});
+        for (int64_t l = 0; l < mirror_end; ++l)                     // pairs the profile does not list at all
             for (int64_t e = 0; e < g.n_expert; ++e)
                 if (xcache.slot_of(l, e) == strata::core::kNotResident &&
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
