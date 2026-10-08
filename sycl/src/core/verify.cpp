@@ -111,7 +111,11 @@ bool sh_stream_on() {
 #if defined(STRATA_USE_HIP)
         return false;
 #else
-        return true;
+        // Off on the SYCL port too: a window is recorded into a command_graph, and work submitted to a side queue
+        // runs outside that graph rather than as a forked branch of it. On a layer split that queue's context is not
+        // the stage's, so the first window capture dies with "Cannot submit to a queue with a dependency from a graph
+        // that is associated with a different context" (#1440, first window). STRATA_SH_STREAM=1 still forces it.
+        return false;
 #endif
     }();
     return on;
