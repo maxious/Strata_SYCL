@@ -74,9 +74,15 @@ size_t device_free_bytes() try {
     You may need to adjust the code.
     */
     dpct::get_current_device().get_memory_info(free_b, total_b);
-    if (const unsigned long long own = own_drm_local_bytes(); own > 0 && total_b > own && total_b - own < free_b) {
+    // The DRM clients' total is summed over EVERY card this process holds, so it may be subtracted from one card's
+    // total only where the driver's own figure is unusable - the whole card reported free, which is the i915 case
+    // this was written for. Where the driver already accounts for the allocation (xe on a 2-card box: 19.1 of 23.9
+    // GiB free) the subtraction invents a ~2 GiB card and every cache that fits is refused, so the latter stage of
+    // a --layer-split never opens (upstream issue #1054).
+    if (const unsigned long long own = own_drm_local_bytes();
+        own > 0 && total_b > own && total_b - own < free_b && free_b + (16ull << 20) >= total_b) {
         static std::atomic<bool> said{false};
-        if (free_b + (16ull << 20) >= total_b && !said.exchange(true))
+        if (!said.exchange(true))
             std::fprintf(stderr, "strata: the driver reports the whole card as free although this process holds %.2f GiB of it (Arc A750/i915 does this); sizing from the DRM fdinfo instead\n", (double) own / 1073741824.0);
         free_b = (size_t) (total_b - own);
     }
