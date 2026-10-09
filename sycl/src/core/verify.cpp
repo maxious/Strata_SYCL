@@ -822,9 +822,6 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     static const bool eager = std::getenv("STRATA_VERIFY_EAGER") != nullptr;
     auto stamp = [&](int64_t l, int i, int grp) {
         trace_ev("STAGE", i, l, grp);   // the fault hunt: the last stages the host enqueued are the last events
-        if (const char* sw = std::getenv("STRATA_STAGE_WAIT"))   // bisect: run each stage to completion serially, so the
-            if (*sw && *sw != '0')                               // fault surfaces exactly at the faulting stage's own wait
-                cs->wait();
         if (trace_m_ != nullptr) gpu_stamp(trace_m_, (int) ((l * kProfPer + i) * 2 + grp), cs);   // #649
         if (!prof_on_ || grp != 0) return;
         if (eager) { cs->wait(); prof_h_[(size_t) (l * kProfPer + i)] = (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count(); }
@@ -1274,6 +1271,10 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                 }
                 stamp(l, 14, grp);
                 native_quantize_q8_1(attn32_ + tb * NH * HD, xq_, (int) (NH * HD), n, cs);
+                if (strata::guard::watch() != nullptr)   // capture the out-proj weight pointer+size at launch
+                    strata::guard::watch()->prologue(2, (unsigned long long) (uintptr_t) wo->native_data,
+                                                     (unsigned long long) wo->native_type, (unsigned long long) (NH * HD),
+                                                     lb_ > 0);
                 native_mmvq(wo->native_type, wo->native_data, xq_, bo_ + tb * N, (int) (NH * HD), (int) N, n, cs);
             }
         } catch (const std::exception& e) {

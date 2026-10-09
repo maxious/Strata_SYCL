@@ -22,10 +22,15 @@ struct Watch {
     void arm(unsigned long long* mem, int slots) { mem_ = mem; slots_ = slots; }
 
     // the window prologue's mapped copies, recorded by their launchers (the args are what the kernel receives);
-    // the last six such records are the faulting copy if the prologue is where the wild pointer goes out
-    void prologue(int id, unsigned long long dst, unsigned long long src, unsigned long long n) {
+    // the last six such records are the faulting copy if the prologue is where the wild pointer goes out.
+    // bank: 0 = the primary card's records, 1 = the split's (+64), so both cards' records survive each other
+    void prologue(int id, unsigned long long dst, unsigned long long src, unsigned long long n,
+                  int bank = 0) {
         if (mem_ == nullptr) return;
-        volatile unsigned long long* r = mem_ + (size_t) (98 + (id % 6)) * kWatchWords;
+        // bank 0 = the primary card, 6 slots at 98..103; bank -1 = the split card, 4 slots at 94..97;
+        // bank 1 = unused here (the plan watch's split bank).  Each bank keeps its own last record.
+        volatile unsigned long long* r =
+            mem_ + (size_t) (bank == -1 ? 94 + (id % 4) : 98 + (id % 6)) * kWatchWords;
         r[2] = dst;
         r[3] = src;
         r[4] = n;
