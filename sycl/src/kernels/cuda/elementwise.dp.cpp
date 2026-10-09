@@ -5,6 +5,7 @@
 #include "strata/sycl_queue.hpp"
 #include "strata/sycl_doorbell.hpp"
 #include "strata/kernels/elementwise.hpp"
+#include "strata/guard/watch.hpp"
 #include "strata/kernels/dp4a.hpp"
 
 #include "strata/kernels/bf16_bits.hpp"
@@ -540,6 +541,9 @@ void copy_rows_from_mapped(float* dst, const float* src, int64_t rows, int64_t w
     }
 }
 void copy_from_mapped(float* dst, const float* src, int64_t n, void* stream) {
+    if (strata::guard::watch() != nullptr)
+        strata::guard::watch()->prologue(0, (unsigned long long) (uintptr_t) dst,
+                                         (unsigned long long) (uintptr_t) src, (unsigned long long) n);
     if (n <= 0) return;
     if ((n & 3) != 0 || ((uintptr_t) dst & 15) != 0 || ((uintptr_t) src & 15) != 0) {
         std::fprintf(stderr, "copy_from_mapped: n must be a multiple of 4 and both pointers 16-byte aligned\n");
@@ -839,6 +843,9 @@ void copy_from_mapped_multi(const MappedCopy* copies, int n, void* stream) {
 #endif
 
 void copy_i32_from_mapped(int32_t* dst, const int32_t* src, int64_t n, void* stream) {
+    if (strata::guard::watch() != nullptr)
+        strata::guard::watch()->prologue(1, (unsigned long long) (uintptr_t) dst,
+                                         (unsigned long long) (uintptr_t) src, (unsigned long long) n);
     if (n <= 0) return;
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{

@@ -304,6 +304,11 @@ struct Alloc {
     std::vector<void*>* owned = nullptr;
     template <typename T> T *take(size_t n, bool &ok) try {
         uint64_t bytes = ((uint64_t) n * sizeof(T) + 256 + 255) & ~255ull;
+        static const bool alloc_dbg = std::getenv("STRATA_PREFILL_ALLOC_DBG") != nullptr;
+        if (alloc_dbg) std::fprintf(stderr, "prefill-alloc: ra=%p n=%zu esz=%zu off=%llu bytes=%llu cap=%llu base=%p%s\n",
+                                    __builtin_return_address(0), n, sizeof(T), (unsigned long long) used,
+                                    (unsigned long long) bytes, (unsigned long long) cap, (void*) base,
+                                    count_only ? " count" : (base ? " bump" : " owned"));
         if (count_only) {
             if (granule > 0) bytes = (bytes + granule - 1) / granule * granule;
             used += bytes;

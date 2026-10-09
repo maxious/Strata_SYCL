@@ -4688,15 +4688,10 @@ int main(int argc, char **argv) try {
     unsigned long long* mirror_table_d = nullptr;   // [n_layers][n_expert] device-readable mirror addresses (0 = none)
     int64_t unmirrored_misses = 0;
     if (o.stream_experts && srcp == &gguf_src && o.expert_cache > 0) {
-        // #1054, #1440: with a layer split the mirror holds only the first GPU's layers. The pinned memory belongs to
-        // this GPU's context, and the later stages' caches do not exist yet (every later-stage expert would count as a
-        // miss: 20 GiB of RAM for experts the other card then holds, or one 39 GiB pinned allocation that fails).
-        const int64_t mirror_end = multi_gpu && !split_at.empty() ? split_at[0] : g.n_layers;
         std::vector<std::pair<int64_t, int64_t>> miss;
         for (const auto& pr : profile)   // the profile's order: the most-routed misses first, if the cap is reached
-            if (pr.first < mirror_end && xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident)
-                miss.push_back({pr.first, pr.second});
-        for (int64_t l = 0; l < mirror_end; ++l)                     // pairs the profile does not list at all
+            if (xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident) miss.push_back({pr.first, pr.second});
+        for (int64_t l = 0; l < g.n_layers; ++l)                     // pairs the profile does not list at all
             for (int64_t e = 0; e < g.n_expert; ++e)
                 if (xcache.slot_of(l, e) == strata::core::kNotResident &&
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
@@ -4728,6 +4723,25 @@ int main(int argc, char **argv) try {
                     for (int64_t e = 0; e < g.n_expert; ++e)
                         if (gguf_src.pinned(l, e))
                             tab[(size_t) (l * g.n_expert + e)] = (unsigned long long) gguf_src.device_alias(l, e);
+                if (const char* dv = std::getenv("STRATA_MIRROR_DEBUG")) {   // tmp: the addresses the plan hands the GPU
+                    if (*dv && *dv != '0') {
+                        unsigned long long mn = ~0ull, mx = 0;
+                        size_t nz = 0;
+                        for (size_t i = 0; i < tab.size(); ++i)
+                            if (tab[i] != 0) {
+                                if (tab[i] < mn) mn = tab[i];
+                                if (tab[i] > mx) mx = tab[i];
+                                ++nz;
+                            }
+                        std::fprintf(stderr, "mirror-dbg: entries=%zu nonzero=%zu addr range [%p, %p]\n", tab.size(), nz,
+                                     (void*) (uintptr_t) mn, (void*) (uintptr_t) mx);
+                        for (size_t i = 0; i < tab.size(); ++i)
+                            if (tab[i] != 0) {
+                                std::fprintf(stderr, "mirror-dbg: first nonzero tab[%zu]=%p\n", i, (void*) (uintptr_t) tab[i]);
+                                break;
+                            }
+                    }
+                }
                 mirror_table_d = sycl::malloc_device<unsigned long long>(tab.size(), dpct::get_in_order_queue());
                 dpct::get_in_order_queue().memcpy(mirror_table_d, tab.data(), tab.size() * sizeof(unsigned long long)).wait();
             }

@@ -9,6 +9,7 @@
 #include "strata/sycl_doorbell.hpp"
 #include "strata/kernels/verify_kernels.hpp"
 #include "strata/kernels/resident_plan_mirror.hpp"
+#include "strata/guard/watch.hpp"
 #include "strata/kernels/dp4a.hpp"
 
 #include <algorithm>
@@ -2077,7 +2078,10 @@ resident_plan_kernel(const int32_t *__restrict__ ids, int n, int k,
                      const unsigned long long *slot_off, long long blob,
                      int32_t *__restrict__ pl, long long capx, uint32_t *skip,
                      uint32_t ring, const unsigned long long *__restrict__ mir,
-                     volatile uint32_t *plan_err) {
+                     volatile uint32_t *plan_err, unsigned long long n_slots = 0,
+                     unsigned long long *cap = nullptr, int watch_slots = 0) {
+    volatile unsigned long long *vcap = cap;
+    const int slot_idx = (vcap != nullptr) ? (int) (ring - 1) : -1;
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
     int32_t[kResidentPlanMax]>(
@@ -2186,6 +2190,27 @@ auto &s_ids = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         ptr[grp_idx] = slot >= 0 ? (unsigned long long) (cache_base + (slot_off ? (size_t) slot_off[slot] : (size_t) slot * (size_t) blob))
                                  : maddr;
         start[grp_idx] = ent_start;
+        if (vcap != nullptr && slot_idx >= 0 && slot_idx < watch_slots) {   // guard watch: record what the plan hands out
+            volatile unsigned long long* r = vcap + (size_t) slot_idx * strata::guard::kWatchWords;
+            const unsigned long long a = ptr[grp_idx];
+            const unsigned long long cb = (unsigned long long) (uintptr_t) cache_base;
+            unsigned long long bad = 0;
+            if (slot >= 0) bad = (a < cb || a - cb >= n_slots * (unsigned long long) blob) ? a : 0;
+            else bad = (a >> 47) != 0 ? a : 0;   // a mirror address must be a host VA
+            const unsigned long long old = dpct::atomic_fetch_add<sycl::access::address_space::generic_space>(
+                (unsigned long long*) r, 1ull);
+            r[2] = cb;
+            r[3] = (unsigned long long) blob;
+            r[4] = n_slots;
+            if (bad != 0) {
+                dpct::atomic_fetch_add<sycl::access::address_space::generic_space>((unsigned long long*) (r + 1), 1ull);
+                r[58] = a;
+                r[59] = (unsigned long long) (long long) slot;
+            }
+            const unsigned long long li = (old & 0xffffffffull) < 27 ? (old & 0xffffffffull) : 26;
+            r[5 + li * 2] = a;
+            r[6 + li * 2] = (unsigned long long) ent_start;
+        }
     }
     if (tid < n) {
         const int fj_warp = first_j >> 5;
@@ -2360,7 +2385,8 @@ void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mi
 }
 void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_layer, int n_expert,
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
-                   long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
+                   long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err,
+                   unsigned long long n_slots, unsigned long long* badcap, int watch_slots) {
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
     if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
         mir = g_mirror_table + (res_layer - g_mirror_res);
@@ -2377,7 +2403,8 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                     [[sycl::reqd_sub_group_size(32)]] {
                         resident_plan_kernel(
                             ids, n_entries, k, res_layer, n_expert, cache_base,
-                            slot_off, blob, plan, capx, skip, ring, mir, plan_err);
+                            slot_off, blob, plan, capx, skip, ring, mir, plan_err, n_slots,
+                            badcap, watch_slots);
                     });
     }
     check("resident_plan");

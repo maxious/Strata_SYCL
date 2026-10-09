@@ -26,6 +26,7 @@
 #include <cstdio>
 
 #include "strata/core/expert_source.hpp"
+#include "strata/guard/watch.hpp"
 #include "strata/core/layer.hpp"
 #include "strata/core/session.hpp"
 #include "strata/kernels/sampler.hpp"
@@ -343,6 +344,7 @@ private:
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned* qcnt_ = nullptr;             ///< S26 STRATA_QFUSE: the HC read's q8_1 group counters (n_embd / 32)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
+    strata::guard::Watch* badcap_ = nullptr;   // tmp: the guard watch this verifier armed (its records sit at ring-1)
     int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)
     const float* hand_in_ = nullptr;
     float* hand_out_ = nullptr;

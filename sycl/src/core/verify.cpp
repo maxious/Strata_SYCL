@@ -111,7 +111,11 @@ bool sh_stream_on() {
 #if defined(STRATA_USE_HIP)
         return false;
 #else
-        return true;
+        // Off on the SYCL port too: a window is recorded into a command_graph, and work submitted to a side queue
+        // runs outside that graph rather than as a forked branch of it. On a layer split that queue's context is not
+        // the stage's, so the first window capture dies with "Cannot submit to a queue with a dependency from a graph
+        // that is associated with a different context" (#1440, first window). STRATA_SH_STREAM=1 still forces it.
+        return false;
 #endif
     }();
     return on;
@@ -237,6 +241,31 @@ struct TraceEv {
 constexpr uint64_t kTraceN = 4096;
 TraceEv g_trace_ring[kTraceN];
 std::atomic<uint64_t> g_trace_next{0};
+// tmp debug: on an uncaught exception (the DEVICE_LOST path) dump every live verifier's state and breadcrumbs
+void strata_terminate_dump() {
+    std::fprintf(stderr, "strata verify: terminating; the live verifiers' state:\n");
+    for (auto& slot : g_live)
+        if (const Verifier* v = slot.load()) {
+            v->diag(stderr);
+            v->trace_dump(stderr);
+        }
+    std::fflush(stderr);
+    std::abort();
+}
+const bool g_terminate_dump_hook = [] {
+    std::set_terminate(strata_terminate_dump);
+    return true;
+}();
+const bool g_atexit_dump_hook = [] {   // exit(1) paths (the sycl-exception catches) leave through atexit
+    std::atexit([] {
+        for (auto& slot : g_live)
+            if (const Verifier* v = slot.load()) {
+                v->trace_dump(stderr);
+            }
+        std::fflush(stderr);
+    });
+    return true;
+}();
 int64_t trace_now_ns() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
 }
@@ -307,6 +336,7 @@ void Verifier::trace_dump(std::FILE* f) const {
                      (long long) e.layer, (long long) e.aux, e.seq, e.flag, e.a, e.b);
     }
     if (trace_h_ == nullptr || g_ == nullptr) return;
+    if (badcap_ != nullptr) badcap_->dump(f);   // the plan's pointers as the GPU wrote them, failures first
     // the breadcrumbs: every stamp point the GPU passed in this window (ns of the GPU clock after the window's first)
     unsigned long long t0 = ~0ull;
     for (size_t i = 0; i < trace_n_; ++i) {
@@ -700,9 +730,50 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         */
         if (!ok2) {; all_resident_ = false; device_plan_ = false; }
     }
+    if (all_resident_ || device_plan_) {   // arm the guard watch: one 64-word record per ring slot, host-mapped so it survives the fault
+        void* bh = nullptr, *bm = nullptr;
+        const int slots = (int) ((g.n_layers + 2) * 2 + 4);
+        if (mapped((size_t) slots * (size_t) strata::guard::kWatchWords * 8, (void**) &bh, (void**) &bm)) {
+            strata::guard::Watch* w = strata::guard::watch();
+            if (w == nullptr) {
+                static strata::guard::Watch nw;
+                nw.arm((unsigned long long*) bh, slots);
+                strata::guard::install(&nw);
+                w = &nw;
+            }
+            badcap_ = w;
+        }
+    }
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: the per-layer residual ladder (token 0)
         dbgR_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
         dbgM_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
+    }
+    if (const char* dv = std::getenv("STRATA_PLAN_DEBUG")) {   // tmp: which address does the plan hand the GPU
+        if (*dv && *dv != '0') {
+            const unsigned long long kFault = 0xeaab4b92a000ull;
+            std::fprintf(stderr, "plan-dbg: cache_base=%p blob=%lld n_slots=%lld slot_off=%p staging=%p plan_=%p\n",
+                         (const void*) hits.cache_base, (long long) hits.blob, (long long) hits.n_slots,
+                         (const void*) hits.slot_off, (void*) staging_, (void*) plan_);
+            unsigned long long mn = ~0ull, mx = 0;
+            long long atmn = -1, atmx = -1;
+            bool hit = false;
+            for (int64_t s = 0; s < hits.n_slots; ++s) {
+                const unsigned long long off = hits.slot_off != nullptr
+                                                   ? (unsigned long long) hits.slot_off[s]
+                                                   : (unsigned long long) s * (unsigned long long) hits.blob;
+                const unsigned long long a = (unsigned long long) (uintptr_t) hits.cache_base + off;
+                if (off < mn) { mn = off; atmn = s; }
+                if (off > mx) { mx = off; atmx = s; }
+                if (a == kFault) {
+                    hit = true;
+                    std::fprintf(stderr, "plan-dbg: FAULT ADDR == cache_base + slot_off[%lld]\n", (long long) s);
+                }
+            }
+            std::fprintf(stderr, "plan-dbg: offsets min=%llu@%lld max=%llu@%lld; address range [%p, %p]%s\n",
+                         mn, (long long) atmn, mx, (long long) atmx,
+                         (void*) (uintptr_t) ((uintptr_t) hits.cache_base + mn),
+                         (void*) (uintptr_t) ((uintptr_t) hits.cache_base + mx), hit ? "  <-- CONTAINS THE FAULT" : "");
+        }
     }
     std::fprintf(stderr, "strata verify: window up to %d tokens, %.1f MiB of device buffers%s\n", max_t,
                  (double) count.used / 1048576.0,
@@ -750,6 +821,10 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     // a host-side wait + clock (there is no %globaltimer here), so the existing stage profiler reports ms per stage.
     static const bool eager = std::getenv("STRATA_VERIFY_EAGER") != nullptr;
     auto stamp = [&](int64_t l, int i, int grp) {
+        trace_ev("STAGE", i, l, grp);   // the fault hunt: the last stages the host enqueued are the last events
+        if (const char* sw = std::getenv("STRATA_STAGE_WAIT"))   // bisect: run each stage to completion serially, so the
+            if (*sw && *sw != '0')                               // fault surfaces exactly at the faulting stage's own wait
+                cs->wait();
         if (trace_m_ != nullptr) gpu_stamp(trace_m_, (int) ((l * kProfPer + i) * 2 + grp), cs);   // #649
         if (!prof_on_ || grp != 0) return;
         if (eager) { cs->wait(); prof_h_[(size_t) (l * kProfPer + i)] = (unsigned long long) std::chrono::steady_clock::now().time_since_epoch().count(); }
@@ -1255,16 +1330,21 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             mb.logits = logits_ + t * NE; mb.ids = ids_ + t * K; mb.weights = w_ + t * K;
             if (!moe_route(wt, g, l, K, mb, mixed_ + t * N, cs, err, nullptr)) return false;
         }
+        strata::guard::Watch* w = badcap_;
+        unsigned long long* wmem = w != nullptr ? w->mem_ + (size_t) (lb_ > 0 ? 64 * strata::guard::kWatchWords : 0) : nullptr;
+        int wslots = w != nullptr ? w->slots_ - (lb_ > 0 ? 64 : 0) : 0;
         if (ar_on()) {
             resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                           hits_.cache_base, slot_off_d_, (long long) hits_.blob,
-                          plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, nullptr, 0, cs, m_plan_err_);
+                          plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, nullptr, 0, cs, m_plan_err_,
+                          (unsigned long long) hits_.n_slots, wmem, wslots);
         } else {
             if (device_plan_)   // E-6: every routed expert resident: this group's plan without the host
                 resident_plan(ids_ + tb * K, n * (int) K, (int) K, hits_.d_res + l * g.n_expert, (int) g.n_expert,
                               hits_.cache_base, slot_off_d_, (long long) hits_.blob,
                               plan_ + (size_t) grp * (size_t) (plan_i32_ + 16), (long long) max_t_ * K, skip_ + grp,
-                              (uint32_t) ((l - lb_) * G + grp + 1), cs);
+                              (uint32_t) ((l - lb_) * G + grp + 1), cs, nullptr, (unsigned long long) hits_.n_slots,
+                              wmem, wslots);
 #if defined(STRATA_USE_HIP)
             if (g_doorbell_store)   // #649 A/B: the step's ring stored, not incremented over PCIe
                 doorbell_publish_value(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,

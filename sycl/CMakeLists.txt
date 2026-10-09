@@ -195,7 +195,7 @@ strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_rea
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
 add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
-target_link_libraries(strata_kernels PUBLIC strata_core)
+target_link_libraries(strata_kernels PUBLIC strata_core strata_includes)
 
 strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
                        src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp
@@ -204,7 +204,8 @@ strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_s
                        src/core/arch_defaults.cpp src/core/vmm.cpp   # vmm.cpp is the port's stub: no driver VMM on Level Zero
                        src/core/conversation_file.cpp
                        src/core/peer_experts.cpp src/core/remote_expert_opt_stub.cpp)         # 0.1.36+: --peer-device (a stub in the port: no second GPU tier yet)
-add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp)
+add_library(strata_engine STATIC ${_engine} ${CMAKE_CURRENT_SOURCE_DIR}/src/core/gguf_expert_source.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/guard/watch.cpp)
 target_include_directories(strata_engine PRIVATE ${STRATA_ROOT}/src/core)   # conversation_checked.hpp (#include "...")
 target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_kernels_cpu)
 
