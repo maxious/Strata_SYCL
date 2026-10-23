@@ -55,6 +55,7 @@ public:
     /// "does this source have device-readable experts", and dereferences an alias only for `pinned()` experts.
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     uint64_t mirrored_bytes() const { return mirror_bytes_; }
+    uint64_t mirrored_p2p_bytes() const { return mirror_p2p_bytes_; }
 
 private:
     int fd_of(int64_t layer, int role, std::string& err);
@@ -72,8 +73,13 @@ private:
     int64_t n_layers_ = 0, n_expert_ = 0;
     int64_t reads_ = 0;
     std::vector<uint8_t*> mirror_chunks_;          ///< USM host (pinned, device-readable); several chunks: Alchemist
-                                                   ///< (Arc A-series) refuses a single host allocation past ~3 GiB
+                                                   ///< (Arc A-series) refuses a single host allocation past ~3 GiB.
+                                                   ///< STRATA_MIRROR_CARVEOUT=1: xe P2P carve-out VRAM chunks instead
+                                                   ///< (valarauca PR 1; the GPU reads those on-card, 364-408 GB/s)
+    std::vector<uint8_t> mirror_chunk_p2p_;         ///< per chunk: 1 = carve-out (munmap on close), 0 = USM host
+    std::vector<uint64_t> mirror_chunk_bytes_;      ///< per chunk: its bytes (munmap needs them)
     uint64_t mirror_bytes_ = 0;
+    uint64_t mirror_p2p_bytes_ = 0;                ///< the carve-out share of the mirror
     std::vector<uint8_t*> mirror_ptr_;             ///< per (layer, expert): its blob in the chunks, null = not mirrored
     std::vector<const uint8_t*> layer_first_;      ///< per layer: its first mirrored blob, null = none
 };

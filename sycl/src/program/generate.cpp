@@ -5033,10 +5033,17 @@ int main(int argc, char **argv) try {
                              err.c_str());
                 err.clear();
             } else {
-                std::fprintf(stderr, "strata generate: %lld of %zu experts missing from VRAM (+ %zu in the prompt loan's slots) mirrored in pinned host memory "
-                                     "(%.2f GiB, %.1f s); the GPU reads them over PCIe\n", (long long) got, n_true_miss, miss.size() - n_true_miss,
+                const uint64_t p2p_b = gguf_src.mirrored_p2p_bytes();
+                const char* where = p2p_b == 0 ? "pinned host memory"
+                    : p2p_b >= gguf_src.mirrored_bytes() ? "xe P2P carve-out VRAM (device-local)"
+                    : "xe P2P carve-out VRAM and pinned host memory";
+                std::fprintf(stderr, "strata generate: %lld of %zu experts missing from VRAM (+ %zu in the prompt loan's slots) mirrored in %s "
+                                     "(%.2f GiB, %.1f s)%s\n", (long long) got, n_true_miss, miss.size() - n_true_miss, where,
                              (double) gguf_src.mirrored_bytes() / 1073741824.0,
-                             std::chrono::duration<double>(Clock::now() - tm).count());
+                             std::chrono::duration<double>(Clock::now() - tm).count(),
+                             p2p_b == 0 ? "; the GPU reads them over PCIe"
+                             : p2p_b >= gguf_src.mirrored_bytes() ? "; the GPU reads them on the card"
+                             : "; the GPU reads the carve-out on the card and the rest over PCIe");
                 // the device-built verify plan's view of it: each (layer, expert) -> its mirror address, 0 = none
                 std::vector<unsigned long long> tab((size_t) (g.n_layers * g.n_expert), 0ull);
                 for (int64_t l = 0; l < g.n_layers; ++l)
