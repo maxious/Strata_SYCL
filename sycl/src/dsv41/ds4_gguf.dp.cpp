@@ -3,6 +3,8 @@
 // src/ds4/ds4_gguf.cu - a GGUF's BF16 matrices and MXFP4 experts on the device (see ds4_gguf.cuh).
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include <cuda_runtime.h>   // compat shim (sycl/include/compat): CUDA qualifiers the unconverted headers use
+#include <cuda_fp16.h>      // compat shim: __half2float for the f16 activation load below
 #include "ds4_gguf.dp.hpp"
 
 #include "ds4_iq.dp.hpp"
