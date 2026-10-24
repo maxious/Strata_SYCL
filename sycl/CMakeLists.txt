@@ -250,6 +250,19 @@ add_library(strata_kernels STATIC ${_kernels})
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
 
+# --- the DeepSeek quant kernels (dsv41), opt-in -------------------------------------------------------------------
+# The converted copies of src/dsv41's tq, gguf and iq kernel files (SYCLomatic pass plus hand fixes:
+# templated launches, shared-memory shapes, the occupancy query, WMMA tiles as a float loop).
+# OFF is the default: with it off nothing here changes the build, and the CUDA / HIP paths stay as they are.
+# The engine does not call these yet; docs/SYCL_DSV41_PLAN.md is the phased path to wiring them in.
+option(STRATA_SYCL_DSV41 "Build the ported dsv41 quant kernels (sycl/src/dsv41/*.dp.cpp)" OFF)
+if(STRATA_SYCL_DSV41)
+  strata_resolve(_dsv41 src/dsv41/ds4_tq.cu src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu)
+  add_library(strata_dsv41 STATIC ${_dsv41})
+  target_include_directories(strata_dsv41 PRIVATE ${STRATA_ROOT}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/include/compat)
+  target_link_libraries(strata_dsv41 PUBLIC strata_includes)
+endif()
+
 strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
                        src/core/expert_cache.cpp src/core/native_head.cpp src/core/native_dense.cpp src/core/verify.cpp
                        src/core/mtp.cpp src/core/conversation_snapshot.cpp src/core/conversation_state.cpp

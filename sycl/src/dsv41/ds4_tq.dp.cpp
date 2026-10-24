@@ -12,6 +12,7 @@
 // double reference and on the card by tests/dsv41/tqw_hip_test.cpp).  Elsewhere the same lane mapping in plain FMAs.
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include <cuda_runtime.h>   // compat shim (sycl/include/compat): __device__ for ggml-common-tq.h
 #include "ds4_iq.dp.hpp"
 
 #include "ggml-common-tq.h"   // tq_lut_f16 (the 2048-point codebook as fp16 bit patterns, __device__)
