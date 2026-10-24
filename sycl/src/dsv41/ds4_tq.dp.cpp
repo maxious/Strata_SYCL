@@ -617,42 +617,55 @@ bool bad(const char* what) {
 // local_accessors, following the sycl/src pattern (dpct_kernel_name; CUDA grid (x, y, z) -> SYCL (z, y, x)).
 template <int K, bool COMPUTED, bool WORDS>
 class gate_up_wrapper {
-    Args a; uint32_t *lut; int *ent; int *xr;
+    Args a; sycl::local_accessor<uint32_t, 1> lut; sycl::local_accessor<int, 1> ent; sycl::local_accessor<int, 1> xr;
   public:
-    gate_up_wrapper(const Args &a_, uint32_t *l, int *e, int *x)
+    gate_up_wrapper(const Args &a_, sycl::local_accessor<uint32_t, 1> l, sycl::local_accessor<int, 1> e,
+                    sycl::local_accessor<int, 1> x)
         : a(a_), lut(l), ent(e), xr(x) {}
     void operator()(sycl::nd_item<3>) const {
-        gate_up_kernel<K, COMPUTED, WORDS>(a, lut, ent, xr);
+        gate_up_kernel<K, COMPUTED, WORDS>(a,
+            lut.get_multi_ptr<sycl::access::decorated::no>().get(),
+            ent.get_multi_ptr<sycl::access::decorated::no>().get(),
+            xr.get_multi_ptr<sycl::access::decorated::no>().get());
     }
 };
 
 template <int K, bool COMPUTED, bool WORDS>
 class down_wrapper {
-    Args a; uint32_t *lut; int *ent;
+    Args a; sycl::local_accessor<uint32_t, 1> lut; sycl::local_accessor<int, 1> ent;
   public:
-    down_wrapper(const Args &a_, uint32_t *l, int *e) : a(a_), lut(l), ent(e) {}
+    down_wrapper(const Args &a_, sycl::local_accessor<uint32_t, 1> l, sycl::local_accessor<int, 1> e)
+        : a(a_), lut(l), ent(e) {}
     void operator()(sycl::nd_item<3>) const {
-        down_kernel<K, COMPUTED, WORDS>(a, lut, ent);
+        down_kernel<K, COMPUTED, WORDS>(a,
+            lut.get_multi_ptr<sycl::access::decorated::no>().get(),
+            ent.get_multi_ptr<sycl::access::decorated::no>().get());
     }
 };
 
 template <int K, bool COMPUTED, bool GATE_UP, bool WORDS>
 class set_wrapper {
-    SetArgs a; uint32_t *lut; int *rowsel;
+    SetArgs a; sycl::local_accessor<uint32_t, 1> lut; sycl::local_accessor<int, 1> rowsel;
   public:
-    set_wrapper(const SetArgs &a_, uint32_t *l, int *r) : a(a_), lut(l), rowsel(r) {}
+    set_wrapper(const SetArgs &a_, sycl::local_accessor<uint32_t, 1> l, sycl::local_accessor<int, 1> r)
+        : a(a_), lut(l), rowsel(r) {}
     void operator()(sycl::nd_item<3>) const {
-        set_kernel<K, COMPUTED, GATE_UP, WORDS>(a, lut, rowsel);
+        set_kernel<K, COMPUTED, GATE_UP, WORDS>(a,
+            lut.get_multi_ptr<sycl::access::decorated::no>().get(),
+            rowsel.get_multi_ptr<sycl::access::decorated::no>().get());
     }
 };
 
 template <int K, bool COMPUTED, bool WORDS>
 class mv_wrapper {
-    MvJob j; uint32_t *lut; int *cols;
+    MvJob j; sycl::local_accessor<uint32_t, 1> lut; sycl::local_accessor<int, 1> cols;
   public:
-    mv_wrapper(const MvJob &j_, uint32_t *l, int *c) : j(j_), lut(l), cols(c) {}
+    mv_wrapper(const MvJob &j_, sycl::local_accessor<uint32_t, 1> l, sycl::local_accessor<int, 1> c)
+        : j(j_), lut(l), cols(c) {}
     void operator()(sycl::nd_item<3>) const {
-        mv_kernel<K, COMPUTED, WORDS>(j, lut, cols);
+        mv_kernel<K, COMPUTED, WORDS>(j,
+            lut.get_multi_ptr<sycl::access::decorated::no>().get(),
+            cols.get_multi_ptr<sycl::access::decorated::no>().get());
     }
 };
 
@@ -666,9 +679,7 @@ void launch_gate_up(dpct::queue_ptr s, const Args &a, const dpct::dim3 &grid) {
             sycl::nd_range<3>(sycl::range<3>(grid.z, grid.y, grid.x) *
                               sycl::range<3>(1, 1, kThreads),
                               sycl::range<3>(1, 1, kThreads)),
-            gate_up_wrapper<K, COMPUTED, WORDS>(
-                a, lut_ct1.get_pointer(), ent_ct1.get_pointer(),
-                xr_ct1.get_pointer()));
+            gate_up_wrapper<K, COMPUTED, WORDS>(a, lut_ct1, ent_ct1, xr_ct1));
     });
 }
 
@@ -681,8 +692,7 @@ void launch_down(dpct::queue_ptr s, const Args &a, const dpct::dim3 &grid) {
             sycl::nd_range<3>(sycl::range<3>(grid.z, grid.y, grid.x) *
                               sycl::range<3>(1, 1, kThreads),
                               sycl::range<3>(1, 1, kThreads)),
-            down_wrapper<K, COMPUTED, WORDS>(a, lut_ct1.get_pointer(),
-                                             ent_ct1.get_pointer()));
+            down_wrapper<K, COMPUTED, WORDS>(a, lut_ct1, ent_ct1));
     });
 }
 
@@ -695,8 +705,7 @@ void launch_set(dpct::queue_ptr s, const SetArgs &a, const dpct::dim3 &grid) {
             sycl::nd_range<3>(sycl::range<3>(grid.z, grid.y, grid.x) *
                               sycl::range<3>(1, 1, kThreads),
                               sycl::range<3>(1, 1, kThreads)),
-            set_wrapper<K, COMPUTED, GATE_UP, WORDS>(a, lut_ct1.get_pointer(),
-                                                     rowsel_ct1.get_pointer()));
+            set_wrapper<K, COMPUTED, GATE_UP, WORDS>(a, lut_ct1, rowsel_ct1));
     });
 }
 
@@ -709,8 +718,7 @@ void launch_mv(dpct::queue_ptr s, const MvJob &j, const dpct::dim3 &grid) {
             sycl::nd_range<3>(sycl::range<3>(grid.z, grid.y, grid.x) *
                               sycl::range<3>(1, 1, kThreads),
                               sycl::range<3>(1, 1, kThreads)),
-            mv_wrapper<K, COMPUTED, WORDS>(j, lut_ct1.get_pointer(),
-                                           cols_ct1.get_pointer()));
+            mv_wrapper<K, COMPUTED, WORDS>(j, lut_ct1, cols_ct1));
     });
 }
 
