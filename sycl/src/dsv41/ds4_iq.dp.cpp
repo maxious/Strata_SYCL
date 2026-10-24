@@ -1668,8 +1668,6 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
             sycl::local_accessor<float, 1> wu_acc_ct1(GU ? 32 * 65 : 65, cgh);
             sycl::local_accessor<float, 1> xs_acc_ct1(16 * 33, cgh);
             sycl::local_accessor<int, 1> src_acc_ct1(sycl::range<1>(16), cgh);
-            float *wg_p = wg_acc_ct1.get_pointer(), *wu_p = wu_acc_ct1.get_pointer(),
-                  *xs_p = xs_acc_ct1.get_pointer();
 
             cgh.parallel_for(
                 sycl::nd_range<3>(grid * sycl::range<3>(1, 1, kThreads),
@@ -1679,8 +1677,12 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
                         a,
                         tab_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
                             .get(),
-                        (float (*)[65]) wg_p, (float (*)[65]) wu_p,
-                        (float (*)[33]) xs_p,
+                        (float (*)[65])
+                            wg_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get(),
+                        (float (*)[65])
+                            wu_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get(),
+                        (float (*)[33])
+                            xs_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get(),
                         src_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
                             .get());
                 });
@@ -1695,8 +1697,6 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
         sycl::local_accessor<float, 1> xs_acc_ct1(64 * 33, cgh);
         sycl::local_accessor<int, 1> src_acc_ct1(
             sycl::range<1>(64 /*BM*/), cgh);
-        float *wg_p = wg_acc_ct1.get_pointer(), *wu_p = wu_acc_ct1.get_pointer(),
-              *xs_p = xs_acc_ct1.get_pointer();
 
         cgh.parallel_for(
             sycl::nd_range<3>(grid * sycl::range<3>(1, 1, kThreads),
@@ -1706,8 +1706,12 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
                     a,
                     tab_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
                         .get(),
-                    (float (*)[65]) wg_p, (float (*)[65]) wu_p,
-                    (float (*)[33]) xs_p,
+                    (float (*)[65])
+                        wg_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get(),
+                    (float (*)[65])
+                        wu_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get(),
+                    (float (*)[33])
+                        xs_acc_ct1.get_multi_ptr<sycl::access::decorated::no>().get(),
                     src_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
                         .get());
             });
@@ -1993,9 +1997,10 @@ struct dq_rows_wrapper {
     int n;
     uint16_t *dst;
     bool bf16;
-    uint32_t *tab;
+    sycl::local_accessor<uint32_t, 1> tab_acc;
     void operator()(sycl::nd_item<3> item_ct1) const {
-        dq_rows_kernel<T>(raw, ld, k, n, dst, bf16, tab);
+        dq_rows_kernel<T>(raw, ld, k, n, dst, bf16,
+                          tab_acc.get_multi_ptr<sycl::access::decorated::no>().get());
     }
 };
 
@@ -2004,12 +2009,11 @@ void launch_dq_rows(dpct::queue_ptr s, const uint8_t *raw, size_t ld, int k, int
                     uint16_t *dst, bool bf16, unsigned blocks) {
     s->submit([&](sycl::handler &cgh) {
         sycl::local_accessor<uint32_t, 1> tab_acc_ct1(sycl::range<1>(kTabWords<T, true>), cgh);
-        uint32_t *tab_p = tab_acc_ct1.get_pointer();
         cgh.parallel_for<dpct_kernel_name<dq_rows_wrapper<T>>>(
             sycl::nd_range<3>(sycl::range<3>(1, 1, blocks) *
                               sycl::range<3>(1, 1, kThreads),
                               sycl::range<3>(1, 1, kThreads)),
-            dq_rows_wrapper<T>{raw, ld, k, n, dst, bf16, tab_p});
+            dq_rows_wrapper<T>{raw, ld, k, n, dst, bf16, tab_acc_ct1});
     });
 }
 
