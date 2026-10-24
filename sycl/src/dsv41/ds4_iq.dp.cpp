@@ -4,6 +4,7 @@
 // ggml's (ggml-common.h, MIT, third_party/ggml/LICENSE); the sign and grid tricks are llama.cpp's vecdotq.cuh.
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include <cuda_runtime.h>   // compat shim (sycl/include/compat): __device__ for ggml-common.h
 #include "ds4_iq.dp.hpp"
 #include "ds4_numerics.dp.hpp"
 
