@@ -258,7 +258,7 @@ target_link_libraries(strata_kernels PUBLIC strata_core)
 option(STRATA_SYCL_DSV41 "Build the ported dsv41 quant kernels (sycl/src/dsv41/*.dp.cpp)" OFF)
 if(STRATA_SYCL_DSV41)
   strata_resolve(_dsv41 src/dsv41/ds4_tq.cu src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu
-                       src/dsv41/ds4_gemv.dp.cpp src/dsv41/ds4_softmax.dp.cpp)
+                       src/dsv41/ds4_gemv.dp.cpp src/dsv41/ds4_softmax.dp.cpp src/dsv41/ds4_launch.dp.cpp)
   add_library(strata_dsv41 STATIC ${_dsv41})
   target_include_directories(strata_dsv41 PRIVATE ${STRATA_ROOT}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/include/compat)
   target_link_libraries(strata_dsv41 PUBLIC strata_includes)

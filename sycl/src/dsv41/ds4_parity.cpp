@@ -27,11 +27,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include "ds4_iq.dp.hpp"
 #include "ds4_gguf.dp.hpp"
 #include "ds4_numerics.dp.hpp"
+#include "ds4_launch.dp.hpp"
+#include "ds4_gemv.dp.hpp"
+#include "ds4_softmax.dp.hpp"
 
 namespace {
 
@@ -149,7 +153,8 @@ void ref_iq4_xs(const uint8_t* row, float* y) {
 
 // A seeded byte generator: the same bytes on every run, so a pass never depends on luck.
 struct Rng {
-    unsigned long long s = 0x20261024ull;
+    unsigned long long s;
+    explicit Rng(unsigned long long seed = 0x20261024ull) : s(seed) {}
     uint8_t next() {
         s = s * 6364136222842883251ull + 1442695040888963407ull;
         return (uint8_t) ((s >> 33) & 0xFF);
@@ -375,21 +380,479 @@ void ref_iq_set_down(const uint8_t* blob, size_t tr2, const uint16_t* xh, int ld
     }
 }
 
+// ---------------------------------------------------------------- the kernel-launcher families (ds4_launch.dp.cpp)
+// One row a family, each against a CPU reference written from the family's contract (ds4_kernels.cuh's comments):
+// double-precision sums in row order, or - pred_proj_k alone - the kernel's own float sum order, since its +-1
+// projection cancels to near zero often enough that a double reference would measure rounding, not the port.
+// The inputs are strictly positive (and the packed rows' E2M1 codes nonzero) so no output lands near zero, where one
+// BF16 ulp would not cover a normal float rounding.
+
+struct Tally {
+    int exact = 0, near = 0, bad = 0;
+    float max_diff = 0.0f;
+};
+
+void tally_f32(float got, double ref, Tally& t) {
+    if ((double) got == ref) {
+        ++t.exact;
+        return;
+    }
+    const double diff = std::fabs((double) got - ref);
+    if (diff > t.max_diff) t.max_diff = (float) diff;
+    if (diff <= (double) bf16_ulp((float) ref)) ++t.near;
+    else ++t.bad;
+}
+
+void tally_bf16(uint16_t got, double ref, Tally& t) {
+    if (got == strata::ds4::bf16_rn((float) ref)) {
+        ++t.exact;
+        return;
+    }
+    tally_f32(static_cast<float>(sycl::bit_cast<sycl::half>(got)), ref, t);
+}
+
+void tally_add(Tally& to, const Tally& from) {
+    to.exact += from.exact;
+    to.near += from.near;
+    to.bad += from.bad;
+    if (from.max_diff > to.max_diff) to.max_diff = from.max_diff;
+}
+
+void row_print(const char* name, const Tally& t) {
+    printf("%s: %d/%d exact, %d within one BF16 ulp, %d outside\n", name, t.exact, t.exact + t.near + t.bad, t.near,
+           t.bad);
+}
+
+float rand_pos(Rng& rng, float lo) { return lo + (float) (rng.next() & 255) / 256.0f; }
+
+void run_gemv_f32_row(sycl::queue& q, bool neg, Tally& t) {
+    const int n = 17, k = 128, T = 3, ldy = n + 5;
+    Rng rng(0x473332320001ull);
+    std::vector<float> W((size_t) n * k), x((size_t) T * k), y((size_t) T * ldy);
+    for (float& v : W) v = rand_pos(rng, 0.5f);
+    for (float& v : x) v = rand_pos(rng, 0.5f);
+    if (neg) ((uint8_t*) W.data())[15] = 0x7E;   // one wrong input byte: row 0's third weight to +2^125
+    dpct::queue_ptr s = &q;
+    float* dW = (float*) sycl::malloc_device(W.size() * sizeof(float), q);
+    float* dx = (float*) sycl::malloc_device(x.size() * sizeof(float), q);
+    float* dy = (float*) sycl::malloc_device(y.size() * sizeof(float), q);
+    q.memcpy(dW, W.data(), W.size() * sizeof(float));
+    q.memcpy(dx, x.data(), x.size() * sizeof(float));
+    q.wait();
+    strata::ds4::gemv_f32(dW, dx, n, k, T, dy, ldy, s);
+    q.wait();
+    q.memcpy(y.data(), dy, y.size() * sizeof(float));
+    q.wait();
+    sycl::free(dW, q);
+    sycl::free(dx, q);
+    sycl::free(dy, q);
+    for (int ti = 0; ti < T; ++ti)
+        for (int r = 0; r < n; ++r) {
+            double acc = 0.0;
+            for (int c = 0; c < k; ++c) acc += (double) W[(size_t) r * k + c] * (double) x[(size_t) ti * k + c];
+            tally_f32(y[(size_t) ti * ldy + r], acc, t);
+        }
+    row_print("gemv_f32", t);
+}
+
+void run_gemv_f16_row(sycl::queue& q, bool neg, Tally& t) {
+    const int n = 13, k = 512, T = 2;
+    const float alpha = 0.75f;
+    Rng rng(0x473136320002ull);
+    std::vector<uint16_t> W((size_t) n * k);
+    std::vector<float> x((size_t) T * k), y((size_t) T * n);
+    for (uint16_t& v : W) v = f16_rn(rand_pos(rng, 0.5f));
+    for (float& v : x) v = rand_pos(rng, 0.5f);
+    if (neg) ((uint8_t*) W.data())[1] = 0x7A;   // one wrong input byte: row 0's first weight to the top of F16
+    dpct::queue_ptr s = &q;
+    uint16_t* dW = (uint16_t*) sycl::malloc_device(W.size() * sizeof(uint16_t), q);
+    float* dx = (float*) sycl::malloc_device(x.size() * sizeof(float), q);
+    float* dy = (float*) sycl::malloc_device(y.size() * sizeof(float), q);
+    q.memcpy(dW, W.data(), W.size() * sizeof(uint16_t));
+    q.memcpy(dx, x.data(), x.size() * sizeof(float));
+    q.wait();
+    strata::ds4::gemv_f16(dW, dx, n, k, T, alpha, dy, s);
+    q.wait();
+    q.memcpy(y.data(), dy, y.size() * sizeof(float));
+    q.wait();
+    sycl::free(dW, q);
+    sycl::free(dx, q);
+    sycl::free(dy, q);
+    for (int ti = 0; ti < T; ++ti)
+        for (int r = 0; r < n; ++r) {
+            double acc = 0.0;
+            for (int c = 0; c < k; ++c) {
+                const double wv = (double) static_cast<float>(sycl::bit_cast<sycl::half>(W[(size_t) r * k + c]));
+                acc += wv * (double) x[(size_t) ti * k + c];
+            }
+            tally_f32(y[(size_t) ti * n + r], (double) alpha * acc, t);
+        }
+    row_print("gemv_f16", t);
+}
+
+void run_gemv_f16_rows_row(sycl::queue& q, bool neg, Tally& t) {
+    const int n = 11, k = 512, T = 5, ldx = k + 32, ldy = n + 16;
+    const float alpha = 0.5f;
+    Rng rng(0x473136520003ull);
+    std::vector<uint16_t> W((size_t) n * k);
+    std::vector<float> x((size_t) T * ldx, 0.0f), y((size_t) T * ldy);
+    for (uint16_t& v : W) v = f16_rn(rand_pos(rng, 0.5f));
+    for (int ti = 0; ti < T; ++ti)
+        for (int c = 0; c < k; ++c) x[(size_t) ti * ldx + c] = rand_pos(rng, 0.5f);
+    if (neg) ((uint8_t*) x.data())[15] = 0x7E;   // one wrong input byte: activation 0's third value to +2^125
+    dpct::queue_ptr s = &q;
+    uint16_t* dW = (uint16_t*) sycl::malloc_device(W.size() * sizeof(uint16_t), q);
+    float* dx = (float*) sycl::malloc_device(x.size() * sizeof(float), q);
+    float* dy = (float*) sycl::malloc_device(y.size() * sizeof(float), q);
+    q.memcpy(dW, W.data(), W.size() * sizeof(uint16_t));
+    q.memcpy(dx, x.data(), x.size() * sizeof(float));
+    q.wait();
+    strata::ds4::gemv_f16_rows(dW, dx, ldx, n, k, T, alpha, dy, ldy, s);
+    q.wait();
+    q.memcpy(y.data(), dy, y.size() * sizeof(float));
+    q.wait();
+    sycl::free(dW, q);
+    sycl::free(dx, q);
+    sycl::free(dy, q);
+    for (int ti = 0; ti < T; ++ti)
+        for (int r = 0; r < n; ++r) {
+            double acc = 0.0;
+            for (int c = 0; c < k; ++c) {
+                const double wv = (double) static_cast<float>(sycl::bit_cast<sycl::half>(W[(size_t) r * k + c]));
+                acc += wv * (double) x[(size_t) ti * ldx + c];
+            }
+            tally_f32(y[(size_t) ti * ldy + r], (double) alpha * acc, t);
+        }
+    row_print("gemv_f16_rows", t);
+}
+
+void run_hc_pre_norm_row(sycl::queue& q, bool neg, Tally& t) {
+    const int dim = 1024, hc = 8, T = 2;
+    const float eps = 1e-5f;
+    Rng rng(0x48504e310004ull);
+    std::vector<float> h((size_t) T * hc * dim), mix((size_t) T * 8), w(dim), x((size_t) T * dim);
+    for (float& v : h) v = rand_pos(rng, 0.5f);
+    for (float& v : mix) v = rand_pos(rng, 0.25f);
+    for (float& v : w) v = rand_pos(rng, 0.5f);
+    if (neg) ((uint8_t*) h.data())[15] = 0x7E;   // one wrong input byte: stream 0's third value to +2^125
+    dpct::queue_ptr s = &q;
+    float* dh = (float*) sycl::malloc_device(h.size() * sizeof(float), q);
+    float* dmix = (float*) sycl::malloc_device(mix.size() * sizeof(float), q);
+    float* dw = (float*) sycl::malloc_device(w.size() * sizeof(float), q);
+    float* dx = (float*) sycl::malloc_device(x.size() * sizeof(float), q);
+    q.memcpy(dh, h.data(), h.size() * sizeof(float));
+    q.memcpy(dmix, mix.data(), mix.size() * sizeof(float));
+    q.memcpy(dw, w.data(), w.size() * sizeof(float));
+    q.wait();
+    for (int cfg = 0; cfg < 2; ++cfg) {
+        const bool use_w = cfg == 0;
+        strata::ds4::hc_pre_norm(dh, dmix, use_w ? dw : nullptr, dim, hc, T, eps, dx, s);
+        q.wait();
+        q.memcpy(x.data(), dx, x.size() * sizeof(float));
+        q.wait();
+        Tally ct;
+        for (int ti = 0; ti < T; ++ti) {
+            std::vector<double> a(dim);
+            double ss = 0.0;
+            for (int e = 0; e < dim; ++e) {
+                double av = 0.0;
+                for (int si = 0; si < hc; ++si) av += (double) mix[(size_t) ti * 8 + si] * (double) h[((size_t) ti * hc + si) * dim + e];
+                a[e] = av;
+                ss += av * av;
+            }
+            const double inv = 1.0 / std::sqrt(ss / (double) dim + (double) eps);
+            for (int e = 0; e < dim; ++e) {
+                const double ref = use_w ? a[e] * inv * (double) w[e] : a[e];
+                tally_f32(x[(size_t) ti * dim + e], ref, ct);
+            }
+        }
+        row_print(use_w ? "hc_pre_norm/norm+weight" : "hc_pre_norm/no weight", ct);
+        tally_add(t, ct);
+    }
+    sycl::free(dh, q);
+    sycl::free(dmix, q);
+    sycl::free(dw, q);
+    sycl::free(dx, q);
+    row_print("hc_pre_norm", t);
+}
+
+void run_hc_mix_scale_row(sycl::queue& q, bool neg, Tally& t) {
+    const int hcdim = 512, n_mix = 8, T = 3;
+    const float eps = 1e-5f;
+    Rng rng(0x484d53310005ull);
+    std::vector<float> h((size_t) T * hcdim), mixes((size_t) T * 32, 0.0f);
+    for (float& v : h) v = rand_pos(rng, 0.5f);
+    for (int ti = 0; ti < T; ++ti)
+        for (int m = 0; m < n_mix; ++m) mixes[(size_t) ti * 32 + m] = rand_pos(rng, 0.25f);
+    if (neg) ((uint8_t*) h.data())[15] = 0x7E;   // one wrong input byte: token 0's third value to +2^125
+    dpct::queue_ptr s = &q;
+    float* dh = (float*) sycl::malloc_device(h.size() * sizeof(float), q);
+    float* dmix = (float*) sycl::malloc_device(mixes.size() * sizeof(float), q);
+    q.memcpy(dh, h.data(), h.size() * sizeof(float));
+    q.memcpy(dmix, mixes.data(), mixes.size() * sizeof(float));
+    q.wait();
+    strata::ds4::hc_mix_scale(dh, hcdim, n_mix, T, eps, dmix, s);
+    q.wait();
+    std::vector<float> got(mixes.size());
+    q.memcpy(got.data(), dmix, got.size() * sizeof(float));
+    q.wait();
+    sycl::free(dh, q);
+    sycl::free(dmix, q);
+    for (int ti = 0; ti < T; ++ti) {
+        double ss = 0.0;
+        for (int e = 0; e < hcdim; ++e) ss += (double) h[(size_t) ti * hcdim + e] * (double) h[(size_t) ti * hcdim + e];
+        const double inv = 1.0 / std::sqrt(ss / (double) hcdim + (double) eps);
+        for (int m = 0; m < n_mix; ++m)
+            tally_f32(got[(size_t) ti * 32 + m], (double) mixes[(size_t) ti * 32 + m] * inv, t);
+    }
+    row_print("hc_mix_scale", t);
+}
+
+void run_pred_proj_k_row(sycl::queue& q, bool neg, Tally& t) {
+    const int D = 512, T = 2;
+    Rng rng(0x50524f4a0006ull);
+    std::vector<float> xv((size_t) T * D), out((size_t) T * 256);
+    for (float& v : xv) v = rand_pos(rng, 0.5f);
+    if (neg) ((uint8_t*) xv.data())[15] = 0x7E;   // one wrong input byte: token 0's third value to +2^125
+    dpct::queue_ptr s = &q;
+    float* dx = (float*) sycl::malloc_device(xv.size() * sizeof(float), q);
+    float* dout = (float*) sycl::malloc_device(out.size() * sizeof(float), q);
+    q.memcpy(dx, xv.data(), xv.size() * sizeof(float));
+    q.wait();
+    strata::ds4::pred_proj_k(dx, D, T, dout, s);
+    q.wait();
+    q.memcpy(out.data(), dout, out.size() * sizeof(float));
+    q.wait();
+    sycl::free(dx, q);
+    sycl::free(dout, q);
+    const double rs = 1.0 / std::sqrt((double) D);
+    for (int ti = 0; ti < T; ++ti)
+        for (int j = 0; j < 256; ++j) {
+            float a = 0.0f;   // the kernel's own sum order, so the projection's cancellation is measured away
+            for (int d = 0; d < D; ++d) {
+                unsigned hsh = (unsigned) d * 2654435761u ^ ((unsigned) j + 1u) * 40503u;
+                hsh ^= hsh >> 15;
+                hsh *= 2246822519u;
+                hsh ^= hsh >> 13;
+                hsh *= 3266489917u;
+                hsh ^= hsh >> 16;
+                a += (hsh & 1u) ? xv[(size_t) ti * D + d] : -xv[(size_t) ti * D + d];
+            }
+            tally_f32(out[(size_t) ti * 256 + j], (double) a * rs, t);
+        }
+    row_print("pred_proj_k", t);
+}
+
+void run_softmax_row(sycl::queue& q, bool neg, Tally& t) {
+    const int n = 300, T = 2;
+    Rng rng(0x534f46540007ull);
+    std::vector<float> sv((size_t) T * n);
+    std::vector<uint16_t> got((size_t) T * n);
+    for (float& v : sv) v = -4.0f + (float) (rng.next() & 255) / 32.0f;
+    if (neg) ((uint8_t*) sv.data())[15] = 0x7E;   // one wrong input byte: row 0's third logit to +2^125
+    dpct::queue_ptr s = &q;
+    float* ds = (float*) sycl::malloc_device(sv.size() * sizeof(float), q);
+    uint16_t* dp = (uint16_t*) sycl::malloc_device(got.size() * sizeof(uint16_t), q);
+    q.memcpy(ds, sv.data(), sv.size() * sizeof(float));
+    q.wait();
+    strata::ds4::softmax(ds, n, T, dp, s);
+    q.wait();
+    q.memcpy(got.data(), dp, got.size() * sizeof(uint16_t));
+    q.wait();
+    sycl::free(ds, q);
+    sycl::free(dp, q);
+    for (int ti = 0; ti < T; ++ti) {
+        double m = -std::numeric_limits<double>::infinity();
+        for (int i = 0; i < n; ++i) m = std::fmax(m, (double) sv[(size_t) ti * n + i]);
+        double den = 0.0;
+        std::vector<double> e(n);
+        for (int i = 0; i < n; ++i) {
+            e[i] = std::exp((double) sv[(size_t) ti * n + i] - m);
+            den += e[i];
+        }
+        for (int i = 0; i < n; ++i) tally_bf16(got[(size_t) ti * n + i], e[i] / den, t);
+    }
+    row_print("softmax", t);
+}
+
+void run_sparse_attn_row(sycl::queue& q, bool neg, Tally& t) {
+    const int heads = 4, T = 3, d = 512, nwin_max = 40, sel_stride = 24, nckv = 32;
+    const double scale = 1.0 / std::sqrt(512.0);
+    Rng rng(0x535041540008ull);
+    std::vector<float> qv((size_t) T * heads * d);
+    for (float& v : qv) v = rand_pos(rng, 0.5f);
+    std::vector<uint16_t> win((size_t) nwin_max * d);
+    for (uint16_t& v : win) v = strata::ds4::bf16_rn(rand_pos(rng, 0.5f));
+    const size_t crow = strata::ds4::kv_row_bytes(strata::ds4::kKvFp4, d);
+    std::vector<uint8_t> ckv((size_t) nckv * crow);
+    for (int r = 0; r < nckv; ++r) {
+        uint8_t* row = ckv.data() + (size_t) r * crow;
+        for (int i = 0; i < d / 2; ++i) {
+            const uint8_t lo = (uint8_t) (1 + rng.next() % 7), hi = (uint8_t) (1 + rng.next() % 7);
+            row[i] = (uint8_t) (lo | (hi << 4));
+        }
+        for (int i = 0; i < d / 16; ++i) row[d / 2 + i] = (uint8_t) (0x20 + (rng.next() & 7));
+    }
+    std::vector<double> ckv_val((size_t) nckv * d);
+    std::vector<uint16_t> ckv_bf((size_t) nckv * d);
+    static const double lut[8] = {0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0};
+    for (int r = 0; r < nckv; ++r) {
+        const uint8_t* row = ckv.data() + (size_t) r * crow;
+        for (int i = 0; i < d; ++i) {
+            const uint8_t code = (uint8_t) ((row[i / 2] >> (4 * (i & 1))) & 15u);
+            const double v = lut[code & 7u] * (double) strata::ds4::e4m3_value(row[d / 2 + i / 16]);
+            ckv_val[(size_t) r * d + i] = v;
+            ckv_bf[(size_t) r * d + i] = strata::ds4::bf16_rn((float) v);   // exact: E2M1 x E4M3 fits BF16
+        }
+    }
+    std::vector<int> sel((size_t) T * sel_stride);
+    std::vector<float> sink(heads);
+    strata::ds4::AttnRows ar{};
+    for (int ti = 0; ti < T; ++ti) {
+        ar.win0[ti] = 0;
+        ar.nwin[ti] = 20 + 5 * ti;
+        ar.nsel[ti] = 8 + 4 * ti;
+        for (int i = 0; i < sel_stride; ++i)
+            sel[(size_t) ti * sel_stride + i] = i < ar.nsel[ti] ? (ti * 7 + i * 3) % nckv : 0;
+    }
+    for (int hh = 0; hh < heads; ++hh) sink[hh] = rand_pos(rng, 0.25f);
+    if (neg) ((uint8_t*) qv.data())[15] = 0x7E;   // one wrong input byte: query 0's first head value to +2^125
+    std::vector<double> ref((size_t) T * heads * d);
+    for (int ti = 0; ti < T; ++ti) {
+        const int nt = ar.nwin[ti] + ar.nsel[ti];
+        std::vector<double> rv((size_t) nt * d);
+        for (int j = 0; j < ar.nwin[ti]; ++j) {
+            const uint16_t* wr = win.data() + (size_t) (ar.win0[ti] + j) * d;
+            for (int c = 0; c < d; ++c)   // the window rows are BF16 bits: shift into the F32 exponent
+                rv[(size_t) j * d + c] = (double) sycl::bit_cast<float>((uint32_t) wr[c] << 16);
+        }
+        for (int i = 0; i < ar.nsel[ti]; ++i) {
+            const int row = sel[(size_t) ti * sel_stride + i];
+            for (int c = 0; c < d; ++c) rv[(size_t) (ar.nwin[ti] + i) * d + c] = ckv_val[(size_t) row * d + c];
+        }
+        for (int hh = 0; hh < heads; ++hh) {
+            const float* qr = qv.data() + ((size_t) ti * heads + hh) * d;
+            std::vector<double> wexp(nt);
+            double den = std::exp((double) sink[hh]);
+            for (int j = 0; j < nt; ++j) {
+                double dot = 0.0;
+                for (int c = 0; c < d; ++c) dot += (double) qr[c] * rv[(size_t) j * d + c];
+                wexp[j] = std::exp(dot * scale);
+                den += wexp[j];
+            }
+            for (int c = 0; c < d; ++c) {
+                double acc = 0.0;
+                for (int j = 0; j < nt; ++j) acc += wexp[j] * rv[(size_t) j * d + c];
+                ref[((size_t) ti * heads + hh) * d + c] = acc / den;
+            }
+        }
+    }
+    dpct::queue_ptr s = &q;
+    float* dq = (float*) sycl::malloc_device(qv.size() * sizeof(float), q);
+    uint16_t* dwin = (uint16_t*) sycl::malloc_device(win.size() * sizeof(uint16_t), q);
+    uint8_t* dckv = (uint8_t*) sycl::malloc_device(ckv.size(), q);
+    uint16_t* dckvbf = (uint16_t*) sycl::malloc_device(ckv_bf.size() * sizeof(uint16_t), q);
+    int* dsel = (int*) sycl::malloc_device(sel.size() * sizeof(int), q);
+    float* dsink = (float*) sycl::malloc_device(sink.size() * sizeof(float), q);
+    float* dout = (float*) sycl::malloc_device(ref.size() * sizeof(float), q);
+    uint16_t* dscr = (uint16_t*) sycl::malloc_device((size_t) T * sel_stride * d * sizeof(uint16_t), q);
+    q.memcpy(dq, qv.data(), qv.size() * sizeof(float));
+    q.memcpy(dwin, win.data(), win.size() * sizeof(uint16_t));
+    q.memcpy(dckv, ckv.data(), ckv.size());
+    q.memcpy(dckvbf, ckv_bf.data(), ckv_bf.size() * sizeof(uint16_t));
+    q.memcpy(dsel, sel.data(), sel.size() * sizeof(int));
+    q.memcpy(dsink, sink.data(), sink.size() * sizeof(float));
+    q.wait();
+    strata::ds4::AttnScratch scr;
+    scr.rows = dscr;
+    scr.max_t = T;
+    scr.cap = sel_stride;
+    const int ncfg = 4;
+    const char* cfg_name[ncfg] = {"sparse_attn/bf16 rows", "sparse_attn/packed G=2", "sparse_attn/packed G=1",
+                                  "sparse_attn/scratch rows"};
+    for (int cfg = 0; cfg < ncfg; ++cfg) {
+        if (cfg == 0)
+            strata::ds4::sparse_attn(dq, dwin, dckvbf, dsel, sel_stride, ar, dsink, heads, d, T, (float) scale, dout,
+                                     s, strata::ds4::kKvBf16);
+        else if (cfg == 1)
+            strata::ds4::sparse_attn(dq, dwin, dckv, dsel, sel_stride, ar, dsink, heads, d, T, (float) scale, dout, s,
+                                     strata::ds4::kKvFp4, 2);
+        else if (cfg == 2)
+            strata::ds4::sparse_attn(dq, dwin, dckv, dsel, sel_stride, ar, dsink, heads, d, T, (float) scale, dout, s,
+                                     strata::ds4::kKvFp4, 1);
+        else
+            strata::ds4::sparse_attn(dq, dwin, dckv, dsel, sel_stride, ar, dsink, heads, d, T, (float) scale, dout, s,
+                                     strata::ds4::kKvFp4, -1, &scr);
+        q.wait();
+        std::vector<float> got(ref.size());
+        q.memcpy(got.data(), dout, got.size() * sizeof(float));
+        q.wait();
+        Tally ct;
+        for (size_t i = 0; i < got.size(); ++i) tally_f32(got[i], ref[i], ct);
+        row_print(cfg_name[cfg], ct);
+        tally_add(t, ct);
+    }
+    sycl::free(dq, q);
+    sycl::free(dwin, q);
+    sycl::free(dckv, q);
+    sycl::free(dckvbf, q);
+    sycl::free(dsel, q);
+    sycl::free(dsink, q);
+    sycl::free(dout, q);
+    sycl::free(dscr, q);
+    row_print("sparse_attn", t);
+}
+
+const char* kFamilies[] = {"sparse_attn", "gemv_f32", "gemv_f16", "gemv_f16_rows",
+                           "hc_pre_norm", "hc_mix_scale", "pred_proj_k", "softmax"};
+
+bool run_family(const char* name, sycl::queue& q, bool neg, Tally& t) {
+    if (!std::strcmp(name, "sparse_attn")) run_sparse_attn_row(q, neg, t);
+    else if (!std::strcmp(name, "gemv_f32")) run_gemv_f32_row(q, neg, t);
+    else if (!std::strcmp(name, "gemv_f16")) run_gemv_f16_row(q, neg, t);
+    else if (!std::strcmp(name, "gemv_f16_rows")) run_gemv_f16_rows_row(q, neg, t);
+    else if (!std::strcmp(name, "hc_pre_norm")) run_hc_pre_norm_row(q, neg, t);
+    else if (!std::strcmp(name, "hc_mix_scale")) run_hc_mix_scale_row(q, neg, t);
+    else if (!std::strcmp(name, "pred_proj_k")) run_pred_proj_k_row(q, neg, t);
+    else if (!std::strcmp(name, "softmax")) run_softmax_row(q, neg, t);
+    else return false;
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     const char* dump = nullptr;
     bool bad_scale_gu = false, bad_scale_dn = false;
+    const char* only = nullptr;
+    bool neg = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--bad-scale-gu")) bad_scale_gu = true;
         else if (!std::strcmp(argv[i], "--bad-scale")) bad_scale_dn = true;
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) dump = argv[++i];
+        else if (!std::strcmp(argv[i], "--only") && i + 1 < argc) only = argv[++i];
+        else if (!std::strcmp(argv[i], "--neg") && i + 1 < argc) only = argv[++i], neg = true;
     }
     try {
         sycl::device dev(sycl::gpu_selector_v);
         sycl::queue q(dev);
         printf("device: %s\n", q.get_device().get_info<sycl::info::device::name>().c_str());
         dpct::queue_ptr s = &q;
+
+        if (only != nullptr) {
+            Tally tt;
+            if (!run_family(only, q, neg, tt)) {
+                std::fprintf(stderr, "ds4_parity: no family '%s'\n", only);
+                return 2;
+            }
+            if (tt.bad == 0) {
+                printf("MATCH: %d/%d values equal to the CPU reference, %d within one ulp, max float diff %g\n",
+                       tt.exact, tt.exact + tt.near + tt.bad, tt.near, (double) tt.max_diff);
+                return 0;
+            }
+            printf("NO MATCH: %d values outside one BF16 ulp of the reference\n", tt.bad);
+            return 1;
+        }
 
         const int types[] = {strata::ds4::gguf::iq::kQ4_K, strata::ds4::gguf::iq::kQ5_K, strata::ds4::gguf::iq::kQ6_K,
                              strata::ds4::gguf::iq::kIQ4_NL, strata::ds4::gguf::iq::kIQ4_XS};
@@ -692,6 +1155,15 @@ int main(int argc, char** argv) {
             }
             sycl::free(w, q); sycl::free(bounds, q); sycl::free(didx, q); sycl::free(dxf, q); sycl::free(dxh, q);
             sycl::free(dh, q); sycl::free(dy, q);
+        }
+
+        for (const char* fam : kFamilies) {
+            Tally tt;
+            run_family(fam, q, false, tt);
+            exact += tt.exact;
+            near += tt.near;
+            bad += tt.bad;
+            if (tt.max_diff > max_diff) max_diff = tt.max_diff;
         }
 
         if (bad == 0) {
