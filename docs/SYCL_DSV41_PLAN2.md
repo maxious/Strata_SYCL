@@ -65,7 +65,7 @@ measured here. llama.cpp (MIT) already runs IQ4_NL on SYCL: `~/llama.cpp/ggml/sr
 1588-1605, 32 work-items per 256-value group, 8 sub-blocks of 32 values, one fp16 scale per sub-block, table
 lookup, no shared memory, no subgroup intrinsics — embarrassingly parallel (static reading). Its `kvalues_iq4nl`
 table is the same 16 values as Strata's (`-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113`; read from
-both trees, at `~/llama.cpp/ggml/src/ggml-common.h:1120` and `sycl/src/dsv41/ds4_parity.cpp:114-115`; static
+both trees, at `~/llama.cpp/ggml/src/ggml-common.h:1120` and `sycl/src/dsv41/ds4_parity.cpp:118-119`; static
 reading). Q4_K/Q5_K/Q6_K/IQ4_XS there match the same GGUF layout Strata uses, and Strata's converted kernels
 cover those four through `dq_rows` (static reading). IQ4_NL is no longer missing: it has its own kernel now, and
 its row is `IQ4_NL: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside` on both artifacts (measured on this
@@ -147,11 +147,21 @@ Strata's BF16 output, and drop the refusal in the `dq_rows` path (the `fail(...)
 IQ4_NL rows on device. Measured on this PC: `IQ4_NL: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside` on
 both artifacts, with the coverage caveat above (4×32 random values per run).
 
-**Phase C — BLAS and helpers.** Add a SYCL cublas shim header of its own under `include/strata/` (that file does
-not exist yet), mirroring `include/strata/hip_compat/cublas_v2.h`: `cublasGemmEx` → `dpct::blas::gemm` (oneMKL),
-handle → descriptor, `SetStream` → queue, `SetWorkspace` → no-op. Port the three gemv kernels and the vision
-softmax as SYCL kernels (all planned work: not measured yet). Gate: everything compiles, gemv parity against CPU
-on device (not measured yet). This phase touches no engine code.
+**Phase C — BLAS and helpers.** Merged and measured. `b422876c1d888c7a0b1eddb312a08d6dcd517298` ("[Engine]
+cublas shim and gemv parity for dsv41 SYCL") landed the whole phase: a SYCL cublas shim header of its own at
+`sycl/include/compat/cublas_v2.h`, mirroring `include/strata/hip_compat/cublas_v2.h`: `cublasGemmEx` →
+`dpct::blas::gemm` (oneMKL), handle → descriptor, `SetStream` → queue, `SetWorkspace` → no-op (static reading);
+the three gemv kernels and the vision softmax as SYCL kernels (`sycl/src/dsv41/ds4_gemv.dp.cpp`,
+`sycl/src/dsv41/ds4_gemv.dp.hpp`, `sycl/src/dsv41/ds4_softmax.dp.cpp`); and the BLAS parity harness
+(`sycl/src/dsv41/ds4_blas_parity.cpp`). The softmax port needed one device-side fix at
+`sycl/src/dsv41/ds4_softmax.dp.cpp:87` — the fix record is `task-4-gemv-parity.log:104`
+(`SOFTMAX_FIX_SITE=sycl/src/dsv41/ds4_softmax.dp.cpp:87 SOFTMAX_DEFECT_SIDE=device`). The gate ran on the card
+and passed (measured on this PC): `RUN_RC=0` (`task-4-blas-shim.log:385`), `TILE_RUN_RC=0`
+(`task-4-blas-shim.log:410`), and `CTEST_RC=0` with 2/2 tests passed on
+`device: Intel(R) Arc(TM) Pro B60 Graphics` (`task-4-blas-shim.log:507-511`); the gemv parity row reads
+`RUN1_MATCH: 50937/51242 values equal to the CPU reference, 305 within one BF16 ulp, max float diff 3.82063e-06` (`task-4-blas-shim.log:392`). This phase touches no engine code. Open here: the timed run — these
+kernels against CPU and the tiles against the scalar loop, on the B60, reported with the build that produced
+them — has not happened, so this plan states no throughput number for them.
 
 **Phase D — engine wiring.** Build `src/dsv41/ds4_model.cu` for SYCL behind the same opt-in flag, run one small
 DeepSeek pack on one B60, and measure prefill and decode throughput, reported with its build and its date.
