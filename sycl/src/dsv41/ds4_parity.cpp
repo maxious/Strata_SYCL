@@ -315,12 +315,6 @@ int main() {
             sycl::free(d, q);
 
             if (!launched) {
-                if (type == strata::ds4::gguf::iq::kIQ4_NL) {
-                    // (IQ4_NL's block is 32 values, not on the dq_rows path: CUDA's dequant_rows
-                    // refuses it too, so refusing is the parity - not a failure.)
-                    printf("IQ4_NL: correctly refused (32-value blocks are not a dq_rows path)\n");
-                    continue;
-                }
                 printf("%s: FAIL (no kernel launched)\n", strata::ds4::gguf::iq::name(type));
                 ++bad;
                 continue;
