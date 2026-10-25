@@ -192,8 +192,15 @@ Hand fixes applied (the four dpct gaps above):
    lists no dsv41 source (measured on this PC).
 3. ds4_model: the model-level passes, including its BLAS calls — 3 in `src/dsv41/ds4_model.cu` (lines 2910,
    2924, 2937) and 10 more in `src/dsv41/ds4_vision.cu`, 13 call sites in total (static reading). Those map to
-   oneMKL or oneDNN; both are installed with the toolkit (measured on this PC). The
-   `include/strata/hip_compat/cublas_v2.h` shim is the precedent for this mapping (static reading).
+   oneMKL or oneDNN; both are installed with the toolkit (measured on this PC). The mapping is no longer future
+   work: `b422876c1d888c7a0b1eddb312a08d6dcd517298` merged the cublas shim `sycl/include/compat/cublas_v2.h`
+   (the `include/strata/hip_compat/cublas_v2.h` pattern), the gemv ports (`sycl/src/dsv41/ds4_gemv.dp.cpp`,
+   `sycl/src/dsv41/ds4_gemv.dp.hpp`) and the vision softmax port (`sycl/src/dsv41/ds4_softmax.dp.cpp`, with the
+   device-side fix at `sycl/src/dsv41/ds4_softmax.dp.cpp:87`, recorded at `task-4-gemv-parity.log:104`), and the
+   parity runs passed on the card (measured on this PC): `RUN_RC=0` (`task-4-blas-shim.log:385`), `TILE_RUN_RC=0`
+   (`task-4-blas-shim.log:410`), `CTEST_RC=0` with 2/2 tests passed on `device: Intel(R) Arc(TM) Pro B60 Graphics`
+   (`task-4-blas-shim.log:507-511`). What is left of this item is wiring the model-level passes themselves:
+   Phase D in [SYCL_DSV41_PLAN2.md](SYCL_DSV41_PLAN2.md).
 4. Vision, then exl3 and the sampler, in the same way (not measured yet).
 5. Tensor-core timing: measure the `joint_matrix` set tiles against the scalar loop on the B60, and report both
    with the build that produced them (not measured yet). Change the default only with measured numbers, per
