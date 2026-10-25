@@ -8,7 +8,9 @@ on the scalar artifact and `MATCH: 9958/13312 BF16 bits equal to the CPU referen
 on the bmg-g21 AOT tile artifact (both measured on this PC). (An earlier round-2 run, when the harness covered
 only the four decode rows, printed `MATCH: 4096/4096 BF16 bits equal to the CPU reference, 0 within one ulp, max
 float diff 0` — measured on this PC.) The MXFP4 set tiles now use `joint_matrix`; the scalar fallback is kept
-(measured on this PC). The IQ4_XS set tiles do not match yet (not measured yet), and the engine cannot run yet.
+(measured on this PC). The IQ4_XS set tiles match too, after the round-2 defect fix — the missing barrier
+between the W/X staging and the XMX B-operand pack in `sycl/src/dsv41/ds4_iq.dp.cpp:1114-1115`, described under
+Phase A (measured on this PC). The engine cannot run yet.
 This plan covers the rest, shaped by a research round over the local trees on this machine: `~/XeStrata` (the
 Strata Xe port), Strata's own `sycl/` project, `~/llama.cpp`, and the two SYCL toolchains.
 
@@ -55,16 +57,15 @@ Ryzen 7 5700X3D with 2× Intel Arc Pro B60) on 2026-10-17, in the contrib-llvm b
 - two GPUs reading at once 14.2 GB/s per card (prior art: same PC, same run, same build and date)
 
 Each number comes from XeStrata's tree with that build and that date. None of them was produced by a run in this
-session, and none is a measurement of Strata's dsv41 engine on the B60. We found no dsv41 tokens-per-second
-number for the B60 in any tree we read; every speed number for this port must come from a future run on this PC
-(not measured yet).
+session, and none is a measurement of Strata's dsv41 engine on the B60. No tree we read carries a dsv41 speed
+number for the B60; every speed number for this port must come from a future run on this PC (not measured yet).
 
 **The IQ4_NL kernel we refused had a drop-in template.** Static reading — read from llama.cpp's code, not
 measured here. llama.cpp (MIT) already runs IQ4_NL on SYCL: `~/llama.cpp/ggml/src/ggml-sycl/dequantize.hpp` lines
 1588-1605, 32 work-items per 256-value group, 8 sub-blocks of 32 values, one fp16 scale per sub-block, table
 lookup, no shared memory, no subgroup intrinsics — embarrassingly parallel (static reading). Its `kvalues_iq4nl`
 table is the same 16 values as Strata's (`-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113`; read from
-both trees, at `~/llama.cpp/ggml/src/ggml-common.h:1120` and `sycl/src/dsv41/ds4_parity.cpp:108`; static
+both trees, at `~/llama.cpp/ggml/src/ggml-common.h:1120` and `sycl/src/dsv41/ds4_parity.cpp:114-115`; static
 reading). Q4_K/Q5_K/Q6_K/IQ4_XS there match the same GGUF layout Strata uses, and Strata's converted kernels
 cover those four through `dq_rows` (static reading). IQ4_NL is no longer missing: it has its own kernel now, and
 its row is `IQ4_NL: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside` on both artifacts (measured on this
@@ -75,11 +76,15 @@ Nothing in ggml-sycl covers Strata's trellis/APR format; that stays in-house (st
 design splits tensors by rows across devices outside the kernels; all kernel offsets are 64-bit (static
 reading).
 
-**One finding to carry: the tile path does not refuse IQ4_NL.** Static reading, not a measured result
-(unconfirmed static analysis). The tile/joint-matrix path does not refuse IQ4_NL anywhere, even though IQ4_NL's
-blocks are 32 values and not the 16-value `dq_rows` shape (`sycl/src/dsv41/ds4_iq.dp.cpp`, the `deq8` 32-value
-branch at line 435 and `DS4_IQ_SWITCH` at line 1510). This is pre-existing at the base commit `e8319a37`. Decide
-what the tile path should do for IQ4_NL before that route carries it.
+**One finding to carry: the set tiles refuse IQ4_NL, on purpose.** Static reading, not a measured result
+(unconfirmed static analysis). At the merged commit `iq::set_gate_up` and `iq::set_down` return false for
+`kIQ4_NL` before any tile work (`sycl/src/dsv41/ds4_iq.dp.cpp:2222` and `:2239`, both lines added by the round-2
+fix commit `a8ced727`), because IQ4_NL's blocks are 32 values and not the 16-value `dq_rows` shape (the `deq8`
+32-value block shape at `sycl/src/dsv41/ds4_iq.dp.cpp:435-438` and the `DS4_IQ_SWITCH` dispatch at line 1517).
+The code's own comment says why: no set-tile parity row drives IQ4_NL yet. The caller turns a refusal into
+`fail("set_gate_up: not covered")` or `fail("set_down: not covered")` (`sycl/src/dsv41/ds4_gguf.dp.cpp:2111` and
+`:2173`), so IQ4_NL never reaches the joint-matrix set tiles. Keep the refusal until a set-tile parity row
+drives IQ4_NL; only that run should re-open this route.
 
 **The Engram is not optional for serving — static reading, not a measured result.** The four IQ2_XXS shards
 alone are a supported launcher input: `strata launch --plan` accepts a shards-only folder and names the set
@@ -128,10 +133,13 @@ numbers only from runs on this PC.
 (`sycl/src/dsv41/ds4_gguf.dp.cpp:1063`) and `set_tc_kernel` (`sycl/src/dsv41/ds4_iq.dp.cpp:1023`) with
 `joint_matrix` following `sycl/src/prefill/xmx_moe.dp.cpp`: dequant to fp16 into padded SLM, SG16 tiles under
 `STRATA_XMX_SG16`, float accumulators, scales folded with `joint_matrix_apply` (as the int8 bench does; the
-shape notes are static reading). Status: the MXFP4 set tiles are in and measured on this PC (the set rows above,
-from the bmg-g21 AOT tile artifact, on the B60). Open here: the IQ4_XS set tiles do not match the reference in
-the round-2 evidence yet (not measured yet), and the timed run — scalar against tiles, on the B60, both reported
-with the build that produced them — has not happened (not measured yet).
+shape notes are static reading). Status: the MXFP4 and IQ4_XS set tiles are in and measured on this PC (the
+set rows in [SYCL_DSV41_PLAN.md](SYCL_DSV41_PLAN.md), on the B60). The IQ4_XS tiles first matched after the round-2 defect
+fix: the pack step read W/X rows staged by other threads of the same 32-value step while the only barrier sat
+after the XMX B-operand pack, so staging and pack were unsynchronized and the tile's output moved between runs
+until the missing barrier was added at `sycl/src/dsv41/ds4_iq.dp.cpp:1114-1115` (static reading of the code; the
+moving output and the matching rows are measured on this PC). Open here: the timed run — scalar against tiles,
+on the B60, both reported with the build that produced them — has not happened (not measured yet).
 
 **Phase B — IQ4_NL.** Add a dedicated kernel for the 32-value block shape, from the llama.cpp template with
 Strata's BF16 output, and drop the refusal in the `dq_rows` path (the `fail(...)` at
@@ -147,8 +155,8 @@ on device (not measured yet). This phase touches no engine code.
 
 **Phase D — engine wiring.** Build `src/dsv41/ds4_model.cu` for SYCL behind the same opt-in flag, run one small
 DeepSeek pack on one B60, and measure prefill and decode throughput, reported with its build and its date.
-There is no B60 baseline: that run produces the first number. No tok/s number has been measured for dsv41 on
-an Arc Pro B60 yet (not measured yet). Memory is not the blocker the round-1 draft feared: the fit planner says the set `fits` with room
+There is no B60 baseline: that run produces the first number (not measured yet). Memory is not the blocker
+the round-1 draft feared: the fit planner says the set `fits` with room
 to spare, and the Engram stays on SSD (measured on this PC; the numbers are in
 [SYCL_DSV41_PLAN.md](SYCL_DSV41_PLAN.md)). The blocker is the one measured there too: the documented
 `strata launch --plan` path reports verdict `no_card` on this PC (measured on this PC), so that path cannot place
@@ -176,6 +184,6 @@ increments (not measured yet).
 - The engine-stop guidance (SIGTERM and wait; the `PAGEFAULT → CAT error → DEVICE_LOST` report) is this plan's
   own guidance from the XeStrata notes (static reading; not measured here). No round-2 run confirms it.
 - The `joint_matrix` set tiles are confirmed on the device (measured on this PC): the tile artifact's rows ran
-  on the B60. What is left of Phase A is the IQ4_XS set tiles and the timed run (not measured yet).
-- No dsv41 tokens-per-second number has been measured on an Arc Pro B60 yet. Phase D produces the first (not
-  measured yet).
+  on the B60, and the IQ4_XS set rows match after the round-2 barrier fix. What is left of Phase A is the timed
+  run (not measured yet).
+- Phase D produces this port's first speed number (not measured yet).

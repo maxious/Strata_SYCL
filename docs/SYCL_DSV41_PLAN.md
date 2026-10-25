@@ -55,8 +55,27 @@ It is not full-row coverage.
 The gate is not vacuous: runs with deliberately corrupted inputs print NO MATCH, not MATCH (measured on this
 PC).
 
-Two things are still open. The IQ4_XS set tiles did not match the reference in the round-2 evidence at the time
-of this pass (not measured yet). And the timed run, scalar against tiles, has not happened (not measured yet).
+One defect was found and fixed in round 2, and it is worth naming in plain words. The IQ4_XS expert-set tiles
+compute each 32-value step in two stages: the threads first stage the weight and activation rows (the W/X
+staging), then a pack loop fills the matrix unit's B operand from those rows (the XMX B-operand pack). The pack
+reads rows that other threads of the same step stage, and the only barrier sat after the pack, so staging and
+pack were unsynchronized (static reading). On the B60 the pack could pick up stale weights, and the tile's
+output moved between runs until the missing barrier was added between the W/X staging and the XMX B-operand
+pack at `sycl/src/dsv41/ds4_iq.dp.cpp:1114-1115` (the fix record cites this site as `:1114`; at the merged
+commit the `item_ct1.barrier();` call is line 1115, under its comment at 1112-1114). The output moving before
+the barrier and staying byte-identical across runs after it is measured on this PC. The same fix widened the
+scalar stand-in's products to float (`sycl/src/dsv41/ds4_iq.dp.cpp:1159-1160`), so it computes the same exact
+half-by-half products as the matrix tile and the CPU reference (static reading; the rows below are the
+measurement). With the fix, the IQ4_XS set tiles match the CPU reference on both artifacts (measured on this
+PC, 2026-10-25, the same two builds as above rebuilt with the barrier):
+
+- IQ4_XS set gate/up tiles (measured on this PC): `8165/8192 fp16 bits exact, 27 within one BF16 ulp, 0 outside`
+  on the scalar artifact, `8171/8192 fp16 bits exact, 21 within one BF16 ulp, 0 outside` on the bmg-g21 AOT tile
+  artifact
+- IQ4_XS set down tiles (measured on this PC): `940/8192 fp32 values exact, 7252 within one BF16 ulp, 0 outside`
+  on the scalar artifact, `888/8192 fp32 values exact, 7304 within one BF16 ulp, 0 outside` on the tile artifact
+
+One thing is still open: the timed run, scalar against tiles, has not happened (not measured yet).
 
 Build facts, all measured on this PC in round 2:
 
@@ -64,9 +83,11 @@ Build facts, all measured on this PC in round 2:
   targets and none of them names a dsv41 source: `strata_dsv41`, `src/dsv41`, `ds4_tq`, `ds4_gguf` and `ds4_iq`
   each match zero times in the target list (measured on this PC).
 - The `-fp-model=precise` flag sits outside the `COMPILE_LANGUAGE:CXX` generator expression in
-  `sycl/CMakeLists.txt` at lines 103-104. A configure with GNU cc fails on it (measured on this PC: the failure
-  run). The flag must sit inside that generator expression. Until it moves, a configure must carry
-  `-DCMAKE_C_COMPILER=icx`.
+  `sycl/CMakeLists.txt` at lines 103-104. The build with GNU cc fails on it, not the configure: the configure
+  step succeeds and the build fails on the first C file (measured on this PC: `CONFIGURE_RC=0`, `BUILD_RC=1`,
+  `cc: error: unrecognized command-line option '-fp-model=precise'`). The flag must sit inside that generator
+  expression. Until it moves, configure with `-DCMAKE_C_COMPILER=icx` so the C files go through Intel's
+  compiler.
 - The tile artifact was built with `-DSTRATA_XMX_SG16=1` and `-fsycl-targets=spir64_gen` for the `bmg-g21`
   device (measured on this PC). That build ran on the card and produced the tile rows above.
 
@@ -92,7 +113,7 @@ Placement on the cards was measured too (measured on this PC). 4,880 experts (42
 lane in RAM. As a sensitivity check, using 24.0 GiB per card instead of clinfo's 22.71 GiB (the marketed number)
 still gives `fits`: 87.3 GB of CPU experts, 96.3 GB of RAM needed (measured on this PC).
 
-One real blocker stands in the documented path. Two `strata launch --plan` runs on this PC exited 0 and printed
+One real blocker stands in the documented path. Four `strata launch --plan` runs on this PC exited 0 and printed
 verdict `no_card` (measured on this PC), and the round-2 fit log's no-card mirror run reproduces it. The reason
 is read from code: the Intel Arc Pro B60 (PCI `0xe211`) is not in the launcher's Intel card table
 (`strata_cli/launch/catalog.py`, the `INTEL_ARC` map at lines 199-200 and the skip at 210-211; static reading,
@@ -164,7 +185,8 @@ Hand fixes applied (the four dpct gaps above):
 1. Correctness first: run each converted kernel on the Arc Pro B60 and compare its output to the CPU reference
    implementations (`src/dsv41/ds4_tq_cpu.cpp`, `src/dsv41/ds4_iq_cpu.cpp`, `src/dsv41/ds4_gguf_cpu.cpp`). Equal
    output, kept within a small tolerance, is the bar. No speed claim until this passes. Done for the rows above
-   (measured on this PC). Still open: the IQ4_XS set tiles, and the timed run (not measured yet).
+   (measured on this PC), including the IQ4_XS set tiles after the round-2 barrier fix. Still open: the timed
+   run (not measured yet).
 2. Wire an opt-in build: a `STRATA_SYCL_DSV41` option in `sycl/CMakeLists.txt`, off by default. Done and
    measured on this PC: the option is at `sycl/CMakeLists.txt:257`, its default is OFF, and the default build
    lists no dsv41 source (measured on this PC).
@@ -183,7 +205,7 @@ Hand fixes applied (the four dpct gaps above):
 
 - The SYCL dsv41 path is opt-in. The CUDA and HIP paths are untouched and stay byte-identical to the release;
   each change checks its own diff scope.
-- Nothing in the docs or reports claims a speed that was not measured on named hardware. No dsv41
-  tokens-per-second number has been measured on an Arc Pro B60 yet.
+- Nothing in the docs or reports claims a speed that was not measured on named hardware. The claims section
+  above holds this plan's one statement about missing speed numbers.
 - Vendored code from vllm-xpu-kernels (Apache-2.0) gets a license notice when it arrives.
 - Converted code keeps dpct's DPCT comments until reviewed, so a reader can see what the converter changed.
