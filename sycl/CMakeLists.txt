@@ -100,8 +100,8 @@ list(APPEND _sycl_flags -fsycl-default-sub-group-size=32)
 # split the first launch in the prompt path (the embedding gather) paid 245 ms for the image it shared (2026-09-30).
 list(APPEND _sycl_link -fsycl-device-code-split=per_kernel)
 list(APPEND _sycl_flags -fsycl-device-code-split=per_kernel)
-add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
-                    -Wno-unused-variable -Wno-deprecated-declarations)
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" "$<$<COMPILE_LANGUAGE:CXX>:-fp-model=precise>"
+                    -Wno-unused-parameter -Wno-unused-variable -Wno-deprecated-declarations)
 add_link_options(${_sycl_link})
 
 # --- source resolution: the migrated copy when there is one, the original otherwise -------------------------------
@@ -208,7 +208,7 @@ if(STRATA_NATIVE_EXPERTS)
   target_sources(strata_kernels_cpu PRIVATE ${_cpu_native})
   target_include_directories(strata_kernels_cpu PRIVATE ${STRATA_ROOT}/third_party/ggml)
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/iq_avx512.cpp ${STRATA_ROOT}/src/kernels/cpu/nvfp4_avx512.cpp
-    PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mf16c;-mfma")
+    PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw;-mavx512vl;-mavx512dq;-mavx512vnni;-mavx512vbmi;-mavx512vpopcntdq;-mbmi2;-mf16c;-mfma")
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/nvfp4_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/tq_avx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma;-mf16c")
   set_source_files_properties(${STRATA_ROOT}/src/kernels/cpu/tq_avx512.cpp PROPERTIES COMPILE_OPTIONS
@@ -256,10 +256,34 @@ target_link_libraries(strata_kernels PUBLIC strata_core)
 # The engine does not call these yet; docs/SYCL_DSV41_PLAN.md is the phased path to wiring them in.
 option(STRATA_SYCL_DSV41 "Build the ported dsv41 quant kernels (sycl/src/dsv41/*.dp.cpp)" OFF)
 if(STRATA_SYCL_DSV41)
-  strata_resolve(_dsv41 src/dsv41/ds4_tq.cu src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu)
+  strata_resolve(_dsv41 src/dsv41/ds4_tq.cu src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu
+                       src/dsv41/ds4_gemv.dp.cpp src/dsv41/ds4_softmax.dp.cpp)
   add_library(strata_dsv41 STATIC ${_dsv41})
   target_include_directories(strata_dsv41 PRIVATE ${STRATA_ROOT}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/include/compat)
   target_link_libraries(strata_dsv41 PUBLIC strata_includes)
+  # dsv41's parity tests, named with the ds4 prefix so `ctest -R ds4` selects them: the quant parity harness
+  # (iq / tq / gguf rows) and the Wave 3 one (the oneMKL BLAS shim plus the gemv / softmax ports).
+  enable_testing()
+  add_executable(ds4_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/ds4_parity.cpp)
+  target_include_directories(ds4_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41 ${STRATA_ROOT}/third_party/ggml
+                                                ${CMAKE_CURRENT_SOURCE_DIR}/include/compat
+                                                ${STRATA_ROOT}/include/strata/artifact)
+  target_link_libraries(ds4_parity PRIVATE strata_dsv41)
+  add_test(NAME ds4_parity COMMAND ds4_parity)
+  add_executable(ds4_blas_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/ds4_blas_parity.cpp)
+  target_include_directories(ds4_blas_parity PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include/compat
+                                                     ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+  find_path(DNNL_INCLUDE_DIR oneapi/dnnl/dnnl.h PATHS $ENV{ONEAPI_ROOT}/dnnl/latest/include
+            /opt/intel/oneapi/dnnl/latest/include)
+  find_library(DNNL_LIBRARY dnnl PATHS $ENV{ONEAPI_ROOT}/dnnl/latest/lib /opt/intel/oneapi/dnnl/latest/lib)
+  if(NOT DNNL_INCLUDE_DIR OR NOT DNNL_LIBRARY)
+    message(FATAL_ERROR "STRATA_SYCL_DSV41: oneDNN (libdnnl) is required: ds4_blas_parity's CPU reference calls dnnl_sgemm")
+  endif()
+  target_include_directories(ds4_blas_parity PRIVATE ${DNNL_INCLUDE_DIR})
+  target_compile_options(ds4_blas_parity PRIVATE -qmkl=sequential)
+  target_link_options(ds4_blas_parity PRIVATE -qmkl=sequential)
+  target_link_libraries(ds4_blas_parity PRIVATE strata_dsv41 ${DNNL_LIBRARY})
+  add_test(NAME ds4_blas_parity COMMAND ds4_blas_parity --selftest)
 endif()
 
 strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
