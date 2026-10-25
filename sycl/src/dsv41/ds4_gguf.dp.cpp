@@ -237,7 +237,9 @@ __dpct_inline__ float swiglu(float gv, float uv, float limit) {
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
-    return gv / (1.0f + sycl::native::exp(-gv)) * uv;
+    // exp, not native::exp: ds4_gguf.cu's expf is IEEE.  Measured on the B60 (ds4_parity probe, 2026-10-25):
+    // sycl::exp matches expf bit-exactly at the gate/up values that matter, native::exp is up to 8 F32 ulps off.
+    return gv / (1.0f + sycl::exp(-gv)) * uv;
 }
 __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
                               const float *cpu_part, float sh) {
@@ -1045,6 +1047,11 @@ void mx_set_kernel(const SetK a, float *lut, float wg[32][65 /*BN + 1*/],
 // up: 4), a 32-value MXFP4 block of K a step (2 WMMA k-steps), the tiles in shared memory as F16
 #if !defined(STRATA_USE_HIP)
 
+#ifdef STRATA_XMX_SG16
+#include <sycl/ext/oneapi/matrix/matrix.hpp>
+namespace jm = sycl::ext::oneapi::experimental::matrix;
+#endif
+
 constexpr int kLdT = 40;   // halves a tile row (32 + 8: WMMA wants a multiple of 8; the pad spreads the banks)
 template <bool GATE_UP>
 /*
@@ -1074,7 +1081,7 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
     const uint8_t* blob = a.wbase + (size_t) e * a.stride;
     const int K = GATE_UP ? a.n_embd : a.n_ff;
     const size_t rb = mx_row_bytes(K);
-    const int tid = (int)item_ct1.get_local_id(2), warp = tid >> 5;
+    const int tid = (int)item_ct1.get_local_id(2);
     if (tid < BM) src[tid] = tid < nr ? (GATE_UP ? a.idx[r0 + tid] : r0 + tid) : -1;
     /*
     DPCT1065:58: Consider replacing sycl::nd_item::barrier() with
@@ -1082,12 +1089,23 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
-    const int wm_ = warp >> 1, wn = (warp & 1) * 2;   // the warp's 16 rows, its 2 x 16 outputs
+    const int tr = tid >> 2, tq = tid & 3;   // the thread's tile row, its 8 values [8 tq, 8 tq + 8)
+#ifdef STRATA_XMX_SG16
+    // Xe2's XMX: a sub-group of 16 its 8 rows x 2 x 16 outputs (gate and up: 4 fragments), joint_matrix 8x16x16
+    auto sg = item_ct1.get_sub_group();
+    const int sgid = tid >> 4, rt = (sgid & 7) * 8, ct = (sgid >> 3) * 32;
+    jm::joint_matrix<sycl::sub_group, float, jm::use::accumulator, 8, 16> ag[2], au[2];
+    for (int j = 0; j < 2; ++j) {
+        jm::joint_matrix_fill(sg, ag[j], 0.0f);
+        if (GATE_UP) jm::joint_matrix_fill(sg, au[j], 0.0f);
+    }
+#else
+    const int warp = tid >> 5, wm_ = warp >> 1, wn = (warp & 1) * 2;   // the warp's 16 rows, its 2 x 16 outputs
     const int srow = wm_ * 16 + (tid & 15), sh = (tid >> 4) & 1;   // the lane's tile row, its 8-value half
     float accg[2][8], accu[2][8];   // WMMA replaced by scalar FMA (joint_matrix/XMX is the next phase)
     for (int j = 0; j < 2; ++j)
         for (int c = 0; c < 8; ++c) accg[j][c] = 0.0f, accu[j][c] = 0.0f;
-    const int tr = tid >> 2, tq = tid & 3;   // the thread's tile row, its 8 values [8 tq, 8 tq + 8)
+#endif
     for (int kb = 0; kb < K / kMxBlock; ++kb) {
         {   // the weights: row tr of the outputs, values 8 tq ..
             for (int m = 0; m < (GATE_UP ? 2 : 1); ++m) {
@@ -1130,6 +1148,33 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
         better performance if there is no access to global memory.
         */
         item_ct1.barrier();
+#ifdef STRATA_XMX_SG16
+        for (int kk = 0; kk < kMxBlock; kk += 16) {
+            jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::a, 8, 16, jm::layout::row_major> ma;
+            jm::joint_matrix_load(sg, ma,
+                                  sycl::address_space_cast<sycl::access::address_space::local_space,
+                                                           sycl::access::decorated::no>(&T.x[rt][kk]),
+                                  kLdT);
+            for (int j = 0; j < 2; ++j) {
+                jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::b, 16, 16, jm::layout::col_major> mb;
+                jm::joint_matrix_load(sg, mb,
+                                      sycl::address_space_cast<sycl::access::address_space::local_space,
+                                                               sycl::access::decorated::no>(
+                                          &T.wg[ct + j * 16][kk]),
+                                      kLdT);
+                jm::joint_matrix_mad(sg, ag[j], ma, mb, ag[j]);
+                if (GATE_UP) {
+                    jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::b, 16, 16, jm::layout::col_major> mu;
+                    jm::joint_matrix_load(sg, mu,
+                                          sycl::address_space_cast<sycl::access::address_space::local_space,
+                                                                   sycl::access::decorated::no>(
+                                              &T.wu[ct + j * 16][kk]),
+                                          kLdT);
+                    jm::joint_matrix_mad(sg, au[j], ma, mu, au[j]);
+                }
+            }
+        }
+#else
 #pragma unroll
         for (int j = 0; j < 2; ++j) {
             const int cb = (wn + j) * 16 + sh * 8;
@@ -1138,13 +1183,14 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
                 float sg = 0.0f, su = 0.0f;
 #pragma unroll
                 for (int k = 0; k < 32; ++k) {
-                    sg += T.x[srow][k] * T.wg[cb + c][k];
-                    if (GATE_UP) su += T.x[srow][k] * T.wu[cb + c][k];
+                    sg += (float) T.x[srow][k] * (float) T.wg[cb + c][k];
+                    if (GATE_UP) su += (float) T.x[srow][k] * (float) T.wu[cb + c][k];
                 }
                 accg[j][c] += sg;
                 if (GATE_UP) accu[j][c] += su;
             }
         }
+#endif
         /*
         DPCT1118:16: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
@@ -1156,6 +1202,19 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
         */
         item_ct1.barrier();
     }
+#ifdef STRATA_XMX_SG16
+    for (int j = 0; j < 2; ++j) {
+        jm::joint_matrix_store(sg, ag[j],
+                               sycl::address_space_cast<sycl::access::address_space::local_space,
+                                                        sycl::access::decorated::no>(&O.g[rt][ct + j * 16]),
+                               BN + 4, jm::layout::row_major);
+        if (GATE_UP)
+            jm::joint_matrix_store(sg, au[j],
+                                   sycl::address_space_cast<sycl::access::address_space::local_space,
+                                                            sycl::access::decorated::no>(&O.u[rt][ct + j * 16]),
+                                   BN + 4, jm::layout::row_major);
+    }
+#else
     for (int j = 0; j < 2; ++j) {
         const int cb = (wn + j) * 16 + sh * 8;
         for (int c = 0; c < 8; ++c) {
@@ -1163,6 +1222,7 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
             if (GATE_UP) O.u[srow][cb + c] = accu[j][c];
         }
     }
+#endif
     /*
     DPCT1065:59: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -1349,7 +1409,11 @@ struct mx_set_tc_wrapper {
     sycl::local_accessor<unsigned char, 1> smem;
     sycl::local_accessor<float, 1> lut;
     sycl::local_accessor<int, 1> src;
-    void operator()(sycl::nd_item<3> item_ct1) const {
+#ifdef STRATA_XMX_SG16
+    [[sycl::reqd_sub_group_size(16)]]   // the XMX path's joint_matrix tiles need sub-groups of 16
+#endif
+    void operator()(sycl::nd_item<3> item_ct1) const
+    {
         mx_set_tc_kernel<GATE_UP>(a, smem.get_pointer(), lut.get_pointer(), src.get_pointer());
     }
 };

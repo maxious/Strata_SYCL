@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "ds4_iq.dp.hpp"
+#include "ds4_gguf.dp.hpp"
 #include "ds4_numerics.dp.hpp"
 
 namespace {
@@ -176,6 +177,98 @@ float bf16_ulp(float v) {
     return std::ldexp(1.0f, e - 7);
 }
 
+// F16 bits of v rounded to nearest-even (the kernels' __float2half_rn / the device's convert<rte>).  Not
+// sycl::vec::convert on the host: oneAPI 2026.2's host path truncates tiny values instead of rounding them
+// (probe 2026-10-25: +0.525 steps -> 0x0000 where round-to-nearest gives 0x0001), which put the reference one
+// F16 step below the kernels at 35 slots of the gate/up row.
+uint16_t f16_rn(float v) {
+    uint32_t b;
+    std::memcpy(&b, &v, sizeof b);
+    const uint16_t sign = (uint16_t) ((b >> 16) & 0x8000u);
+    const uint32_t a = b & 0x7FFFFFFFu;
+    if (a >= 0x7F800000u) return (uint16_t) (sign | 0x7C00u | (a > 0x7F800000u ? 0x0200u : 0u));
+    if (a < 0x38800000u) {   // |v| < 2^-14: the 2^-24 subnormal grid
+        const long long n = (long long) std::nearbyint((double) v * 16777216.0);
+        const unsigned long long m = (unsigned long long) (n < 0 ? -n : n);
+        return (uint16_t) (sign | (uint16_t) (m <= 1024 ? m : 1024));
+    }
+    int e = (int) (a >> 23) - 112;
+    if (e >= 31) return (uint16_t) (sign | 0x7C00u);
+    uint32_t m10 = (a & 0x7FFFFFu) >> 13;
+    const uint32_t rest = a & 0x1FFFu;
+    if (rest > 0x1000u || (rest == 0x1000u && (m10 & 1u))) {
+        if (++m10 == 0x400u) {
+            m10 = 0;
+            if (++e >= 31) return (uint16_t) (sign | 0x7C00u);
+        }
+    }
+    return (uint16_t) (sign | ((uint16_t) e << 10) | (uint16_t) m10);
+}
+
+// The MXFP4 set-tile reference, written from the block_mxfp4 layout documented in ds4_gguf.dp.hpp: a 17-byte block is
+// an E8M0 scale e then 16 bytes of E2M1 codes, value j in byte j's low nibble (j < 16) or byte j - 16's high nibble,
+// worth kvalues[code] * 2^(e - 128) with kvalues {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12}.  The tiles
+// hold F16 inputs and weights, so the reference rounds the inputs to F16 (rte) and keeps F32 sums in row order; the
+// output is the F16 (rte) clamped swiglu for gate/up, the raw F32 sums for down.
+void ref_mx_set_gate_up(const uint8_t* blob, size_t tr0, size_t tr1, const float* x, int ldx, const int* idx,
+                        int n_embd, int n_ff, float limit, int r0, int r1, uint16_t* h16, int ldh) {
+    const float lut[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+    const size_t rb = strata::ds4::gguf::mx_row_bytes(n_embd);
+    const int nb = n_embd / 32;
+    for (int r = r0; r < r1; ++r) {
+        const int src = idx[r];
+        for (int c = 0; c < n_ff; ++c) {
+            const uint8_t* g = blob + tr0 + (size_t) c * rb;
+            const uint8_t* u = blob + tr1 + (size_t) c * rb;
+            float gv = 0.0f, uv = 0.0f;
+            for (int kb = 0; kb < nb; ++kb) {
+                const uint32_t eg = g[kb * 17], eu = u[kb * 17];
+                const float dg = sycl::bit_cast<float>(eg < 2 ? 0x00200000u << eg : (eg - 1) << 23);
+                const float du = sycl::bit_cast<float>(eu < 2 ? 0x00200000u << eu : (eu - 1) << 23);
+                for (int j = 0; j < 32; ++j) {
+                    const int k = kb * 32 + j;
+                    const float xv = static_cast<float>(sycl::bit_cast<sycl::half>(f16_rn(x[(size_t) src * ldx + k])));
+                    const uint8_t cg = j < 16 ? g[kb * 17 + 1 + j] : g[kb * 17 + 1 + j - 16] >> 4;
+                    const uint8_t cu = j < 16 ? u[kb * 17 + 1 + j] : u[kb * 17 + 1 + j - 16] >> 4;
+                    gv += (float) xv * (lut[cg & 15u] * dg);
+                    uv += (float) xv * (lut[cu & 15u] * du);
+                }
+            }
+            float gg = gv, uu = uv;
+            if (limit > 0.0f) {
+                gg = std::fmin(gg, limit);
+                uu = std::fmin(std::fmax(uu, -limit), limit);
+            }
+            const float o = gg / (1.0f + std::exp(-gg)) * uu;
+            h16[(size_t) r * ldh + c] = f16_rn(o);
+        }
+    }
+}
+
+void ref_mx_set_down(const uint8_t* blob, size_t tr2, const uint16_t* h16, int ldh, int n_embd, int n_ff,
+                     int r0, int r1, float* y, int ldy) {
+    const float lut[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+    const size_t rb = strata::ds4::gguf::mx_row_bytes(n_ff);
+    const int nb = n_ff / 32;
+    for (int r = r0; r < r1; ++r) {
+        for (int c = 0; c < n_embd; ++c) {
+            const uint8_t* d = blob + tr2 + (size_t) c * rb;
+            float v = 0.0f;
+            for (int kb = 0; kb < nb; ++kb) {
+                const uint32_t ed = d[kb * 17];
+                const float dd = sycl::bit_cast<float>(ed < 2 ? 0x00200000u << ed : (ed - 1) << 23);
+                for (int j = 0; j < 32; ++j) {
+                    const int k = kb * 32 + j;
+                    const float xv = static_cast<float>(sycl::bit_cast<sycl::half>(h16[(size_t) r * ldh + k]));
+                    const uint8_t cd = j < 16 ? d[kb * 17 + 1 + j] : d[kb * 17 + 1 + j - 16] >> 4;
+                    v += xv * (lut[cd & 15u] * dd);
+                }
+            }
+            y[(size_t) r * ldy + c] = v;
+        }
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -248,6 +341,110 @@ int main() {
             printf("%s: %d/%d bits exact, %d within one BF16 ulp, %d outside\n",
                    strata::ds4::gguf::iq::name(type), t_exact, (int) got.size(), t_near, t_bad);
             exact += t_exact; near += t_near; bad += t_bad;
+        }
+
+        {   // The MXFP4 expert-set tiles (ds4_gguf's mx_set_tc_kernel; joint_matrix on Xe2): one expert of 32 rows,
+            // gate/up and down, rows [16, 32) - they come from the tile kernel whatever the light kernels' switch
+            // state (the light ones only take experts of at most 16 rows).
+            const int n_embd = 256, n_ff = 256, max_rows = 32, ldx = n_embd, ldh = n_ff, ldy = n_embd;
+            const size_t rb = strata::ds4::gguf::mx_row_bytes(n_embd);
+            const size_t tr0 = 0, tr1 = (size_t) n_ff * rb, tr2 = tr1 * 2;
+            const size_t stride = tr2 + (size_t) n_embd * strata::ds4::gguf::mx_row_bytes(n_ff);
+            std::vector<uint8_t> blob(stride);
+            for (size_t i = 0; i < blob.size(); ++i) blob[i] = rng.next();
+            for (int part = 0; part < 3; ++part) {   // the E8M0 scales: small powers of two keep the weights exact in F16
+                const size_t base = part == 0 ? tr0 : part == 1 ? tr1 : tr2;
+                const int rows = part < 2 ? n_ff : n_embd, k = part < 2 ? n_embd : n_ff;
+                const size_t prb = strata::ds4::gguf::mx_row_bytes(k);
+                for (int r = 0; r < rows; ++r)
+                    for (int b = 0; b < k / 32; ++b)
+                        blob[base + (size_t) r * prb + (size_t) b * 17] = (uint8_t) (128 + (rng.next() & 3));
+            }
+            std::vector<float> xf((size_t) max_rows * ldx);
+            for (size_t i = 0; i < xf.size(); ++i)
+                xf[i] = ((int) (rng.next() | (rng.next() << 8)) - 32768) / 32768.0f;
+            std::vector<int> idx(max_rows);
+            for (int r = 0; r < max_rows; ++r) idx[r] = r;
+            std::vector<uint16_t> xh((size_t) max_rows * ldh);
+            for (size_t i = 0; i < xh.size(); ++i)   // F16 rows in +-[0.5, 1): finite, away from zero
+                xh[i] = (uint16_t) ((rng.next() | (rng.next() << 8)) & 0xBBFFu);
+            const int bounds_h[2] = {0, max_rows};
+            uint8_t* w = (uint8_t*) sycl::malloc_device(blob.size(), q);
+            int* bounds = (int*) sycl::malloc_device(sizeof(bounds_h), q);
+            int* didx = (int*) sycl::malloc_device(idx.size() * sizeof(int), q);
+            float* dxf = (float*) sycl::malloc_device(xf.size() * sizeof(float), q);
+            uint16_t* dxh = (uint16_t*) sycl::malloc_device(xh.size() * sizeof(uint16_t), q);
+            uint16_t* dh = (uint16_t*) sycl::malloc_device(xh.size() * sizeof(uint16_t), q);
+            float* dy = (float*) sycl::malloc_device((size_t) max_rows * ldy * sizeof(float), q);
+            q.memcpy(w, blob.data(), blob.size());
+            q.memcpy(bounds, bounds_h, sizeof(bounds_h));
+            q.memcpy(didx, idx.data(), idx.size() * sizeof(int));
+            q.memcpy(dxf, xf.data(), xf.size() * sizeof(float));
+            q.memcpy(dxh, xh.data(), xh.size() * sizeof(uint16_t));
+            q.wait();
+            if (!strata::ds4::gguf::prepare(s)) {
+                printf("MXFP4 set tile: FAIL (no scratch)\n");
+                ++bad;
+            } else {
+                strata::dsv41k::exl3::SetArgs sa{};
+                sa.wbase = w;
+                sa.stride = stride;
+                sa.lay.fmt = strata::ds4::gguf::kFmtMXFP4;
+                sa.lay.trellis[0] = tr0; sa.lay.trellis[1] = tr1; sa.lay.trellis[2] = tr2;
+                sa.n_exp = 1;
+                sa.bounds = bounds;
+                sa.row0 = 0;
+                sa.max_rows = max_rows;
+                sa.n_embd = n_embd;
+                sa.n_ff = n_ff;
+                sa.limit = 10.0f;
+                strata::ds4::gguf::set_gate_up(sa, dxf, ldx, didx, dh, ldh, s);
+                strata::ds4::gguf::set_down(sa, dxh, ldh, dy, ldy, s);
+                q.wait();
+                if (strata::ds4::gguf::launch_errors() != 0) {
+                    printf("MXFP4 set tile: FAIL (%d launch errors)\n", strata::ds4::gguf::launch_errors());
+                    ++bad;
+                }
+                std::vector<uint16_t> hg((size_t) max_rows * ldh);
+                std::vector<float> yg((size_t) max_rows * ldy);
+                q.memcpy(hg.data(), dh, hg.size() * sizeof(uint16_t));
+                q.memcpy(yg.data(), dy, yg.size() * sizeof(float));
+                q.wait();
+                std::vector<uint16_t> href((size_t) max_rows * ldh);
+                std::vector<float> yref((size_t) max_rows * ldy);
+                ref_mx_set_gate_up(blob.data(), tr0, tr1, xf.data(), ldx, idx.data(), n_embd, n_ff, 10.0f,
+                                   16, max_rows, href.data(), ldh);
+                ref_mx_set_down(blob.data(), tr2, xh.data(), ldh, n_embd, n_ff, 16, max_rows, yref.data(), ldy);
+                int g_exact = 0, g_near = 0, g_bad = 0, d_exact = 0, d_near = 0, d_bad = 0;
+                for (int r = 16; r < max_rows; ++r) {
+                    for (int c = 0; c < n_ff; ++c) {
+                        const float a = static_cast<float>(sycl::bit_cast<sycl::half>(hg[(size_t) r * ldh + c]));
+                        const float b = static_cast<float>(sycl::bit_cast<sycl::half>(href[(size_t) r * ldh + c]));
+                        if (hg[(size_t) r * ldh + c] == href[(size_t) r * ldh + c]) ++g_exact;
+                        else {
+                            const float diff = std::fabs(a - b);
+                            if (diff > max_diff) max_diff = diff;
+                            if (diff <= bf16_ulp(b)) ++g_near; else ++g_bad;
+                        }
+                    }
+                    for (int c = 0; c < n_embd; ++c) {
+                        const float a = yg[(size_t) r * ldy + c], b = yref[(size_t) r * ldy + c];
+                        if (a == b) ++d_exact;
+                        else {
+                            const float diff = std::fabs(a - b);
+                            if (diff > max_diff) max_diff = diff;
+                            if (diff <= bf16_ulp(b)) ++d_near; else ++d_bad;
+                        }
+                    }
+                }
+                printf("MXFP4 set gate/up tile: %d/%d fp16 bits exact, %d within one BF16 ulp, %d outside\n",
+                       g_exact, g_exact + g_near + g_bad, g_near, g_bad);
+                printf("MXFP4 set down tile: %d/%d fp32 values exact, %d within one BF16 ulp, %d outside\n",
+                       d_exact, d_exact + d_near + d_bad, d_near, d_bad);
+                exact += g_exact + d_exact; near += g_near + d_near; bad += g_bad + d_bad;
+            }
+            sycl::free(w, q); sycl::free(bounds, q); sycl::free(didx, q); sycl::free(dxf, q); sycl::free(dxh, q);
+            sycl::free(dh, q); sycl::free(dy, q);
         }
 
         if (bad == 0) {
