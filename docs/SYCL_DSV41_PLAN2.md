@@ -65,7 +65,7 @@ measured here. llama.cpp (MIT) already runs IQ4_NL on SYCL: `~/llama.cpp/ggml/sr
 1588-1605, 32 work-items per 256-value group, 8 sub-blocks of 32 values, one fp16 scale per sub-block, table
 lookup, no shared memory, no subgroup intrinsics — embarrassingly parallel (static reading). Its `kvalues_iq4nl`
 table is the same 16 values as Strata's (`-127,-104,-83,-65,-49,-35,-22,-10,1,13,25,38,53,69,89,113`; read from
-both trees, at `~/llama.cpp/ggml/src/ggml-common.h:1120` and `sycl/src/dsv41/ds4_parity.cpp:118-119`; static
+both trees, at `~/llama.cpp/ggml/src/ggml-common.h:1120` and `sycl/src/dsv41/ds4_parity.cpp:121-122`; static
 reading). Q4_K/Q5_K/Q6_K/IQ4_XS there match the same GGUF layout Strata uses, and Strata's converted kernels
 cover those four through `dq_rows` (static reading). IQ4_NL is no longer missing: it has its own kernel now, and
 its row is `IQ4_NL: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside` on both artifacts (measured on this
