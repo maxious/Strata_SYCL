@@ -9,6 +9,7 @@
 #include "ds4_numerics.dp.hpp"
 
 #if !defined(STRATA_USE_HIP)
+#include <sycl/ext/oneapi/matrix/matrix.hpp>   // the XMX joint_matrix tiles (set_tc_kernel's STRATA_XMX_SG16 path)
 #endif
 
 #define GGML_COMMON_DECL_CUDA
@@ -1002,8 +1003,16 @@ void set_kernel(const SetArgs a, uint32_t *tab, float wg[32][65 /*BN + 1*/],
 
 #if !defined(STRATA_USE_HIP)
 // the same on the tensor cores (sm_70+): 8 warps each 16 rows x 32 outputs, the tiles F16 in shared memory
+// (the Xe2 XMX tiles take sub-group 16: the requirement rides on the kernel wrapper's operator() below, as the
+// repo's xmx kernels do; the matrix header is included at the top of the file, outside the namespaces)
+namespace jm = sycl::ext::oneapi::experimental::matrix;
 
 constexpr int kLdT = 40;
+// the tc kernel's shared block: Tiles (half, including the XMX B strips pw / pu) vs Out (float), the larger one
+constexpr int kSetSmemGu = BM * kLdT * 2 + BN * kLdT * 2 + BN * kLdT * 2 + 2 * (BN / 16) * 512 * 2;
+constexpr int kSetSmemOutGu = BM * (BN + 4) * 4 + BM * (BN + 4) * 4;
+constexpr int kSetSmemDn = BM * kLdT * 2 + BN * kLdT * 2 + 1 * kLdT * 2 + (BN / 16) * 512 * 2 + 1 * 512 * 2;
+constexpr int kSetSmemOutDn = BM * (BN + 4) * 4 + 1 * (BN + 4) * 4;
 template <int T, bool GATE_UP>
 /*
 DPCT1110:11: The total declared local variable size in device function
@@ -1016,10 +1025,21 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     struct Tiles {
         sycl::half x[BM][kLdT], wg[BN][kLdT], wu[GATE_UP ? BN : 1][kLdT];
+        // the XMX B operands: a K step's 16-column strips packed as (k, n) at [(k >> 1) * 32 + 2 n + (k & 1)]
+        // (still under the launch's max(Tiles, Out) bytes: Out is the larger one for both gate/up and down)
+        sycl::half pw[BN / 16][512], pu[GATE_UP ? BN / 16 : 1][512];
     };
     struct Out {
         float g[BM][BN + 4], u[GATE_UP ? BM : 1][BN + 4];
     };
+    // the shared block the launch passes is max(sizeof(Tiles), sizeof(Out)): the packed XMX strips must fit it
+    static_assert(sizeof(Out) == (GATE_UP ? kSetSmemOutGu : kSetSmemOutDn),
+                  "set_tc_kernel: Out drifted from the kSetSmemOut* constants");
+    static_assert(sizeof(Tiles) == (GATE_UP ? kSetSmemGu : kSetSmemDn),
+                  "set_tc_kernel: Tiles drifted from the kSetSmem* constants");
+    static_assert(sizeof(Tiles) <= (GATE_UP ? (kSetSmemOutGu > kSetSmemGu ? kSetSmemOutGu : kSetSmemGu)
+                                            : (kSetSmemOutDn > kSetSmemDn ? kSetSmemOutDn : kSetSmemDn)),
+                  "set_tc_kernel: Tiles with the packed XMX strips exceeds the launch's shared block");
 
     Tiles& Tl = *reinterpret_cast<Tiles*>(smem);
     Out& O = *reinterpret_cast<Out*>(smem);
@@ -1041,12 +1061,27 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
     performance if there is no access to global memory.
     */
     item_ct1.barrier();
+    const int tr = tid >> 2, tq = tid & 3;
+#ifdef STRATA_XMX_SG16
+    // The Xe2 XMX tiles (as xmx_moe.dp.cpp / iq_kernels.dp.cpp's gemm_kernel): one sub-group of 16 a 16 x 16
+    // tile, the block's 64 x 64 outputs split 4 x 4 over its 16 sub-groups, B in the packed layout the XMX takes.
+    const sycl::sub_group sg = item_ct1.get_sub_group();
+    const int wm_ = (int) sg.get_group_id()[0] >> 2, wn = (int) sg.get_group_id()[0] & 3;
+    auto lptr = [](auto *p) {
+        return sycl::address_space_cast<sycl::access::address_space::local_space,
+                                        sycl::access::decorated::no>(p);
+    };
+    jm::joint_matrix<sycl::sub_group, float, jm::use::accumulator, 16, 16> fg, fu;
+    jm::joint_matrix_fill(sg, fg, 0.0f);
+    if (GATE_UP) jm::joint_matrix_fill(sg, fu, 0.0f);
+#else
+    // (devices without the tile shape: the scalar stand-in)
     const int wm_ = warp >> 1, wn = (warp & 1) * 2;
     const int srow = wm_ * 16 + (tid & 15), sh = (tid >> 4) & 1;   // the lane's tile row, its 8-value half
-    float accg[2][8], accu[2][8];   // WMMA replaced by scalar FMA (joint_matrix/XMX is the next phase)
+    float accg[2][8], accu[2][8];   // the scalar stand-in's accumulators (the XMX tiles take the other path)
     for (int j = 0; j < 2; ++j)
         for (int c = 0; c < 8; ++c) accg[j][c] = 0.0f, accu[j][c] = 0.0f;
-    const int tr = tid >> 2, tq = tid & 3;
+#endif
     for (int kb = 0; kb < K / 32; ++kb) {
         for (int m = 0; m < (GATE_UP ? 2 : 1); ++m) {
             float w8[8];
@@ -1073,6 +1108,15 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
             }
             Tl.x[tr][tq * 8 + j] = v;
         }
+#ifdef STRATA_XMX_SG16
+        // pack this step's W slabs for the XMX B operand: element (k, n) at [(k >> 1) * 32 + 2 n + (k & 1)]
+        // (iq_kernels.dp.cpp's gemm_kernel pack, NT = 16)
+        for (int i = tid; i < BN * 32; i += kThreads) {
+            const int n = i >> 5, k = i & 31;
+            Tl.pw[n >> 4][((k >> 1) * 32) + 2 * (n & 15) + (k & 1)] = Tl.wg[n][k];
+            if (GATE_UP) Tl.pu[n >> 4][((k >> 1) * 32) + 2 * (n & 15) + (k & 1)] = Tl.wu[n][k];
+        }
+#endif
         /*
         DPCT1118:13: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
@@ -1083,6 +1127,20 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
         better performance if there is no access to global memory.
         */
         item_ct1.barrier();
+#ifdef STRATA_XMX_SG16
+#pragma unroll
+        for (int kk = 0; kk < 32; kk += 16) {
+            jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::a, 16, 16, jm::layout::row_major> fa;
+            jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::b, 16, 16, jm::layout::ext_intel_packed> fb;
+            jm::joint_matrix_load(sg, fa, lptr(&Tl.x[wm_ * 16][kk]), kLdT);
+            jm::joint_matrix_load(sg, fb, lptr(&Tl.pw[wn][(kk >> 1) * 32]), 32);
+            jm::joint_matrix_mad(sg, fg, fa, fb, fg);
+            if (GATE_UP) {
+                jm::joint_matrix_load(sg, fb, lptr(&Tl.pu[wn][(kk >> 1) * 32]), 32);
+                jm::joint_matrix_mad(sg, fu, fa, fb, fu);
+            }
+        }
+#else
 #pragma unroll
         for (int j = 0; j < 2; ++j) {
             const int cb = (wn + j) * 16 + sh * 8;
@@ -1098,6 +1156,7 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
                 if (GATE_UP) accu[j][c] += su;
             }
         }
+#endif
         /*
         DPCT1118:14: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
@@ -1109,6 +1168,10 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
         */
         item_ct1.barrier();
     }
+#ifdef STRATA_XMX_SG16
+    jm::joint_matrix_store(sg, fg, lptr(&O.g[wm_ * 16][wn * 16]), BN + 4, jm::layout::row_major);
+    if (GATE_UP) jm::joint_matrix_store(sg, fu, lptr(&O.u[wm_ * 16][wn * 16]), BN + 4, jm::layout::row_major);
+#else
     for (int j = 0; j < 2; ++j) {
         const int cb = (wn + j) * 16 + sh * 8;
         for (int c = 0; c < 8; ++c) {
@@ -1116,6 +1179,7 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
             if (GATE_UP) O.u[srow][cb + c] = accu[j][c];
         }
     }
+#endif
     /*
     DPCT1065:43: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -1133,6 +1197,26 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
         else a.y[lr * a.ldo + c0 + c] = O.g[r][c];
     }
 }
+
+// the kernel functor (as ds4_gguf's mx_set_tc_wrapper): the sub-group 16 requirement belongs to the kernel's
+// operator(), not to the free function it calls - and only where the 8x16x16 tiles exist (STRATA_XMX_SG16:
+// an AOT bmg / lnl build; a JIT build runs the scalar path above with whatever sub-group the device picks)
+template <int T, bool GU>
+struct set_tc_wrapper {
+    SetArgs a;
+    sycl::local_accessor<unsigned char, 1> smem;
+    sycl::local_accessor<uint32_t, 1> tab;
+    sycl::local_accessor<int, 1> src;
+#ifdef STRATA_XMX_SG16
+    [[sycl::reqd_sub_group_size(16)]]
+#endif
+    void operator()(sycl::nd_item<3> item_ct1) const {
+        set_tc_kernel<T, GU>(
+            a, smem.get_multi_ptr<sycl::access::decorated::no>().get(),
+            tab.get_multi_ptr<sycl::access::decorated::no>().get(),
+            src.get_multi_ptr<sycl::access::decorated::no>().get());
+    }
+};
 #endif
 
 // ---------------------------------------------------------------- GEMVs
@@ -1602,12 +1686,6 @@ void dn_ne(const Args &a, int groups, int ne, dpct::queue_ptr s) {
 #include "ds4_iq_hip.inc"
 #include <cmath>
 
-// the tc kernel's shared block: Tiles (half) vs Out (float), the larger one
-constexpr int kSetSmemGu = BM * kLdT * 2 + BN * kLdT * 2 + BN * kLdT * 2;
-constexpr int kSetSmemOutGu = BM * (BN + 4) * 4 + BM * (BN + 4) * 4;
-constexpr int kSetSmemDn = BM * kLdT * 2 + BN * kLdT * 2 + 1 * kLdT * 2;
-constexpr int kSetSmemOutDn = BM * (BN + 4) * 4 + 1 * (BN + 4) * 4;
-
 template <int T, bool GU>
 void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
 #if defined(STRATA_USE_HIP)
@@ -1638,22 +1716,10 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
                 sycl::local_accessor<int, 1> src_acc_ct1(
                     sycl::range<1>(64 /*BM*/), cgh);
 
-                cgh.parallel_for(
+                cgh.parallel_for<dpct_kernel_name<set_tc_wrapper<T, GU>>>(
                     sycl::nd_range<3>(grid * sycl::range<3>(1, 1, kThreads),
                                       sycl::range<3>(1, 1, kThreads)),
-                    [=](sycl::nd_item<3> item_ct1) {
-                        set_tc_kernel<T, GU>(
-                            a,
-                            smem_acc_ct1
-                                .get_multi_ptr<sycl::access::decorated::no>()
-                                .get(),
-                            tab_acc_ct1
-                                .get_multi_ptr<sycl::access::decorated::no>()
-                                .get(),
-                            src_acc_ct1
-                                .get_multi_ptr<sycl::access::decorated::no>()
-                                .get());
-                    });
+                    set_tc_wrapper<T, GU>{a, smem_acc_ct1, tab_acc_ct1, src_acc_ct1});
             });
         }
         return;
