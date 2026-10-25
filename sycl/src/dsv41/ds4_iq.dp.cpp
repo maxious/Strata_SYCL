@@ -2096,6 +2096,7 @@ bool dequant_rows(int type, const void *raw, size_t ld, int k, int n,
         case kIQ3_XXS: DS4_DQ(kIQ3_XXS); break;
         case kIQ3_S: DS4_DQ(kIQ3_S); break;
         case kIQ4_XS: DS4_DQ(kIQ4_XS); break;
+        case kIQ4_NL: DS4_DQ(kIQ4_NL); break;
         case kIQ1_S: DS4_DQ(kIQ1_S); break;
         case kIQ1_M: DS4_DQ(kIQ1_M); break;
         case kQ4_K: DS4_DQ(kQ4_K); break;
