@@ -11,12 +11,15 @@
 // reference is computed (down / gate row 0's scales_l[0]): the affected row must then report values outside one BF16
 // ulp and the process must exit non-zero - a row that cannot fail is not evidence.
 //
-// Build (this PC, 2026-10-25): icpx -fsycl -std=c++20 -O2 -I sycl/include -I include -I third_party/ggml
-//   -I sycl/include/compat -I include/strata/artifact -I sycl/src/dsv41 ds4_parity.cpp ds4_iq.dp.cpp ds4_tq.dp.cpp
-//   ds4_gguf.dp.cpp
-//   (the set-tile rows need ds4_gguf.dp.cpp and ds4_tq.dp.cpp for iq::tq::*; the XMX tile form adds
-//    -DSTRATA_XMX_SG16=1 -fsycl-targets=spir64_gen -Xsycl-target-backend=spir64_gen
-//    "-device bmg-g21 -options -cl-fp32-correctly-rounded-divide-sqrt")
+// Build (this PC, 2026-10-25, verified green): icpx -fsycl -std=c++20 -O2 -fsycl-default-sub-group-size=32
+//   -fsycl-device-code-split=per_kernel -fp-model=precise -I sycl/include -I include -I third_party/ggml
+//   -I sycl/include/compat -I include/strata/artifact -I sycl/src/dsv41 ds4_parity.cpp ds4_iq.dp.cpp
+//   ds4_tq.dp.cpp ds4_gguf.dp.cpp -Xsycl-target-backend=spir64
+//   "-cl-fp32-correctly-rounded-divide-sqrt -ze-opt-greater-than-4GB-buffer-required" -o ds4_parity
+//   (all four TUs: the harness drives the iq, tq and gguf entry points; the set-tile rows need ds4_gguf.dp.cpp
+//   and ds4_tq.dp.cpp for iq::tq::*). The ds4_parity CMake target (STRATA_SYCL_DSV41=ON) builds the same thing;
+//   the XMX tile form adds -DSTRATA_XMX_SG16=1 -fsycl-targets=spir64_gen -Xsycl-target-backend=spir64_gen
+//   "-device bmg-g21 -options -cl-fp32-correctly-rounded-divide-sqrt".
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 
