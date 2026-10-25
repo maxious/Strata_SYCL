@@ -82,12 +82,12 @@ Build facts, all measured on this PC in round 2:
 - `STRATA_SYCL_DSV41` is OFF by default (`sycl/CMakeLists.txt:257`). With it off, the generated build lists 527
   targets and none of them names a dsv41 source: `strata_dsv41`, `src/dsv41`, `ds4_tq`, `ds4_gguf` and `ds4_iq`
   each match zero times in the target list (measured on this PC).
-- The `-fp-model=precise` flag sits outside the `COMPILE_LANGUAGE:CXX` generator expression in
-  `sycl/CMakeLists.txt` at lines 103-104. The build with GNU cc fails on it, not the configure: the configure
-  step succeeds and the build fails on the first C file (measured on this PC: `CONFIGURE_RC=0`, `BUILD_RC=1`,
-  `cc: error: unrecognized command-line option '-fp-model=precise'`). The flag must sit inside that generator
-  expression. Until it moves, configure with `-DCMAKE_C_COMPILER=icx` so the C files go through Intel's
-  compiler.
+- The `-fp-model=precise` flag sits inside the `COMPILE_LANGUAGE:CXX` generator expression at
+  `sycl/CMakeLists.txt:103` (measured on this PC). Line 103 carries the token
+  `"$<$<COMPILE_LANGUAGE:CXX>:-fp-model=precise>"` (`COMPILE_LANGUAGE:CXX:-fp-model=precise` for short), so
+  only the C++ files see the flag. An earlier build failed before the flag was guarded: the configure step
+  succeeded and the build failed on the first C file with `cc: error: unrecognized command-line option
+  '-fp-model=precise'` (measured on this PC: `CONFIGURE_RC=0`, `BUILD_RC=1`).
 - The tile artifact was built with `-DSTRATA_XMX_SG16=1` and `-fsycl-targets=spir64_gen` for the `bmg-g21`
   device (measured on this PC). That build ran on the card and produced the tile rows above.
 
