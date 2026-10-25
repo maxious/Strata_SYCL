@@ -1109,6 +1109,10 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
             Tl.x[tr][tq * 8 + j] = v;
         }
 #ifdef STRATA_XMX_SG16
+        // the pack reads Tl.wg/Tl.wu rows staged by the other threads of this 32-value step; the only
+        // barrier used to sit after the pack, so stage -> pack was unsynchronized (stale weights landed
+        // in the B strips on the B60, and the tile's output moved between runs).
+        item_ct1.barrier();
         // pack this step's W slabs for the XMX B operand: element (k, n) at [(k >> 1) * 32 + 2 n + (k & 1)]
         // (iq_kernels.dp.cpp's gemm_kernel pack, NT = 16)
         for (int i = tid; i < BN * 32; i += kThreads) {
@@ -1149,8 +1153,11 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
                 float sg = 0.0f, su = 0.0f;
 #pragma unroll
                 for (int k = 0; k < 32; ++k) {
-                    sg += Tl.x[srow][k] * Tl.wg[cb + c][k];
-                    if (GATE_UP) su += Tl.x[srow][k] * Tl.wu[cb + c][k];
+                    // half*half rounds each product to F16 before the add; the XMX tile and the reference
+                    // keep the exact half*half product in the F32 sum, so widen first (else the stand-in
+                    // drifts past one BF16 ulp and can even flip the sign of a near-cancelling down sum).
+                    sg += static_cast<float>(Tl.x[srow][k]) * static_cast<float>(Tl.wg[cb + c][k]);
+                    if (GATE_UP) su += static_cast<float>(Tl.x[srow][k]) * static_cast<float>(Tl.wu[cb + c][k]);
                 }
                 accg[j][c] += sg;
                 if (GATE_UP) accu[j][c] += su;
@@ -2212,6 +2219,7 @@ bool light_down(const SetArgs &a, dpct::queue_ptr s) {
 
 bool set_gate_up(const SetArgs &a, dpct::queue_ptr s) {
     if (is_tq(a.tg)) return tq::set_gate_up(a, s);
+    if (a.tg == kIQ4_NL) return false;   // (32-value blocks: no set-tile parity row drives IQ4_NL yet)
     if (a.n_embd % 256 != 0 || a.n_ff % BN != 0) return false;
     SetArgs t = a;
     if (light_gate_up(a, s)) {   // the experts of a few rows; the tiles the others
@@ -2228,6 +2236,7 @@ bool set_gate_up(const SetArgs &a, dpct::queue_ptr s) {
 
 bool set_down(const SetArgs &a, dpct::queue_ptr s) {
     if (is_tq(a.td)) return tq::set_down(a, s);
+    if (a.td == kIQ4_NL) return false;   // (32-value blocks: no set-tile parity row drives IQ4_NL yet)
     if (a.n_ff % 256 != 0 || a.n_embd % BN != 0) return false;
     SetArgs t = a;
     if (light_down(a, s)) {
