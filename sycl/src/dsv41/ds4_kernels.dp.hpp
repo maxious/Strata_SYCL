@@ -242,8 +242,10 @@ constexpr int kRing = 64;
 constexpr int kMaxDim = 8192;
 constexpr int kAhead1 = 16, kAhead = kAhead1 + kPicks;   // a token's guesses for the next layer, then the one after
 struct Req {
-    unsigned seq;
-    int T;
+    // the completion flag, its own 64-byte line: the host reads the flag and then the payload, so the two must never
+    // share a line the card's cache could still hold (seq at offset 0 and ids[0][*] at offset 16 used to)
+    alignas(64) unsigned seq;
+    alignas(64) int T;
     int na[2];   // lookahead: ahead[t][0 .. na[0]) the next layer's likely picks, ahead[t][kAhead1 ..) +na[1] the one after's
     int ids[kWin][kPicks];
     float w[kWin][kPicks];
