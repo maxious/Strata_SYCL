@@ -500,7 +500,6 @@ struct Dev {
     // the hand-off to the next device through pinned host memory (these cards copy peer to peer only through the
     // driver's staging, ~1.7 ms a copy): h | pre | topk | cand
     uint8_t* bounce = nullptr;
-    dpct::event_ptr ev_out = nullptr;
     float* tap = nullptr;   // a window's stream means before a DSpark target layer
     // threads / tensor parallelism: its group and its index in it, the group's all-reduces it took part in, xfer_put's
     // block counter, the hand-off to the next group (host-mapped: h | pre | topk | cand, then its flag), the window
@@ -733,7 +732,6 @@ struct Src {
     // per device (nullptr where no layer reads it): rows of kKvFp4 (the compressed KV), kKvFp4p (the index keys)
     std::vector<uint8_t*> ckv, ik;
     uint8_t *h_ckv = nullptr, *h_ik = nullptr;   // pinned: a window's new rows, on their way to the other devices
-    dpct::event_ptr ev_ckv = nullptr, ev_ik = nullptr;
     // threads: whether devices outside the source's group read it, and the host-mapped hand-off of a window's new rows
     // (ckv rows, then ik rows at kWin * hd) and its flag
     bool remote = false;
@@ -2605,7 +2603,6 @@ struct Model::Impl {
             if (g.n_mtp > 0 && (int) di == head_dev &&
                 (!dalloc(d, d_confv, kWin, err) || !dalloc(d, d_ints, 64, err) || !dalloc(d, d_specq, kWin, err)))
                 return false;
-            CK(DPCT_CHECK_ERROR(d.ev_out = new sycl::event()));
             /*
             DPCT1093:43: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
@@ -2620,23 +2617,9 @@ struct Model::Impl {
                                             freqs_comp.size() * 4)
                                     .wait()));
             for (Src& s : srcs) {
-                if (s.h_ckv == nullptr) {   // (its events belong to the source layer's device: it records them)
+                if (s.h_ckv == nullptr) {
                     if (!halloc(s.h_ckv, (size_t) kWin * ckv_rb(), err) || !halloc(s.h_ik, (size_t) kWin * ik_rb(), err))
                         return false;
-                    /*
-                    DPCT1093:44: The "devs[(size_t) L[(size_t) s.layer].dev].id"
-                    device may be not the one intended for use. Adjust the
-                    selected device if needed.
-                    */
-                    CK(DPCT_CHECK_ERROR(dpct::select_device(
-                        devs[(size_t)L[(size_t)s.layer].dev].id)));
-                    CK(DPCT_CHECK_ERROR(s.ev_ckv = new sycl::event()));
-                    CK(DPCT_CHECK_ERROR(s.ev_ik = new sycl::event()));
-                    /*
-                    DPCT1093:45: The "d.id" device may be not the one intended
-                    for use. Adjust the selected device if needed.
-                    */
-                    CK(DPCT_CHECK_ERROR(dpct::select_device(d.id)));
                 }
                 if (s.ckv[di] != nullptr && !dalloc(d, s.ckv[di], (size_t) s.cap * ckv_rb(), err, &d.caches))
                     return false;
@@ -8063,13 +8046,10 @@ struct Model::Impl {
             return by memcpy API to ensure synchronization behavior.
             */
             CK(DPCT_CHECK_ERROR(d.st->memcpy(d.bounce, d.x, (size_t)T * D * 4)));
-            /*
-            DPCT1024:162: The original code returned the error code that was
-            further consumed by the program logic. This original code was
-            replaced with 0. You may need to rewrite the program logic consuming
-            the error code.
-            */
-            CK(DPCT_CHECK_ERROR(dpct::sync_barrier(d.ev_out, d.st)));
+            // The copy crosses devices through the host. The host waits for the
+            // source copy: a Level Zero queue dependency on an event from the
+            // source context can reset the receiving card's exec queue.
+            CK(DPCT_CHECK_ERROR(d.st->wait()));
         }
         if (d_dev != head_dev) {
             /*
@@ -8077,7 +8057,6 @@ struct Model::Impl {
             use. Adjust the selected device if needed.
             */
             dpct::select_device(hd.id);
-            CK(DPCT_CHECK_ERROR((hd.st)->ext_oneapi_submit_barrier({*d.ev_out})));
             /*
             DPCT1124:164: cudaMemcpyAsync is migrated to asynchronous memcpy
             API. While the origin API might be synchronous, it depends on the
@@ -8097,7 +8076,6 @@ struct Model::Impl {
             */
             dpct::select_device(e.id);
             if (m > 0) {
-                CK(DPCT_CHECK_ERROR((e.st)->ext_oneapi_submit_barrier({*d.ev_out})));
                 /*
                 DPCT1124:166: cudaMemcpyAsync is migrated to asynchronous memcpy
                 API. While the origin API might be synchronous, it depends on
@@ -10453,7 +10431,7 @@ struct Model::Impl {
       std::exit(1);
     }
 
-    // one thread: the layers device after device, the hand-offs through pinned memory and events
+    // one thread: the layers device after device, the hand-offs through pinned memory
     bool forward_serial(int64_t p0, int T, std::string &err) try {
         const int D = g.dim, H = g.hc;
         int cur = L[0].dev;
@@ -10517,19 +10495,16 @@ struct Model::Impl {
                 event return by memcpy API to ensure synchronization behavior.
                 */
                 CK(DPCT_CHECK_ERROR(a.st->memcpy(bb + nh + np + nk, a.cand, nc)));
-                /*
-                DPCT1024:247: The original code returned the error code that was
-                further consumed by the program logic. This original code was
-                replaced with 0. You may need to rewrite the program logic
-                consuming the error code.
-                */
-                CK(DPCT_CHECK_ERROR(dpct::sync_barrier(a.ev_out, a.st)));
+                // The host waits for the source copies before the destination
+                // queue reads the staging buffer. A Level Zero queue dependency
+                // on an event from the source context can reset the receiving
+                // card's exec queue.
+                CK(DPCT_CHECK_ERROR(a.st->wait()));
                 /*
                 DPCT1093:242: The "b.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
                 dpct::select_device(b.id);
-                CK(DPCT_CHECK_ERROR((b.st)->ext_oneapi_submit_barrier({*a.ev_out})));
                 /*
                 DPCT1124:248: cudaMemcpyAsync is migrated to asynchronous memcpy
                 API. While the origin API might be synchronous, it depends on
@@ -10706,10 +10681,10 @@ struct Model::Impl {
     }
 
     // a source's new cache rows (src on device `from`, bytes of them) to the same place of its other devices' copies,
-    // through pinned memory: the copy out on the source's stream, each copy in on its device's stream after it
+    // through pinned memory: the copy out on the source's stream, the host waits for it, then each copy in is queued
     bool replicate(std::vector<uint8_t *> &copies, uint8_t *stage,
-                   dpct::event_ptr ev, const uint8_t *src, size_t at,
-                   size_t bytes, int from, std::string &err) try {
+                   const uint8_t *src, size_t at, size_t bytes, int from,
+                   std::string &err) try {
         bool any = false;
         for (size_t od = 0; od < devs.size(); ++od) any = any || (copies[od] != nullptr && (int) od != from);
         if (!any) return true;
@@ -10721,12 +10696,9 @@ struct Model::Impl {
         API to ensure synchronization behavior.
         */
         CK(DPCT_CHECK_ERROR(d.st->memcpy(stage, src, bytes)));
-        /*
-        DPCT1024:258: The original code returned the error code that was further
-        consumed by the program logic. This original code was replaced with 0.
-        You may need to rewrite the program logic consuming the error code.
-        */
-        CK(DPCT_CHECK_ERROR(dpct::sync_barrier(ev, d.st)));
+        // The host orders the destination copies after the source copy. A
+        // cross-context event dependency can reset the destination's exec queue.
+        CK(DPCT_CHECK_ERROR(d.st->wait()));
         for (size_t od = 0; od < devs.size(); ++od) {
             if (copies[od] == nullptr || (int) od == from) continue;
             Dev& o2 = devs[od];
@@ -10735,7 +10707,6 @@ struct Model::Impl {
             use. Adjust the selected device if needed.
             */
             dpct::select_device(o2.id);
-            CK(DPCT_CHECK_ERROR((o2.st)->ext_oneapi_submit_barrier({*ev})));
             /*
             DPCT1124:260: cudaMemcpyAsync is migrated to asynchronous memcpy
             API. While the origin API might be synchronous, it depends on the
@@ -10946,7 +10917,7 @@ struct Model::Impl {
                     fi.pdst = ks.ik[(size_t) l.dev] + (size_t) g_first * ik_rb();
                     fi.pdst_stride = (long long) ik_rb();
                     finish(d.ikr, ng, g.ix_hd, g.ix_hd, fi, s);
-                    if (!wp.par && !replicate(ks.ik, ks.h_ik, ks.ev_ik, fi.pdst, (size_t) g_first * ik_rb(),
+                    if (!wp.par && !replicate(ks.ik, ks.h_ik, fi.pdst, (size_t) g_first * ik_rb(),
                                               (size_t) ng * ik_rb(), l.dev, err))
                         return false;
                 }
@@ -11008,7 +10979,7 @@ struct Model::Impl {
                 fc.pdst = sr.ckv[(size_t) l.dev] + (size_t) g_first * ckv_rb();
                 fc.pdst_stride = (long long) ckv_rb();
                 finish(d.latent, ng, HD, HD, fc, s);
-                if (!wp.par && !replicate(sr.ckv, sr.h_ckv, sr.ev_ckv, fc.pdst, (size_t) g_first * ckv_rb(),
+                if (!wp.par && !replicate(sr.ckv, sr.h_ckv, fc.pdst, (size_t) g_first * ckv_rb(),
                                           (size_t) ng * ckv_rb(), l.dev, err))
                     return false;
                 if (wp.par && mi == 0 && sr.remote) {   // the new rows for the other groups' readers
