@@ -208,6 +208,26 @@ Hand fixes applied (the four dpct gaps above):
 6. Benchmarks against a same-day CUDA/HIP run where the same model fits, reported per
    [docs/COMMUNITY_BENCHMARKS.md](COMMUNITY_BENCHMARKS.md) (not measured yet).
 
+## What the engine still needs
+
+The kernel library builds, but the engine does not call it yet. Measured on 2026-10-26 with icpx 2026.2.0
+(`icpx -fsycl -fsyntax-only`):
+
+- `src/dsv41/ds4_main.cpp` compiles under SYCL with two errors, both `STRATA_VERSION`, a compile definition the
+  root CMake adds (`CMakeLists.txt:23`). The front-end is not CUDA-specific.
+- `src/dsv41/ds4_model.cu` holds the device calls: 505 lines mention `cuda`, `__global` or `exl3`. That file is
+  the port that remains, and `strata-dsv41` needs it.
+- A CPU-only build with `STRATA_BUILD_DSV41=ON` builds `ds4_gg_bench` but no `strata-dsv41`: the target needs a
+  GPU runtime.
+
+The AVX-2 expert rung on a CPU without AVX-512 (AMD Ryzen 7 5700X3D, Zen 3), measured 2026-10-26 with the
+CPU-only build at this commit: `ds4_gg_bench`, type 18, 3.07 GB of weights in 1,567,344 rows, ggml-cpu rows
+33.0 GB/s, Strata AVX2 rows 29.7 GB/s (x0.90), a plain read 36.7 GB/s, 0 rows differing in bits.
+
+Serving a native (IQ) pack on that CPU completes prompts: 8 tokens generated, decode 21.94 tok/s, prefill
+2.60 tok/s, on one Intel Arc Pro B60 (24 GB), with the AVX-2 expert kernels. The DeepSeek pack is not served
+yet; it needs the `strata-dsv41` executable, which needs the `ds4_model.cu` port above.
+
 ## Rules this branch keeps
 
 - The SYCL dsv41 path is opt-in. The CUDA and HIP paths are untouched and stay byte-identical to the release;
