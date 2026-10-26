@@ -30,19 +30,9 @@ constexpr int kThreads = 256;
 
 // The decode's doorbell: the GPU waits for the CPU lane's answer (the experts the card does not hold), so its
 // bound has to outlast a cold expert read (the disk: ~0.1 s, ~40,000 uncached reads at the 2.4 us one measured in
-// sycl_doorbell.hpp) and stay under the driver's 5 s job timeout (a longer spin resets the GT).  strata::spin_max()
-// gives 20,000 reads on an xe card - its waits spin only in a failure - so the decode's wait takes its own bound.
-// STRATA_SPIN_MAX overrides it, as in strata::spin_max().
-inline uint32_t decode_spin_max() {
-    static const uint32_t v = [] {
-        if (const char* e = std::getenv("STRATA_SPIN_MAX")) {
-            const long n = std::atol(e);
-            if (n > 0) return (uint32_t) n;
-        }
-        return 1000000u;   // ~2.4 s at the measured 2.4 us per uncached read
-    }();
-    return v;
-}
+// sycl_doorbell.hpp) and stay under the driver's 5 s job timeout (a longer spin resets the GT).  The bound lives in
+// the doorbell header (strata::answer_spin_max), because the window path's own wait needs the same one.
+inline uint32_t decode_spin_max() { return strata::answer_spin_max(); }
 
 __dpct_inline__ float bf16f(uint16_t b) {
   return sycl::bit_cast<float>((uint32_t)b << 16);
@@ -2179,13 +2169,29 @@ void publish_kernel(Req* req, int T, unsigned seq, int na0, int na1) {
     strata::sys_store((volatile unsigned*) &req->seq, seq);
 }
 
-void wait_seq_kernel(const unsigned* seq_ptr, unsigned seq, uint32_t spin_max) {
+void wait_seq_kernel(const unsigned* seq_ptr, unsigned seq, strata::AnsRec* rec, unsigned* fault, uint32_t spin_max) {
     if (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2) !=
         0) return;
-    // the SYCL port: the answer is in host-mapped memory, and a plain (volatile) read of it is served from the
-    // GPU's cache (strata/sycl_doorbell.hpp), so the host's store is never seen: the uncached read goes to memory
-    // every time.  The spin is bounded (the bound the launcher passes).
-    for (uint32_t spin = 0; spin < spin_max && strata::sys_load(seq_ptr) != seq; ++spin) {}
+    // the SYCL port: the flag is either in host memory (the host's store, which the uncached read sees) or in the
+    // card's memory (the host's copy engine wrote it there), and the read goes to memory every time either way (a
+    // plain read is served from the GPU's cache).  The spin is bounded (the bound the launcher passes): a wait that
+    // runs to its bound never saw the flag, and it says so in the record it writes.
+    uint32_t reads = 0;
+    unsigned last = 0;
+    while (reads < spin_max) {
+        last = strata::dev_load(seq_ptr);
+        ++reads;
+        if (last == seq) break;
+    }
+    if (rec != nullptr) {
+        strata::sys_store((volatile unsigned*) &rec->reads, reads);
+        strata::sys_store((volatile unsigned*) &rec->last, last);
+        strata::sys_store((volatile unsigned*) &rec->fault, last != seq ? 1u : 0u);
+        strata::sys_store((volatile unsigned*) &rec->site, strata::kSpinAnswerToken);
+    }
+    // a bound below the answer's needs is not credible (the operator's bound was too tight): the host ends the run
+    if (spin_max < strata::kAnswerCredibleReads && fault != nullptr)
+        strata::sys_store((volatile unsigned*) fault, seq);
     /*
     DPCT1078:39: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2251,17 +2257,26 @@ void xfer_put_kernel(const Xfer x, unsigned* flag, unsigned seq, unsigned* cnt) 
     }
 }
 
-__dpct_inline__ void wait_at_least(const unsigned *flag, unsigned seq, uint32_t spin_max) {
+__dpct_inline__ uint32_t wait_at_least(const unsigned *flag, unsigned seq, uint32_t spin_max, strata::SpinBuf* rec,
+                                       unsigned site) {
     // the SYCL port: the flag is in host-mapped memory, and a plain (volatile) read of it is served from the GPU's
     // cache (strata/sycl_doorbell.hpp), so the writer's store is never seen: the uncached read goes to memory every
     // time.  The spin is bounded (the bound the launcher passes): an unbounded one that never sees its flag wedges
     // the card (the driver resets the GT) instead of failing this window.
-    for (uint32_t spin = 0; spin < spin_max && (int) (strata::sys_load(flag) - seq) < 0; ++spin) {}
+    uint32_t reads = 0;
+    unsigned last = 0;
+    while (reads < spin_max) {
+        last = strata::sys_load(flag);
+        ++reads;
+        if ((int) (last - seq) >= 0) break;
+    }
+    strata::spin_record(rec, site, seq, seq, reads, last);
+    return reads;
 }
 
-void xfer_get_kernel(const Xfer x, const unsigned* flag, unsigned seq, uint32_t spin_max) {
+void xfer_get_kernel(const Xfer x, const unsigned* flag, unsigned seq, uint32_t spin_max, strata::SpinBuf* rec) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
-    if (item_ct1.get_local_id(2) == 0) wait_at_least(flag, seq, spin_max);
+    if (item_ct1.get_local_id(2) == 0) wait_at_least(flag, seq, spin_max, rec, strata::kSpinXferGet);
     /*
     DPCT1065:120: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -2271,10 +2286,10 @@ void xfer_get_kernel(const Xfer x, const unsigned* flag, unsigned seq, uint32_t 
     xfer_copy(x, true);
 }
 
-void wait_flags_kernel(const unsigned* flags, int n, int stride, unsigned seq, uint32_t spin_max) {
+void wait_flags_kernel(const unsigned* flags, int n, int stride, unsigned seq, uint32_t spin_max, strata::SpinBuf* rec) {
     if (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2) !=
         0) return;
-    for (int i = 0; i < n; ++i) wait_at_least(flags + (size_t) i * stride, seq, spin_max);
+    for (int i = 0; i < n; ++i) wait_at_least(flags + (size_t) i * stride, seq, spin_max, rec, strata::kSpinFlags);
     /*
     DPCT1078:42: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2305,7 +2320,7 @@ the code, or use smaller sub-group size to avoid high register pressure.
 */
 void ar_rs_kernel(float *x, int n4, float *rows, float *sums, size_t stride,
                   unsigned *bflags, int nm, int mi, int slot, int slots,
-                  unsigned seq, uint32_t spin_max) {
+                  unsigned seq, uint32_t spin_max, strata::SpinBuf* rec) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     sycl::float4 *x4 = (sycl::float4 *)x;
     const int per = (n4 + (int)item_ct1.get_group_range(2) - 1) /
@@ -2349,7 +2364,7 @@ void ar_rs_kernel(float *x, int n4, float *rows, float *sums, size_t stride,
     if (item_ct1.get_local_id(2) == 0) strata::sys_store((volatile unsigned *) rflag(mi), seq);
     if ((int)item_ct1.get_local_id(2) < nm &&
         (int)item_ct1.get_local_id(2) != mi)
-        wait_at_least(rflag(item_ct1.get_local_id(2)), seq, spin_max);
+        wait_at_least(rflag(item_ct1.get_local_id(2)), seq, spin_max, rec, strata::kSpinAllReduce);
     /*
     DPCT1065:122: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -2412,7 +2427,7 @@ void ar_rs_kernel(float *x, int n4, float *rows, float *sums, size_t stride,
     if (item_ct1.get_local_id(2) == 0) strata::sys_store((volatile unsigned *) sflag(mi), seq);
     if ((int)item_ct1.get_local_id(2) < nm &&
         (int)item_ct1.get_local_id(2) != mi)
-        wait_at_least(sflag(item_ct1.get_local_id(2)), seq, spin_max);
+        wait_at_least(sflag(item_ct1.get_local_id(2)), seq, spin_max, rec, strata::kSpinAllReduce);
     /*
     DPCT1065:124: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -2459,7 +2474,7 @@ the code, or use smaller sub-group size to avoid high register pressure.
 */
 void ar_rs16_kernel(float *x, int n4, float *rows, float *sums, size_t stride,
                     unsigned *bflags, int nm, int mi, int slot, int slots,
-                    unsigned seq, uint32_t spin_max) {
+                    unsigned seq, uint32_t spin_max, strata::SpinBuf* rec) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     sycl::float4 *x4 = (sycl::float4 *)x;
     const int per = (n4 + (int)item_ct1.get_group_range(2) - 1) /
@@ -2503,7 +2518,7 @@ void ar_rs16_kernel(float *x, int n4, float *rows, float *sums, size_t stride,
     if (item_ct1.get_local_id(2) == 0) strata::sys_store((volatile unsigned *) rflag(mi), seq);
     if ((int)item_ct1.get_local_id(2) < nm &&
         (int)item_ct1.get_local_id(2) != mi)
-        wait_at_least(rflag(item_ct1.get_local_id(2)), seq, spin_max);
+        wait_at_least(rflag(item_ct1.get_local_id(2)), seq, spin_max, rec, strata::kSpinAllReduce);
     /*
     DPCT1065:130: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -2568,7 +2583,7 @@ void ar_rs16_kernel(float *x, int n4, float *rows, float *sums, size_t stride,
     if (item_ct1.get_local_id(2) == 0) strata::sys_store((volatile unsigned *) sflag(mi), seq);
     if ((int)item_ct1.get_local_id(2) < nm &&
         (int)item_ct1.get_local_id(2) != mi)
-        wait_at_least(sflag(item_ct1.get_local_id(2)), seq, spin_max);
+        wait_at_least(sflag(item_ct1.get_local_id(2)), seq, spin_max, rec, strata::kSpinAllReduce);
     /*
     DPCT1065:132: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -2583,11 +2598,11 @@ void ar_rs16_kernel(float *x, int n4, float *rows, float *sums, size_t stride,
 // x[i] = the members' partials summed in member order (this member's from x, the others' from their host rows)
 void ar_sum_kernel(float* x, int n4, const float* peers, size_t stride,
                                                          const unsigned* flags, int nm, int mi, int slot, int slots,
-                                                         unsigned seq, uint32_t spin_max) {
+                                                         unsigned seq, uint32_t spin_max, strata::SpinBuf* rec) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     if (item_ct1.get_local_id(2) == 0)
         for (int m = 0; m < nm; ++m)
-            if (m != mi) wait_at_least(flags + ((size_t) m * slots + slot) * 32, seq, spin_max);
+            if (m != mi) wait_at_least(flags + ((size_t) m * slots + slot) * 32, seq, spin_max, rec, strata::kSpinAllReduce);
     /*
     DPCT1065:137: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
@@ -2956,12 +2971,13 @@ void route_ahead(const float *logits, const float *bias, int n, int m, int T,
                 });
         });
 }
-void wait_seq(const unsigned *seq_ptr, unsigned seq, dpct::queue_ptr s) {
+void wait_seq(const unsigned *seq_ptr, unsigned seq, strata::AnsRec *rec, unsigned *fault,
+              dpct::queue_ptr s) {
     const uint32_t spin = decode_spin_max();   // the bound the wait takes (read on the host)
     s->parallel_for(
         sycl::nd_range<3>(sycl::range<3>(1, 1, 32), sycl::range<3>(1, 1, 32)),
         [=](sycl::nd_item<3> item_ct1) {
-            wait_seq_kernel(seq_ptr, seq, spin);
+            wait_seq_kernel(seq_ptr, seq, rec, fault, spin);
         });
 }
 
@@ -4258,7 +4274,7 @@ void win_submit(dpct::queue_ptr s) {
 #endif
 }
 void xfer_get(const Xfer &x, const unsigned *flag, unsigned seq,
-              dpct::queue_ptr s) {
+              strata::SpinBuf *rec, dpct::queue_ptr s) {
     const uint32_t spin = strata::spin_max(*s);   // the bound the wait takes (read on the host)
     size_t total = 0;
     for (int i = 0; i < x.n; ++i) total += x.bytes[i] / 16;
@@ -4267,16 +4283,16 @@ void xfer_get(const Xfer &x, const unsigned *flag, unsigned seq,
                                           sycl::range<3>(1, 1, kThreads),
                                       sycl::range<3>(1, 1, kThreads)),
                     [=](sycl::nd_item<3> item_ct1) {
-                        xfer_get_kernel(x, flag, seq, spin);
+                        xfer_get_kernel(x, flag, seq, spin, rec);
                     });
 }
 void wait_flags(const unsigned *flags, int n, int stride, unsigned seq,
-                dpct::queue_ptr s) {
+                strata::SpinBuf *rec, dpct::queue_ptr s) {
     const uint32_t spin = strata::spin_max(*s);   // the bound the wait takes (read on the host)
         if (n > 0) s->parallel_for(sycl::nd_range<3>(sycl::range<3>(1, 1, 32),
                                                      sycl::range<3>(1, 1, 32)),
                                    [=](sycl::nd_item<3> item_ct1) {
-                                       wait_flags_kernel(flags, n, stride, seq, spin);
+                                       wait_flags_kernel(flags, n, stride, seq, spin, rec);
                                    });
 }
 void set_flag(unsigned *flag, unsigned v, dpct::queue_ptr s) {
@@ -4288,7 +4304,7 @@ void set_flag(unsigned *flag, unsigned v, dpct::queue_ptr s) {
     win_submit(s);   // (the writer on another GPU waits for this acknowledgement before its next put - #384)
 }
 void allreduce(float *x, int n, const ArGroup &a, int mi, unsigned seq,
-               unsigned *cnt, dpct::queue_ptr s) {
+               unsigned *cnt, strata::SpinBuf *rec, dpct::queue_ptr s) {
     const uint32_t spin = strata::spin_max(*s);   // the bound the waits take (read on the host)
     const int slot = (int) (seq % (unsigned) a.slots);
     if (a.nm > 2 && a.sums != nullptr && a.bflags != nullptr) {   // (the reduce-scatter: ar_rs_kernel)
@@ -4308,7 +4324,7 @@ void allreduce(float *x, int n, const ArGroup &a, int mi, unsigned seq,
                                   sycl::range<3>(1, 1, kThreads)),
                 [=](sycl::nd_item<3> item_ct1) {
                     ar_rs16_kernel(x, n4, a.data, a.sums, a.stride, a.bflags,
-                                   a.nm, mi, slot, a.slots, seq, spin);
+                                   a.nm, mi, slot, a.slots, seq, spin, rec);
                 });
         } else
             s->parallel_for(
@@ -4317,7 +4333,7 @@ void allreduce(float *x, int n, const ArGroup &a, int mi, unsigned seq,
                                   sycl::range<3>(1, 1, kThreads)),
                 [=](sycl::nd_item<3> item_ct1) {
                     ar_rs_kernel(x, n4, a.data, a.sums, a.stride, a.bflags,
-                                 a.nm, mi, slot, a.slots, seq, spin);
+                                 a.nm, mi, slot, a.slots, seq, spin, rec);
                 });
         return;
     }
@@ -4334,7 +4350,7 @@ void allreduce(float *x, int n, const ArGroup &a, int mi, unsigned seq,
                                       sycl::range<3>(1, 1, kThreads)),
                     [=](sycl::nd_item<3> item_ct1) {
                         ar_sum_kernel(x, n4, a.data, a.stride, a.flags, a.nm,
-                                      mi, slot, a.slots, seq, spin);
+                                      mi, slot, a.slots, seq, spin, rec);
                     });
 }
 

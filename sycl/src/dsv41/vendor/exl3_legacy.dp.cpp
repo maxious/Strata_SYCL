@@ -713,7 +713,7 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     correctness. SYCL math built-in function rounding mode is aligned with
     OpenCL C 1.2 standard.
     */
-    // audit note: WRONG - cpu_part is the host-mapped CPU-lane part (resps, host_malloc_polled): uncached read
+    // audit note: the CPU-lane part is in device memory now (the host's copy engine wrote it): the uncached read
     if (cpu_part != nullptr) m = m + strata::sys_load_mapped(cpu_part);
     /*
     DPCT1013:118: The rounding mode could not be specified and the generated
@@ -826,8 +826,9 @@ void moe_down_kernel(const KMoe a, sycl::half *xs,
         const int r = g * kCols + item_ct1.get_local_id(2);
         float p[8];
         for (int i = 0; i < a.k; ++i) p[i] = *(volatile const float*) &a.part[(size_t) i * a.n_embd + r];
-        // audit note: WRONG - the CPU-lane flag is host-mapped (resps): uncached read
-        a.out[r] = combine(a.plan_w, p, a.k, a.cpu_flag != nullptr && strata::sys_load((const volatile unsigned *)a.cpu_flag) != 0 ? a.cpu_part + r : nullptr,
+        // audit note: the CPU-lane flags are in device memory (the host's copy engine wrote them): a device-scope
+        // atomic is the read that sees a copy engine's write
+        a.out[r] = combine(a.plan_w, p, a.k, a.cpu_flag != nullptr && strata::dev_load(a.cpu_flag) != 0 ? a.cpu_part + r : nullptr,
                            a.sh_out != nullptr ? a.sh_out[r] : 0.0f);
     }
     if (item_ct1.get_local_id(2) == 0) a.cnt[g] = 0u;
@@ -978,7 +979,9 @@ void win_combine_kernel(const KWin a) {
     }
     a.out[(size_t) t * a.out_stride + r] =
         // audit note: WRONG - the CPU-lane flags are host-mapped (resps): uncached reads
-        combine(a.plan_w + t * 8, p, a.k, strata::sys_load((const volatile unsigned *)a.cpu_flag + t) != 0 ? a.cpu_part + (size_t) t * a.n_embd + r : nullptr,
+        // audit note: the CPU-lane flags are in device memory (the host's copy engine wrote them): a device-scope
+        // atomic is the read that sees a copy engine's write
+        combine(a.plan_w + t * 8, p, a.k, strata::dev_load(a.cpu_flag + t) != 0 ? a.cpu_part + (size_t) t * a.n_embd + r : nullptr,
                 a.sh_out != nullptr ? a.sh_out[(size_t) t * a.n_embd + r] : 0.0f);
 }
 

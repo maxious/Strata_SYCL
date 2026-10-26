@@ -63,6 +63,91 @@ inline uint32_t sys_load(const volatile uint32_t* p) {
     return sys_atomic_u32(*const_cast<uint32_t*>(p)).load();
 }
 #endif
+// A flag the copy engine wrote into DEVICE memory (a queue's memcpy).  The read has to go to memory every time: the
+// copy's write is in memory, and the card's cache line for the flag is stale (the flag's slot is used again and again,
+// and the copy engine's write does not refresh the card's line).  Measured on an Arc Pro B60, 2026-10-26, on a slot
+// the card had already cached: a device-scope atomic read the slot's value from 64 requests earlier 1,000,000 times
+// over (the wait never saw the copy), while the uncached read goes to memory every time.
+template <class T> inline T dev_load(const T* p) {
+    return sys_load_mapped(p);
+}
+
+// The answer's wait needs this many reads to be credible: the CPU lane's cold expert read takes ~40,000 reads (the
+// disk, ~0.1 s, at the 2.4 us one measured in this header).  A wait that ran to a bound below it had no chance - the
+// operator's bound was too tight - and the engine ends the run rather than going on with a missing answer.
+constexpr uint32_t kAnswerCredibleReads = 40000;
+
+// The host-mapped record of a wait: the reads it made, the last value it read, whether it ran to its bound, and which
+// wait it was.  The device writes it (the device's write to host memory is the direction that works: the host reads the
+// polled memory and sees it).  The card's own memory cannot be read back reliably: the host's copy of it is a DMA, and
+// the card's writes sit in its cache until they are written back (measured on an Arc Pro B60, 2026-10-26: 1 of 64
+// records readable).
+struct AnsRec {
+    unsigned reads = 0;    // the reads the wait made
+    unsigned last = 0;     // the last value it read
+    unsigned fault = 0;    // 1: the wait ran to its bound
+    unsigned site = 0;     // which wait it was
+};
+
+// The answer's slot in device memory: the flag the host's copy engine wrote (the card spins on it) and the pointers to
+// the host-mapped record of the wait and to the host-mapped word the wait marks when it runs to its bound.  The slot is
+// a cache line of its own: the copy engine's write covers the whole line (measured: a 4-byte copy clears the rest of
+// the line), so the host copies the slot's bytes - then nothing else in the line is touched and no other slot's flag is.
+struct AnsSlot {
+    unsigned seq = 0;                       // the flag: the seq the answer carries
+    unsigned pad0 = 0;
+    AnsRec* host_rec = nullptr;             // the host-mapped record of the wait
+    unsigned* host_fault = nullptr;         // the host-mapped word the wait marks on a bound hit (null: none)
+    char pad[40];                           // (the slot is a 64-byte cache line of its own)
+};
+// The answer's wait sites: the token path's wait (one token a window) and the window path's wait (a window of
+// tokens).  Both spin on the same kind of flag, in device memory.
+enum : unsigned { kSpinAnswerToken = 1, kSpinAnswerWin = 2 };
+
+// The decode's answer wait: the card waits for the CPU lane's part (the experts it does not hold), so the bound has
+// to outlast a cold expert read (the disk: ~0.1 s, ~40,000 reads at the 2.4 us one measured in this header) and stay
+// under the driver's 5 s job timeout (a longer spin resets the GT).  STRATA_SPIN_MAX overrides it, as in
+// strata::spin_max().
+inline uint32_t answer_spin_max() {
+    static const uint32_t v = [] {
+        if (const char* e = std::getenv("STRATA_SPIN_MAX")) {
+            const long n = std::atol(e);
+            if (n > 0) return (uint32_t) n;
+        }
+        return 1000000u;   // ~2.4 s at the measured 2.4 us per uncached read
+    }();
+    return v;
+}
+
+// A bounded wait's record (the hand-off's waits, whose flags are host-mapped): the reads it made, the last value it
+// read, the value it waited for, and the request's seq.  The device writes them; the host reads them back.
+struct SpinRec {
+    unsigned count = 0;    // the reads the wait made
+    unsigned last = 0;     // the last value it read
+    unsigned target = 0;   // the value it waited for
+    unsigned seq = 0;      // the request's seq
+    unsigned site = 0;     // which wait it was
+};
+// The wait sites: the hand-off's get (the card waits for the host's copy of a peer's rows), the readers' ack, and the
+// tensor-parallel all-reduce's wait (a member waits for the others' partials).
+enum : unsigned { kSpinXferGet = 1, kSpinFlags = 2, kSpinAllReduce = 3 };
+constexpr int kSpinRecs = 64;   // the records a device keeps (the newest ones)
+struct SpinBuf {
+    unsigned next = 0;       // the next record's index (a device atomic)
+    SpinRec rec[kSpinRecs];
+};
+inline void spin_record(SpinBuf* buf, unsigned site, unsigned seq, unsigned target, unsigned count, unsigned last) {
+    if (buf == nullptr) return;
+    sycl::atomic_ref<unsigned, sycl::memory_order::relaxed, sycl::memory_scope::device> next(buf->next);
+    const unsigned i = next.fetch_add(1u);
+    SpinRec& r = buf->rec[i % kSpinRecs];
+    r.count = count;
+    r.last = last;
+    r.target = target;
+    r.seq = seq;
+    r.site = site;
+}
+
 // The store side of the handshake (device -> host) needs the same hint. A system-scope atomic store, even followed by
 // a release fence, is served from the GPU's cache on an Arc (xe) and reaches the host only when the kernel ends
 // (measured on an A770: 482 ms into a 482 ms kernel), so a host that polls the ring mid-window never sees it; that is
