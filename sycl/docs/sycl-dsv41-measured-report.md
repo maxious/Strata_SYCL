@@ -55,7 +55,10 @@ no matches (exit code 1 means nothing was found).
 
 ## The checks that must pass
 
-- The default test suites and both ds4 parity tests, `ds4_parity` and `ds4_blas_parity`, pass on the Linux SYCL build. The CUDA and HIP builds were not run because no CUDA or HIP hardware is present here.
+- Passed: both ds4 parity tests, `ds4_parity` and `ds4_blas_parity`, pass on the Linux SYCL build (2 of
+  2). Failed: the default build's test suite has one pre-existing failure, `isa_guard_check` on
+  `iq512x_rows` (1 of 57). Not run: the CUDA and HIP builds were not run because no CUDA or HIP hardware
+  is present on this machine.
 - For the Q2_K, Q4_K and Q5_K expert shapes, the SYCL code and the CPU code
   agree: no value matched exactly (0 of 51), every value was within one BF16
   rounding step (51 of 51), and none was outside it (0 of 51). Measured on the
