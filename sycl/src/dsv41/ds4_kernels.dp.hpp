@@ -12,6 +12,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_doorbell.hpp"
 #include <cstddef>
 #include <cstdint>
 
@@ -272,8 +273,11 @@ void route_ahead(const float *logits, const float *bias, int n, int m, int T,
 void zc_stage(unsigned long long *plan, const int *idx,
               const unsigned long long *zc_tab, int k, uint8_t *stage,
               size_t stride, size_t bytes, dpct::queue_ptr s);
-/// Waits (one thread, on the device) until *seq_ptr == seq.
-void wait_seq(const unsigned *seq_ptr, unsigned seq, dpct::queue_ptr s);
+/// Waits (one thread, on the device) until *seq_ptr == seq.  The flag is in host memory (the host's store) or in the
+/// card's memory (the host's copy engine wrote it there); either way the read goes to memory every time, and the
+/// wait writes its record and its bound hit into the host-mapped record the launcher names.
+void wait_seq(const unsigned *seq_ptr, unsigned seq, strata::AnsRec *rec, unsigned *fault,
+              dpct::queue_ptr s);
 /// A chunk's routed experts as sorted rows: the picks (t, i < k) of T tokens (idx rows kPicks apart) by the virtual
 /// slot vs[expert] (n_vs of them: the VRAM slots, then the experts streamed in), each slot's rows in token order:
 /// bounds[n_vs + 1], row_tok[r], pos[t][i] (the pick's sorted row, rows kPicks apart).
@@ -324,11 +328,11 @@ void xfer_put(const Xfer &x, unsigned *flag, unsigned seq, unsigned *cnt,
 // `s` submitted now (cudaStreamQuery, which does not wait).  Elsewhere nothing.  DS4_WIN_SUBMIT=0: off (A/B tests)
 void win_submit(dpct::queue_ptr s);
 void xfer_get(const Xfer &x, const unsigned *flag, unsigned seq,
-              dpct::queue_ptr s);
+              strata::SpinBuf *rec, dpct::queue_ptr s);
 /// Waits (one thread) until flags[i * stride] >= seq for i < n (a pipelined chunk's readers have taken a buffer);
 /// set_flag: *flag = v after a system fence (a reader's acknowledgement).
 void wait_flags(const unsigned *flags, int n, int stride, unsigned seq,
-                dpct::queue_ptr s);
+                strata::SpinBuf *rec, dpct::queue_ptr s);
 void set_flag(unsigned *flag, unsigned v, dpct::queue_ptr s);
 /// A tensor-parallel group's all-reduce: host-mapped rows data[member][slot] (stride floats), flags[member][slot]
 /// (32 apart).  x (n floats, n % 4 == 0: this member's partial) -> the sum of the nm members' partials in member order,
@@ -345,6 +349,6 @@ struct ArGroup {
 };
 constexpr int kArBlocks = 64;
 void allreduce(float *x, int n, const ArGroup &a, int mi, unsigned seq,
-               unsigned *cnt, dpct::queue_ptr s);
+               unsigned *cnt, strata::SpinBuf *rec, dpct::queue_ptr s);
 
 }  // namespace strata::ds4

@@ -778,7 +778,7 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
-    // audit note: WRONG - cpu_part is the host-mapped CPU-lane part (resps, host_malloc_polled): uncached read
+    // audit note: the CPU-lane part is in device memory now (the host's copy engine wrote it): the uncached read
     if (cpu_part != nullptr) m = m + strata::sys_load_mapped(cpu_part);
     /*
     DPCT1013:75: The rounding mode could not be specified and the generated code
@@ -871,8 +871,9 @@ void EXL3_BOUNDS(kMinBlocksX<K>) moe_down_kernel(const KMoe a, BlockSmem<K> &sm,
         const int r = g * kCols + item_ct1.get_local_id(2);
         float p[8];
         for (int i = 0; i < a.k; ++i) p[i] = *(volatile const float*) &a.part[(size_t) i * a.n_embd + r];
-        // audit note: WRONG - the CPU-lane flag is host-mapped (resps): uncached read
-        a.out[r] = combine(a.plan_w, p, a.k, a.cpu_flag != nullptr && strata::sys_load((const volatile unsigned *)a.cpu_flag) != 0 ? a.cpu_part + r : nullptr,
+        // audit note: the CPU-lane flags are in device memory (the host's copy engine wrote them): a device-scope
+        // atomic is the read that sees a copy engine's write
+        a.out[r] = combine(a.plan_w, p, a.k, a.cpu_flag != nullptr && strata::dev_load(a.cpu_flag) != 0 ? a.cpu_part + r : nullptr,
                            a.sh_out != nullptr ? a.sh_out[r] : 0.0f);
     }
     if (item_ct1.get_local_id(2) == 0) a.cnt[g] = 0u;
@@ -992,25 +993,35 @@ void win_combine_kernel(const KWin a) {
     }
     a.out[(size_t) t * a.out_stride + r] =
         combine(a.plan_w + t * 8, p, a.k,
-                // audit note: WRONG - the CPU-lane flags are host-mapped (resps): uncached reads
-                a.cpu_flag != nullptr && strata::sys_load((const volatile unsigned *)a.cpu_flag + t) != 0 ? a.cpu_part + (size_t) t * a.cpu_stride + r : nullptr,
+                // audit note: the CPU-lane flags are in device memory (the host's copy engine wrote them): a
+                // device-scope atomic is the read that sees a copy engine's write
+                a.cpu_flag != nullptr && strata::dev_load(a.cpu_flag + t) != 0 ? a.cpu_part + (size_t) t * a.cpu_stride + r : nullptr,
                 a.sh_out != nullptr ? a.sh_out[(size_t) t * a.n_embd + r] : 0.0f);
 }
 
-void win_wait_kernel(const unsigned* p, unsigned v) {
+void win_wait_kernel(const unsigned* p, unsigned v, uint32_t spin_max) {
     if (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2) !=
         0) return;
-    // audit note: WRONG - p is the host-written resps slot seq (host_malloc_polled): uncached read (spin bound untouched)
-    while (strata::sys_load(p) != v) {
-#if defined(DPCT_COMPATIBILITY_TEMP) && DPCT_COMPATIBILITY_TEMP >= 700
-        /*
-        DPCT1008:80: __nanosleep function is not defined in SYCL. This is a
-        hardware-specific feature. Consult with your hardware vendor to find a
-        replacement.
-        */
-        // __nanosleep(200) has no SYCL equivalent (DPCT1008:80): a spin hint only.
-#endif
+    // the answer's flag is in device memory (the host's copy engine wrote it): a device-scope atomic is the read
+    // that sees a copy engine's write (a plain read is served from the GPU's cache, so the host's store was never
+    // seen).  The wait is bounded (the same bound the token path's wait takes): an unbounded one that never sees
+    // its flag wedges the card (the driver resets the GT) instead of failing this window.
+    uint32_t reads = 0;
+    unsigned last = 0;
+    while (reads < spin_max) {
+        last = strata::dev_load(p);
+        ++reads;
+        if (last == v) break;
     }
+    // the window path's wait writes no record: the flag it spins on may be in host memory (the host's store) or
+    // in the card's memory (the host's copy engine wrote it there), and the two have different layouts.  Its bound is
+    // the same, and the engine's report names the site.
+    /*
+    DPCT1008:80: __nanosleep function is not defined in SYCL. This is a
+    hardware-specific feature. Consult with your hardware vendor to find a
+    replacement.
+    */
+    // __nanosleep(200) has no SYCL equivalent (DPCT1008:80): a spin hint only.
     /*
     DPCT1078:10: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2252,12 +2263,15 @@ bool win_experts(const WinArgs &a, dpct::queue_ptr s) {
     if (!dispatch<RunWin>(a.lay.K[0], a.lay.cb, w, groups, s) ||
         !dispatch<RunWinDown>(a.lay.K[2], a.lay.cb, w, groups, s))
         return false;
-                if (a.wait_ptr != nullptr) s->parallel_for(
-                    sycl::nd_range<3>(sycl::range<3>(1, 1, 32),
-                                      sycl::range<3>(1, 1, 32)),
-                    [=](sycl::nd_item<3> item_ct1) {
-                            win_wait_kernel(a.wait_ptr, a.wait_val);
-                    });
+                if (a.wait_ptr != nullptr) {
+                    const uint32_t spin = strata::answer_spin_max();   // the bound the wait takes (read on the host)
+                    s->parallel_for(
+                        sycl::nd_range<3>(sycl::range<3>(1, 1, 32),
+                                          sycl::range<3>(1, 1, 32)),
+                        [=](sycl::nd_item<3> item_ct1) {
+                                win_wait_kernel(a.wait_ptr, a.wait_val, spin);
+                        });
+                }
         s->parallel_for(
             sycl::nd_range<3>(
                 sycl::range<3>(1, (unsigned)a.T, (unsigned)(a.n_embd / kCols)) *

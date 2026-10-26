@@ -260,7 +260,7 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
-    // audit note: WRONG - cpu_part is the host-mapped CPU-lane part (resps, host_malloc_polled): uncached read
+    // audit note: the CPU-lane part is in device memory now (the host's copy engine wrote it): the uncached read
     if (cpu_part != nullptr) m = m + strata::sys_load_mapped(cpu_part);
     /*
     DPCT1013:39: The rounding mode could not be specified and the generated code
@@ -880,17 +880,29 @@ void mx_combine_kernel(const CombArgs a) {
     }
     a.out[(size_t) t * a.out_stride + r] =
         combine(a.plan_w + t * 8, p, a.k,
-                // audit note: WRONG - the CPU-lane flags are host-mapped (resps): uncached reads
-                a.cpu_flag != nullptr && strata::sys_load((const volatile unsigned *)a.cpu_flag + t) != 0 ? a.cpu_part + (size_t) t * a.cpu_stride + r : nullptr,
+                // audit note: the CPU-lane flags are in device memory (the host's copy engine wrote them): a
+                // device-scope atomic is the read that sees a copy engine's write
+                a.cpu_flag != nullptr && strata::dev_load(a.cpu_flag + t) != 0 ? a.cpu_part + (size_t) t * a.cpu_stride + r : nullptr,
                 a.sh_out != nullptr ? a.sh_out[(size_t) t * a.n_embd + r] : 0.0f);
 }
 
-void mx_wait_kernel(const unsigned* p, unsigned v) {
+void mx_wait_kernel(const unsigned* p, unsigned v, uint32_t spin_max) {
     if (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2) !=
         0) return;
-    // audit note: WRONG - p is the host-written resps slot seq (host_malloc_polled): uncached read (spin bound untouched)
-    while (strata::sys_load(p) != v) {
+    // the answer's flag is in device memory (the host's copy engine wrote it): a device-scope atomic is the read
+    // that sees a copy engine's write (a plain read is served from the GPU's cache, so the host's store was never
+    // seen).  The wait is bounded (the same bound the token path's wait takes): an unbounded one that never sees
+    // its flag wedges the card (the driver resets the GT) instead of failing this window.
+    uint32_t reads = 0;
+    unsigned last = 0;
+    while (reads < spin_max) {
+        last = strata::dev_load(p);
+        ++reads;
+        if (last == v) break;
     }
+    // the window path's wait writes no record: the flag it spins on may be in host memory (the host's store) or
+    // in the card's memory (the host's copy engine wrote it there), and the two have different layouts.  Its bound is
+    // the same, and the engine's report names the site.
     /*
     DPCT1078:9: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2048,16 +2060,19 @@ bool win_experts(const x3::WinArgs &a, dpct::queue_ptr s) {
     q8_quant(a.h, (size_t) a.n_ff, a.T * 8, a.n_ff, sc->hq, sc->hd, s);   // (rows of picks not on the device: unused)
     if (mx) launch_groups<DownK>(m, a.n_embd, groups, a.T, s);
     else iq::down(ia, groups, a.T, s);
-    if (a.wait_ptr != nullptr) s->submit([&](sycl::handler &cgh) {
-      auto a_wait_ptr_ct0 = a.wait_ptr;
-      auto a_wait_val_ct1 = a.wait_val;
+    if (a.wait_ptr != nullptr) {
+        const uint32_t spin = strata::answer_spin_max();   // the bound the wait takes (read on the host)
+        s->submit([&](sycl::handler &cgh) {
+            auto a_wait_ptr_ct0 = a.wait_ptr;
+            auto a_wait_val_ct1 = a.wait_val;
 
-      cgh.parallel_for(
-          sycl::nd_range<3>(sycl::range<3>(1, 1, 32), sycl::range<3>(1, 1, 32)),
-          [=](sycl::nd_item<3> item_ct1) {
-            mx_wait_kernel(a_wait_ptr_ct0, a_wait_val_ct1);
-          });
-    });
+            cgh.parallel_for(
+                sycl::nd_range<3>(sycl::range<3>(1, 1, 32), sycl::range<3>(1, 1, 32)),
+                [=](sycl::nd_item<3> item_ct1) {
+                    mx_wait_kernel(a_wait_ptr_ct0, a_wait_val_ct1, spin);
+                });
+        });
+    }
     CombArgs c{};
     c.plan_ptr = a.plan_ptr;
     c.plan_w = a.plan_w;

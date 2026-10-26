@@ -481,6 +481,7 @@ struct Dev {
     dpct::event_ptr ev = nullptr;
     size_t free0 = 0, total = 0, weights = 0, experts = 0, caches = 0, scratch = 0;
     std::vector<void*> allocs;
+    std::vector<void*> host_allocs;   // the host-mapped memory of this device (freed with its own context)
     // a window's scratch, rows of up to kWin tokens (the routed experts' rows: kWin * kPicks)
     float *h = nullptr, *h2 = nullptr, *x = nullptr, *qr = nullptr, *q = nullptr, *kvr = nullptr, *ckr = nullptr,
           *cgr = nullptr, *latent = nullptr, *ikr = nullptr, *iq = nullptr, *iw = nullptr, *scores = nullptr,
@@ -506,6 +507,17 @@ struct Dev {
     // MoE's grouping scratch
     int grp = 0, mi = 0;
     unsigned ar_seq = 0;
+    // the decode path's mailbox, in device memory: the answer's slots (the flag the host's copy engine wrote and the
+    // wait's record), the CPU lane's part and its per-token flags, and the waits' records.  st2 is the queue the
+    // answer's copies go on: a copy on the queue that runs the waiting kernel would deadlock (the kernel waits for
+    // the copy, the copy waits for the kernel).
+    dpct::queue_ptr st2 = nullptr;
+    strata::AnsSlot* ans = nullptr;
+    strata::AnsSlot* ans_stage = nullptr;   // the host's copy of the slots (polled: the copy engine reads it)
+    strata::AnsRec* ans_rec = nullptr;       // the waits' records (host-mapped: the device writes them)
+    float* ans_part = nullptr;
+    int* ans_cpu = nullptr;
+    strata::SpinBuf* spin_buf = nullptr;
     unsigned* xcnt = nullptr;
     unsigned* hccnt = nullptr;   // [kWin] hc_mix_split's per-token block counters (zeroed at allocation, left zero)
     // the head group's members (the last layer's group): each its columns (split128 of V) of the head and the norms;
@@ -1002,12 +1014,20 @@ struct Model::Impl {
     // answers in resps with the CPU lane's part, and the device waits for the answer only before the expert sum
     Req* reqs = nullptr;
     Resp* resps = nullptr;
+    unsigned* answer_fault = nullptr;   // the card marks it when its wait for an answer ran to its bound
+    std::atomic<bool> faulted{false};   // the run ends: the card never saw an answer
+    std::string spins_report;           // the waits' last report (the same numbers are not printed twice)
     unsigned seq_issued = 0;
     std::atomic<int> layer_of[kRing];
     std::thread service;
     std::atomic<bool> quit{false};
     std::thread store_bg;   // the RAM store's fill beyond the first 48 GB, read after the model is ready (preload_store)
     bool sync_decode = std::getenv("DS4_SYNC") != nullptr;
+    // the answer's way to the card: the copy engine's hand-back (the payload and the flag go into the card's memory,
+    // the card's wait reads them there).  DS4_ANSWER_COPY=1 turns it on; the default keeps the answer in the polled
+    // mailbox, where the card's uncached read sees the host's store (measured on an Arc Pro B60, 2026-10-26: the copy
+    // engine's write into the card's memory is not seen by a slot the card has cached).
+    bool answer_copy = std::getenv("DS4_ANSWER_COPY") != nullptr && std::getenv("DS4_ANSWER_COPY")[0] == '1';
     // a window of one through moe_gate_up / moe_down (DS4_MOE_TOKEN=0: win_experts, whose down rows run
     // before the wait for the CPU lane - the same bits, no faster)
     bool moe_token_path = std::getenv("DS4_MOE_TOKEN") == nullptr || std::atoi(std::getenv("DS4_MOE_TOKEN")) != 0;
@@ -1336,6 +1356,7 @@ struct Model::Impl {
             dpct::select_device(d.id);
             for (void *p : d.allocs) DPCT_CHECK_ERROR(
                 dpct::dpct_free(p, dpct::get_in_order_queue()));
+            for (void *p : d.host_allocs) strata::host_free_polled(p, *d.st);   // (this device's own context)
             if (d.ev) dpct::destroy_event(d.ev);   // before its queue: the event belongs to it
             if (d.st) dpct::get_current_device().destroy_queue(d.st);
         }
@@ -2074,6 +2095,9 @@ struct Model::Impl {
             priority options.
             */
             CK(DPCT_CHECK_ERROR(d.st = dpct::get_current_device().create_queue()));
+            // the answer's copy queue: the payload and the flag go into the card's memory through it, so the card
+            // never has to see a host store (the copy engine's write is what the card's wait reads).
+            CK(DPCT_CHECK_ERROR(d.st2 = dpct::get_current_device().create_queue()));
             CK(DPCT_CHECK_ERROR(d.ev = new sycl::event()));
             if (!x3::prepare(d.st) || (pk.gguf && !gg::prepare(d.st))) {
                 err = "exl3 scratch on CUDA" + std::to_string(d.id);
@@ -2086,6 +2110,17 @@ struct Model::Impl {
             */
             // sysman reads the card's free bytes where dpct's aspect query reports 0 (#1545)
             strata::dsv41::get_memory_size(dpct::get_current_device(), d.free0, d.total);
+        }
+        // the word the card marks when its wait for an answer ran to its bound (the host ends the run then): it is in
+        // polled host memory, so the card's uncached write reaches the host.
+        {
+            void* m = nullptr;
+            if (DPCT_CHECK_ERROR(m = (void *)strata::host_malloc_polled(sizeof(unsigned), dpct::get_in_order_queue())) != 0) {
+                err = "host-mapped memory for the decode path's wait fault";
+                return false;
+            }
+            host_allocs.push_back(m);
+            answer_fault = (unsigned*) m;
         }
         // the groups' width: o.tp, less while the experts' blocks do not split in it (a member takes n_ff / tp of each
         // expert: the down's inputs in whole blocks - a GGUF's 256-value types split n_ff 2304 in 1, 3 or 9 parts)
@@ -2513,6 +2548,11 @@ struct Model::Impl {
                       dalloc(d, d.ridx, W * kPicks, err) && dalloc(d, d.moe_out, W * D, err) &&
                       dalloc(d, d.sg, W * g.ff, err) && dalloc(d, d.su, W * g.ff, err) && dalloc(d, d.sh, W * g.ff, err) &&
                       dalloc(d, d.sh_out, W * D, err) && dalloc(d, d.cpu_part, W * D, err) &&
+                      // the decode path's mailbox in device memory: the answer's slots (the flag the host's copy
+                      // engine writes and the wait's record), the CPU lane's part (a token's row D apart) and its
+                      // per-token flags, and the waits' records.
+                      dalloc(d, d.ans, kRing, err) && dalloc(d, d.ans_part, (size_t) kRing * kWin * D, err) &&
+                      dalloc(d, d.ans_cpu, (size_t) kRing * kWin, err) && dalloc(d, d.spin_buf, 1, err) &&
                       dalloc(d, d.freqs_win, 64, err) && dalloc(d, d.freqs_comp, 64, err) &&
                       dalloc(d, d.topk, W * topk_stride(), err) && dalloc(d, d.cand, W * cand_stride(), err) &&
                       dalloc(d, d.tok, 16, err) && dalloc(d, d.emb_rows, W * D, err) &&
@@ -2520,6 +2560,32 @@ struct Model::Impl {
                       dalloc(d, d.xg, P * g.ff, err) && dalloc(d, d.xu, P * g.ff, err) && dalloc(d, d.xhh, P * g.ff, err) &&
                       dalloc(d, d.ed, P * D, err) && dalloc(d, d.plan_ptr, P, err);
             if (!ok) return false;
+            // every answer slot marks the same host word when its wait runs to its bound (the host ends the run then);
+            // the host's copy of the slots is what the copy engine reads (the copy covers the whole cache line, so
+            // the slot's bytes travel together)
+            {
+                void* m = nullptr;
+                if (DPCT_CHECK_ERROR(m = (void *)strata::host_malloc_polled(sizeof(strata::AnsSlot) * kRing, *d.st)) != 0) {
+                    err = "host-mapped memory for the decode path's answer slots";
+                    return false;
+                }
+                d.host_allocs.push_back(m);
+                d.ans_stage = (strata::AnsSlot*) m;
+                std::memset(m, 0, sizeof(strata::AnsSlot) * kRing);
+                void* mr = nullptr;
+                if (DPCT_CHECK_ERROR(mr = (void *)strata::host_malloc_polled(sizeof(strata::AnsRec) * kRing, *d.st)) != 0) {
+                    err = "host-mapped memory for the decode path's wait records";
+                    return false;
+                }
+                d.host_allocs.push_back(mr);
+                d.ans_rec = (strata::AnsRec*) mr;
+                std::memset(mr, 0, sizeof(strata::AnsRec) * kRing);
+                for (int i = 0; i < kRing; ++i) {
+                    d.ans_stage[i].host_fault = answer_fault;
+                    d.ans_stage[i].host_rec = d.ans_rec + i;
+                }
+                CK(DPCT_CHECK_ERROR(d.st->memcpy(d.ans, d.ans_stage, sizeof(strata::AnsSlot) * kRing)));
+            }
             d.attn_scr.max_t = kAttnScratchT;
             d.attn_scr.cap = (int) topk_stride();
             if (!dalloc(d, d.attn_scr.rows, (size_t) kAttnScratchT * topk_stride() * g.hd, err)) return false;
@@ -3067,7 +3133,12 @@ struct Model::Impl {
             const int core = !cores.empty() && !cores[0].empty() ? cores[0][0] : -1;
             service = std::thread([this, core] {
                 if (core >= 0) pin_self(core);
-                serve_lane();
+                try {
+                    serve_lane();
+                } catch (const std::exception& e) {
+                    std::fprintf(stderr, "ds4: the answer's service thread failed: %s\n", e.what());
+                    faulted = true;
+                }
             });
             if (ahead_mode > 0) pf_th = std::thread([this] { prefetch_loop(); });
         }
@@ -7505,6 +7576,11 @@ struct Model::Impl {
         auto last = std::chrono::steady_clock::now();
         std::vector<Ent> ents;
         while (!quit.load(std::memory_order_relaxed)) {
+            if (answer_fault != nullptr && *(volatile unsigned*) answer_fault != 0) {   // the card's wait ran to its bound
+                std::fprintf(stderr, "ds4: the card never saw an answer (its wait ran to its bound): the run ends here\n");
+                faulted = true;
+                break;
+            }
             Req& r = reqs[next % kRing];
             if (*(volatile unsigned*) &r.seq != next) {   // the ring: an uncached page, so the GPU's store is seen
                 cpu_relax();
@@ -7658,11 +7734,101 @@ struct Model::Impl {
                     st.cpu_experts += nslots;
                 }
             }
-            std::atomic_thread_fence(std::memory_order_release);
-            *(volatile unsigned*) &rp.seq = next;   // the answer: the release fence above orders the payload before it
+            // the answer: the copy engine takes the payload and the flags into the card's memory, and the card spins
+            // on the flag there (a device-scope atomic is the read that sees a copy engine's write - a plain read of
+            // host memory never sees the host's store).  The copies go on the device's own second queue: a copy on the
+            // queue that runs the waiting kernel would deadlock (the kernel waits for the copy, the copy waits for
+            // the kernel).  Ordered on that queue: the payload first, then the flag - the flag is what makes the
+            // payload visible.
+            const int slot = next % kRing;
+            Dev* dv = (li >= 0 && li < (int) L.size()) ? &devs[(size_t) L[(size_t) li].dev] : nullptr;
+            if (answer_copy && dv != nullptr && dv->ans != nullptr) {
+                dpct::queue_ptr q2 = dv->st2;
+                const int D = g.dim;
+                rp.seq = next;   // the answer's seq (the card reads the flag in its own memory now)
+                dv->ans_stage[slot].seq = next;   // the slot's flag (the copy takes the whole slot)
+                auto copy = [&](void* dst, const void* src, size_t bytes) {
+                    if (DPCT_CHECK_ERROR(q2->memcpy(dst, src, bytes)) != 0) {
+                        std::fprintf(stderr, "ds4: the answer's copy into the card's memory failed\n");
+                        faulted = true;
+                    }
+                };
+                copy(dv->ans_cpu + (size_t) slot * kWin, rp.cpu, (size_t) T * sizeof(int));
+                for (int t = 0; t < T; ++t)
+                    if (rp.cpu[t])
+                        copy(dv->ans_part + ((size_t) slot * kWin + t) * D, rp.part[t], (size_t) D * sizeof(float));
+                copy(dv->ans + slot, dv->ans_stage + slot, sizeof(strata::AnsSlot));
+                // the copies have to be in the card's memory before the card's wait reads the flag: the queue's
+                // command list is submitted here (a wait on it), not whenever the runtime feels like it.
+                if (DPCT_CHECK_ERROR(q2->wait()) != 0) {
+                    std::fprintf(stderr, "ds4: the answer's copy into the card's memory failed\n");
+                    faulted = true;
+                }
+            } else {
+                // the default: the answer stays in the polled mailbox, where the card's uncached read sees the host's
+                // store (measured: the copy engine's write into the card's memory is not seen by a cached slot)
+                std::atomic_thread_fence(std::memory_order_release);
+                *(volatile unsigned*) &rp.seq = next;   // the answer: the release fence above orders the payload before it
+            }
             ++next;
             last = std::chrono::steady_clock::now();
         }
+    }
+
+    // the waits' records: what the card's waits saw (the reads they made, the last value they read).  The answer's
+    // slots and the hand-off's records are in device memory, so the host reads them back.
+    void report_spins() {
+        std::string rep;
+        char b[512];
+        for (Dev& d : devs) {
+            if (d.ans_rec == nullptr) continue;
+            int waits = 0, at_bound = 0, token_waits = 0, win_waits = 0;
+            unsigned most = 0, last = 0, target = 0;
+            for (int i = 0; i < kRing; ++i) {
+                const strata::AnsRec& rec = d.ans_rec[i];
+                if (rec.reads == 0) continue;
+                ++waits;
+                if (rec.site == strata::kSpinAnswerWin) ++win_waits; else ++token_waits;
+                at_bound += rec.fault ? 1 : 0;
+                if (rec.reads > most) most = rec.reads;
+                last = rec.last;
+            }
+            std::snprintf(b, sizeof b,
+                          "ds4: the card's waits for the answer (device %d): %d waits (the token path %d, the window path %d), "
+                          "the most reads %u, the last value read %u, %d hit the bound\n",
+                          d.id, waits, token_waits, win_waits, most, last, at_bound);
+            rep += b;
+        }
+        for (Dev& d : devs) {
+            if (d.spin_buf == nullptr) continue;
+            dpct::select_device(d.id);
+            strata::SpinBuf buf;
+            if (DPCT_CHECK_ERROR(d.st->memcpy(&buf, d.spin_buf, sizeof(buf))) != 0) continue;
+            d.st->wait();
+            int waits = 0;
+            unsigned most = 0, last = 0;
+            for (int i = 0; i < strata::kSpinRecs; ++i) {
+                if (buf.rec[i].count == 0) continue;
+                ++waits;
+                if (buf.rec[i].count > most) most = buf.rec[i].count;
+                last = buf.rec[i].last;
+            }
+            std::snprintf(b, sizeof b,
+                          "ds4: the hand-off's waits (device %d): %d waits, the most reads %u, the last value read %u\n",
+                          d.id, waits, most, last);
+            rep += b;
+        }
+        if (prof_on && st.prof_tokens > 0) {   // DS4_PROF: the GPU's time a decoded token by stage
+            std::snprintf(b, sizeof b,
+                          "ds4: the GPU's time by stage (DS4_PROF, %lld tokens): between the layers %.2f ms, the attention %.2f, "
+                          "the routing %.2f, the experts' gate/up %.2f, the wait for the CPU lane %.2f, the down %.2f\n",
+                          (long long) st.prof_tokens, st.prof_ms[0], st.prof_ms[1], st.prof_ms[2], st.prof_ms[3], st.prof_ms[4],
+                          st.prof_ms[5]);
+            rep += b;
+        }
+        if (rep.empty() || rep == spins_report) return;   // (the same numbers as last time)
+        spins_report = rep;
+        std::fprintf(stderr, "%s", rep.c_str());
     }
 
     // a GGUF's matrices (BF16 / MXFP4) to its own kernels, EXL3 ones to x3's
@@ -8530,7 +8696,7 @@ struct Model::Impl {
                 if (mi == 0 && sr.remote) {   // the new rows for the other groups' readers (slot k % 2, once
                     const int slot = wp.k % 2;  // they took the chunk before last's)
                     if (wp.k >= 2)
-                        for (int r : sr.readers) wait_flags(sr.x_ack + ((size_t) slot * devs.size() + r) * 32, 1, 32, wp.win - 2, s);
+                        for (int r : sr.readers) wait_flags(sr.x_ack + ((size_t) slot * devs.size() + r) * 32, 1, 32, wp.win - 2, d.spin_buf, s);
                     Xfer x;
                     x.src[0] = fc.pdst;
                     x.dst[0] = sr.stage(slot);
@@ -8589,7 +8755,7 @@ struct Model::Impl {
             x3::rows_f16(c.oa, OG * g.o_lora, nullptr, na, OG * g.o_lora, c.oa16, s);
             if (!gemm(d, c, l.wo_b, c.oa16, OG * g.o_lora, na, c.acc + (size_t) a0 * D, D, 0.0f, err)) return false;
         }
-        if (nm > 1) allreduce(c.acc, T * D, ab, mi, ++c.arb_seq, d.xcnt, s);
+        if (nm > 1) allreduce(c.acc, T * D, ab, mi, ++c.arb_seq, d.xcnt, d.spin_buf, s);
         hc_post_inplace(c.acc, c.h, c.a_post, c.a_comb, D, H, T, s);
         prof_mark(d, 1);
         // the MoE
@@ -8762,7 +8928,7 @@ struct Model::Impl {
         }
         if (c.flow) {
             if (!flow_layer(d, c, L0, mi, wp.k, T, b, err)) return false;
-            if (nm > 1) allreduce(c.acc, T * D, ab, mi, ++c.arb_seq, d.xcnt, s);
+            if (nm > 1) allreduce(c.acc, T * D, ab, mi, ++c.arb_seq, d.xcnt, d.spin_buf, s);
             hc_post_inplace(c.acc, c.h, c.f_post, c.f_comb, D, H, T, s);
             /*
             DPCT1124:201: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -8802,7 +8968,7 @@ struct Model::Impl {
             v_done = v_to;
         }
         if (!run_set(d, c, l, l.vram_base, 0, unit(l), c.bounds, b.data(), v_done, L0.n_slots, T, err)) return false;
-        if (nm > 1) allreduce(c.acc, T * D, ab, mi, ++c.arb_seq, d.xcnt, s);
+        if (nm > 1) allreduce(c.acc, T * D, ab, mi, ++c.arb_seq, d.xcnt, d.spin_buf, s);
         hc_post_inplace(c.acc, c.h, c.f_post, c.f_comb, D, H, T, s);
         /*
         DPCT1124:203: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -9200,7 +9366,7 @@ struct Model::Impl {
                         init_pre(c.pre, T, s);
                     } else {
                         Chunk& a = *chunks[(size_t) L[(size_t) il - 1].dev];
-                        xfer_get(chunk_xfer(a.hand[slot], c, T, false), a.hand_flag[slot], wp.win, s);
+                        xfer_get(chunk_xfer(a.hand[slot], c, T, false), a.hand_flag[slot], wp.win, d.spin_buf, s);
                         set_flag(a.hand_ack + ((size_t) slot * 8 + mi) * 32, wp.win, s);
                     }
                 }
@@ -9222,7 +9388,7 @@ struct Model::Impl {
                         x.dst[x.n] = sr.ik[(size_t) di] + (size_t) g_first * ik_rb();
                         x.bytes[x.n++] = (size_t) ng * ik_rb();
                     }
-                    if (x.n > 0) xfer_get(x, sr.flag(slot), wp.win, s);
+                    if (x.n > 0) xfer_get(x, sr.flag(slot), wp.win, d.spin_buf, s);
                     set_flag(sr.x_ack + ((size_t) slot * devs.size() + di) * 32, wp.win, s);   // (taken, or none)
                 }
                 if (last_k && mi == 0 && g.n_mtp > 0) {   // the drafter's taps: the last chunk's last rows
@@ -9250,7 +9416,7 @@ struct Model::Impl {
                 const bool last = il + 1 == g.nl || L[(size_t) il + 1].grp != L0.grp;
                 if (last && mi == 0 && il + 1 < g.nl) {   // the hand-off, once the next group took the chunk before last
                     const int nnext = L[(size_t) il + 1].nm;
-                    if (k >= 2) wait_flags(c.hand_ack + (size_t) slot * 8 * 32, nnext, 32, wp.win - 2, s);
+                    if (k >= 2) wait_flags(c.hand_ack + (size_t) slot * 8 * 32, nnext, 32, wp.win - 2, d.spin_buf, s);
                     xfer_put(chunk_xfer(c.hand[slot], c, T, true), c.hand_flag[slot], wp.win, d.xcnt, s);
                 }
             }
@@ -10136,7 +10302,7 @@ struct Model::Impl {
         auto stage = [&](int m) { return G.lg_stage + ((size_t) slot * (nm - 1) + (m - 1)) * kWin * Vmax; };
         auto flag = [&](int m) { return G.lg_flag + ((size_t) slot * (nm - 1) + (m - 1)) * 32; };
         if (mi > 0) {
-            if (seq > 2) wait_flags(G.lg_ack + (size_t) slot * 32, 1, 32, seq - 2, d.st);
+            if (seq > 2) wait_flags(G.lg_ack + (size_t) slot * 32, 1, 32, seq - 2, d.spin_buf, d.st);
             Xfer x;
             x.n = 1;
             x.src[0] = d.logits_part;
@@ -10153,7 +10319,7 @@ struct Model::Impl {
             x.src[0] = stage(m);
             x.dst[0] = d.logits_part;
             x.bytes[0] = (size_t) rows * mn * 4;
-            xfer_get(x, flag(m), seq, d.st);
+            xfer_get(x, flag(m), seq, d.spin_buf, d.st);
             /*
             DPCT1124:234: cudaMemcpy2DAsync is migrated to asynchronous memcpy
             API. While the origin API might be synchronous, it depends on the
@@ -10217,6 +10383,10 @@ struct Model::Impl {
 
     bool forward(const int *tk, int T, int logits_rows, std::string &err,
                  int seed_rows = -1) try {
+        if (faulted) {   // the card never saw an answer: the run cannot continue
+            err = "the card never saw an answer (its wait for one ran to its bound)";
+            return false;
+        }
         if (T < 1 || T > kWin) {
             err = "a window of " + std::to_string(T) + " tokens";
             return false;
@@ -10495,7 +10665,7 @@ struct Model::Impl {
                     init_pre(d.pre, T, s);
                 } else {
                     const Dev& a = devs[(size_t) L[(size_t) il - 1].dev];
-                    xfer_get(hand_xfer(a.hand, d, T, false), a.hand_flag, wp.win, s);
+                    xfer_get(hand_xfer(a.hand, d, T, false), a.hand_flag, wp.win, d.spin_buf, s);
                 }
             }
             // the compressed KV / index keys another group's source layer wrote this window
@@ -10518,7 +10688,7 @@ struct Model::Impl {
                     x.dst[x.n] = sr.ik[(size_t) di] + (size_t) g_first * ik_rb();
                     x.bytes[x.n++] = (size_t) ng * ik_rb();
                 }
-                if (x.n > 0) xfer_get(x, sr.x_flag, wp.win, s);
+                if (x.n > 0) xfer_get(x, sr.x_flag, wp.win, d.spin_buf, s);
             }
             if (mi == 0 && !tap(d, il, T, err)) return false;
             if (!layer(L0, mi, p0, T, wp, err)) return false;
@@ -10884,7 +11054,7 @@ struct Model::Impl {
         } else CK(DPCT_CHECK_ERROR(s->memset(
             d.ao, 0,
             (size_t)T * D * sizeof(*d.ao)))); // (no heads: nothing to add)
-        if (nm > 1) allreduce(d.ao, T * D, ag, mi, ++d.ar_seq, d.xcnt, s);
+        if (nm > 1) allreduce(d.ao, T * D, ag, mi, ++d.ar_seq, d.xcnt, d.spin_buf, s);
         hc_post(d.ao, d.h, d.a_post, d.a_comb, D, H, T, d.h2, s);
         std::swap(d.h, d.h2);
         if (dump_l != nullptr && mi == 0) dump_layer(d, d.h, 1000 + l.il, p0, T);   // (DS4_DUMP_L: after the attention)
@@ -10920,12 +11090,15 @@ struct Model::Impl {
             if (!mv(d, {job(l.s2, d.sh, d.sh_out, T, FF, D)}, err)) return false;
             prof_mark(d, 2);
             const x3::ExpertLayout& lay = nm > 1 ? l.hlay : l.lay;
+            // the answer's way to the card: the copy engine's hand-back (DS4_ANSWER_COPY=1) or the host's own store
+            // in the polled mailbox (the default: the card's uncached read sees that one)
+            const unsigned* ans_flag = answer_copy ? &d.ans[slot].seq : &resps[slot].seq;
             if (T == 1 && moe_token_path) {
                 x3::MoeArgs ma;
                 ma.plan_ptr = d.plan_ptr;
                 ma.plan_w = d.rw;
-                ma.cpu_part = lead ? resps[slot].part[0] : nullptr;
-                ma.cpu_flag = lead ? &resps[slot].cpu[0] : nullptr;
+                ma.cpu_part = lead ? (answer_copy ? d.ans_part + (size_t) slot * kWin * D : resps[slot].part[0]) : nullptr;
+                ma.cpu_flag = lead ? (answer_copy ? d.ans_cpu + (size_t) slot * kWin : &resps[slot].cpu[0]) : nullptr;
                 ma.lay = lay;
                 ma.k = l.k_exp;
                 ma.n_embd = D;
@@ -10937,7 +11110,7 @@ struct Model::Impl {
                 if (mx) gg::moe_gate_up(ma, d.x, d.xg, s);
                 else x3::moe_gate_up(ma, d.x, d.xg, s);
                 prof_mark(d, 3);
-                if (lead) wait_seq(&resps[slot].seq, sq, s);
+                if (lead) wait_seq(ans_flag, sq, d.ans_rec + slot, answer_fault, s);
                 prof_mark(d, 4);
                 if (mx) gg::moe_down(ma, d.xg, d.sh_out, d.moe_out, s);
                 else x3::moe_down(ma, d.xg, d.sh_out, d.moe_out, s);
@@ -10958,10 +11131,10 @@ struct Model::Impl {
                 wa.n_groups = d.n_groups;
                 wa.plan_ptr = d.plan_ptr;
                 wa.plan_w = d.rw;
-                wa.cpu_part = lead ? &resps[slot].part[0][0] : nullptr;
-                wa.cpu_stride = kMaxDim;
-                wa.cpu_flag = lead ? resps[slot].cpu : nullptr;
-                wa.wait_ptr = lead ? &resps[slot].seq : nullptr;
+                wa.cpu_part = lead ? (answer_copy ? d.ans_part + (size_t) slot * kWin * D : &resps[slot].part[0][0]) : nullptr;
+                wa.cpu_stride = answer_copy ? D : kMaxDim;
+                wa.cpu_flag = lead ? (answer_copy ? d.ans_cpu + (size_t) slot * kWin : resps[slot].cpu) : nullptr;
+                wa.wait_ptr = lead ? ans_flag : nullptr;
                 wa.wait_val = sq;
                 wa.x = d.x;
                 wa.x_stride = (size_t) D;
@@ -10982,7 +11155,7 @@ struct Model::Impl {
                 }
             }
             if (lead) st.experts += (int64_t) T * l.k_exp;
-            if (nm > 1) allreduce(d.moe_out, T * D, ag, mi, ++d.ar_seq, d.xcnt, s);
+            if (nm > 1) allreduce(d.moe_out, T * D, ag, mi, ++d.ar_seq, d.xcnt, d.spin_buf, s);
             hc_post(d.moe_out, d.h, d.f_post, d.f_comb, D, H, T, d.h2, s);
             std::swap(d.h, d.h2);
             /*
@@ -11339,6 +11512,7 @@ std::string Model::slot_identity() const { return p_->slot_identity(); }
 void Model::save_profile() const { p_->save_profile(); }
 const Stats& Model::stats() const {
     Stats& st = p_->st;
+    p_->report_spins();   // the card's waits: the reads they made and the last value they read
     if (p_->store) {   // (the store keeps its own counters: copied in when asked)
         const ExpertStore& x = *p_->store;
         st.store_hits = x.stats().hits.load();
