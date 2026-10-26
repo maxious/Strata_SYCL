@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <vector>
 #include <cstdio>
 #include <time.h>
 
@@ -1981,13 +1982,12 @@ void combine_kernel(const float* __restrict__ ed, const float* __restrict__ cpu,
 void route_publish_kernel(const float* __restrict__ logits,
                                                             const float* __restrict__ bias, int n, int k,
                                                             float route_scale, const unsigned long long* __restrict__ vram,
-                                                            const float* __restrict__ x, int dim, int* idx, float* w,
-                                                            unsigned long long* plan_ptr, Req* req,
+                                                            int* idx, float* w,
+                                                            unsigned long long* plan_ptr,
                                                             const float* __restrict__ bias_vl, unsigned vl,
                                                             float *sc, float *bs,
                                                             float *bv, int *bi,
-                                                            int *pick,
-                                                            int &on_cpu) {
+                                                            int *pick) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 
     const int t = item_ct1.get_group(2);
@@ -2054,39 +2054,22 @@ void route_publish_kernel(const float* __restrict__ logits,
     if (item_ct1.get_local_id(2) == 0) {
         float s = 0.0f;
         for (int r = 0; r < k; ++r) s += sc[pick[r]];
-        int cpu = 0;
         for (int r = 0; r < k; ++r) {
             const float wv = sc[pick[r]] / (s + 1e-20f) * route_scale;
             idx[(size_t) t * kPicks + r] = pick[r];
             w[(size_t) t * kPicks + r] = wv;
             plan_ptr[(size_t) t * kPicks + r] = vram[pick[r]];
-            cpu |= vram[pick[r]] == 0ull;
-            if (req != nullptr) {
-                req->ids[t][r] = pick[r];
-                req->w[t][r] = wv;
-            }
         }
-        on_cpu = cpu;
     }
-    // the token's FFN input to the host only where the CPU lane reads it (a pick of its on the CPU lane): each row
-    // 20 KB over PCIe, where most windows have none
-    /*
-    DPCT1065:111: Consider replacing sycl::nd_item::barrier() with
-    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
-    performance if there is no access to global memory.
-    */
-    item_ct1.barrier();
-    if (req != nullptr && on_cpu)
-        for (int i = item_ct1.get_local_id(2); i < dim;
-             i += item_ct1.get_local_range(2))
-            req->x[t][i] = x[(size_t)t * dim + i];
+    // (the mailbox is published after this kernel by publish_payload_kernel on q2 - the plain payload stores of
+    // kernels/cuda/elementwise.dp.cpp's doorbell_publish design - reading the picks this leaves in idx / w)
 }
 
 // a later layer's m likely picks (route_kernel's choice from its logits) into req->ahead[t][off ..)
 void route_ahead_kernel(const float* __restrict__ logits,
                                                           const float* __restrict__ bias, int n, int m, Req* req,
                                                           int off, float *bs,
-                                                          float *bv, int *bi) {
+                                                          float *bv, int *bi, bool plain) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 
     const int t = item_ct1.get_group(2);
@@ -2134,7 +2117,7 @@ void route_ahead_kernel(const float* __restrict__ logits,
             int ix = 0x7fffffff;
             for (int q = 0; q < (int)(item_ct1.get_local_range(2) >> 5); ++q)
                 if (bv[q] > b || (bv[q] == b && bi[q] < ix)) b = bv[q], ix = bi[q];
-            req->ahead[t][off + r] = ix < n ? ix : -1;
+                        strata::sys_store_mapped(plain, &req->ahead[t][off + r], ix < n ? ix : -1);
             if (ix < n) bs[ix] = -FLT_MAX;
         }
         /*
@@ -2150,18 +2133,38 @@ void route_ahead_kernel(const float* __restrict__ logits,
     }
 }
 
-void publish_kernel(Req* req, int T, unsigned seq, int na0, int na1) {
+// The mailbox publish, the design of kernels/cuda/elementwise.dp.cpp's doorbell_publish: the payload first - the
+// routed ids and their weights (the picks route_publish_kernel left in idx / w), the request's shape, and the FFN
+// input rows of the tokens that took a CPU-lane expert - through strata::sys_store_mapped(plain, ...), the plain
+// payload store (uncached on xe so the host reads what the card wrote, an ordinary store on i915; sycl_doorbell.hpp).
+void publish_payload_kernel(Req* req, int T, int k, int dim, const int* idx, const float* w, const float* x,
+                            const unsigned long long* vram, int na0, int na1, bool plain) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    const int t = item_ct1.get_group(2);
+    const int lane = (int) item_ct1.get_local_id(2), nt = (int) item_ct1.get_local_range(2);
+    for (int r = lane; r < k; r += nt) {
+        strata::sys_store_mapped(plain, &req->ids[t][r], idx[(size_t) t * kPicks + r]);
+        strata::sys_store_mapped(plain, &req->w[t][r], w[(size_t) t * kPicks + r]);
+    }
+    // the token's FFN input to the host only where the CPU lane reads it (a pick of its on the CPU lane): each row
+    // 20 KB over PCIe, where most windows have none
+    int cpu = 0;
+    for (int r = 0; r < k; ++r) cpu |= vram[(size_t) idx[(size_t) t * kPicks + r]] == 0ull;
+    if (cpu)
+        for (int i = lane; i < dim; i += nt)
+            strata::sys_store_mapped(plain, &req->x[t][i], x[(size_t) t * dim + i]);
+    if (t == 0 && lane == 0) {
+        strata::sys_store_mapped(plain, &req->na[0], na0);
+        strata::sys_store_mapped(plain, &req->na[1], na1);
+        strata::sys_store_mapped(plain, &req->T, T);
+    }
+}
+
+// The completion flag: the second submission on the same in-order queue (q2), after publish_payload_kernel. Its own
+// cache line (Req::seq), the hinted store, written last - a host that sees the flag is guaranteed to see the payload.
+void publish_kernel(Req* req, unsigned seq) {
     /*
     DPCT1078:37: Consider replacing memory_order::acq_rel with
-    memory_order::seq_cst for correctness if strong memory order restrictions
-    are needed.
-    */
-    sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
-    req->na[0] = na0;
-    req->na[1] = na1;
-    req->T = T;
-    /*
-    DPCT1078:38: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
@@ -2892,6 +2895,22 @@ catch (sycl::exception const &exc) {
 }
 }  // namespace
 
+namespace {
+// the second in-order queue (q2) the mailbox publish runs on: publish_payload_kernel first, publish_kernel (the
+// flag) second. One per device, created on demand, never freed (as the codebook statics).
+dpct::queue_ptr publish_queue(dpct::queue_ptr s) {
+    static std::mutex mu;
+    static std::vector<std::pair<sycl::device, dpct::queue_ptr>> q2;   // (sycl::device has == but no <)
+    std::lock_guard<std::mutex> lk(mu);
+    for (auto& e : q2)
+        if (e.first == s->get_device()) return e.second;
+    dpct::queue_ptr q = new sycl::queue(s->get_context(), s->get_device(),
+                                        sycl::property_list{sycl::property::queue::in_order{}});
+    q2.push_back({s->get_device(), q});
+    return q;
+}
+}  // namespace
+
 void route_publish(const float *logits, const float *bias, int n, int k, int T,
                    float route_scale, const unsigned long long *vram,
                    const float *x, int dim, int *idx, float *w,
@@ -2903,13 +2922,13 @@ void route_publish(const float *logits, const float *bias, int n, int k, int T,
     limit. To get the device limit, query info::device::max_work_group_size.
     Adjust the work-group size if needed.
     */
-    s->submit([&](sycl::handler &cgh) {
+    const bool plain = strata::doorbell_plain_payload();
+    sycl::event routed = s->submit([&](sycl::handler &cgh) {
         sycl::local_accessor<float, 1> sc_acc_ct1(sycl::range<1>(1024), cgh);
         sycl::local_accessor<float, 1> bs_acc_ct1(sycl::range<1>(1024), cgh);
         sycl::local_accessor<float, 1> bv_acc_ct1(sycl::range<1>(32), cgh);
         sycl::local_accessor<int, 1> bi_acc_ct1(sycl::range<1>(32), cgh);
         sycl::local_accessor<int, 1> pick_acc_ct1(sycl::range<1>(16), cgh);
-        sycl::local_accessor<int, 0> on_cpu_acc_ct1(cgh);
 
         auto vl_bias_vl_nullptr_ct12 = vl != 0 ? bias_vl : nullptr;
 
@@ -2919,8 +2938,8 @@ void route_publish(const float *logits, const float *bias, int n, int k, int T,
                               sycl::range<3>(1, 1, 512)),
             [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] {
                 route_publish_kernel(
-                    logits, bias, n, k, route_scale, vram, x, dim, idx, w,
-                    plan_ptr, req, vl_bias_vl_nullptr_ct12, vl,
+                    logits, bias, n, k, route_scale, vram, idx, w,
+                    plan_ptr, vl_bias_vl_nullptr_ct12, vl,
                     sc_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
                         .get(),
                     bs_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
@@ -2930,18 +2949,39 @@ void route_publish(const float *logits, const float *bias, int n, int k, int T,
                     bi_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
                         .get(),
                     pick_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
-                        .get(),
-                    on_cpu_acc_ct1);
+                        .get());
             });
     });
-        if (req != nullptr) s->parallel_for(
-            sycl::nd_range<3>(sycl::range<3>(1, 1, 1), sycl::range<3>(1, 1, 1)),
-            [=](sycl::nd_item<3> item_ct1) {
-                publish_kernel(req, T, seq, na0, na1);
-            });
+    if (req != nullptr) {
+        // the mailbox publish on the second in-order queue (q2), the design of kernels/cuda/elementwise.dp.cpp's
+        // doorbell_publish: publish_payload_kernel first (the plain payload stores of the ids, weights and FFN
+        // rows), publish_kernel second (the completion flag, its own cache line). q2 is in order and the payload
+        // submission waits on this kernel's event, so a host that sees the flag is guaranteed to see the payload.
+        dpct::queue_ptr q2 = publish_queue(s);
+        sycl::event payload = q2->submit([&](sycl::handler &cgh) {
+            cgh.depends_on(routed);
+            cgh.parallel_for(
+                sycl::nd_range<3>(sycl::range<3>(1, 1, T) *
+                                      sycl::range<3>(1, 1, 512),
+                                  sycl::range<3>(1, 1, 512)),
+                [=](sycl::nd_item<3> item_ct1) {
+                    publish_payload_kernel(req, T, k, dim, idx, w, x, vram, na0, na1, plain);
+                });
+        });
+        // the queue's later work may reuse x / idx / w only once the publish has read them
+        s->ext_oneapi_submit_barrier({payload});
+        q2->submit([&](sycl::handler &cgh) {
+            cgh.parallel_for(
+                sycl::nd_range<3>(sycl::range<3>(1, 1, 1), sycl::range<3>(1, 1, 1)),
+                [=](sycl::nd_item<3> item_ct1) {
+                    publish_kernel(req, seq);
+                });
+        });
+    }
 }
 void route_ahead(const float *logits, const float *bias, int n, int m, int T,
                  Req *req, int off, dpct::queue_ptr s) {
+    const bool plain = strata::doorbell_plain_payload();
     if (req != nullptr && m > 0 && T > 0 && n <= 1024 && off + m <= kAhead)
         /*
         DPCT1049:54: The work-group size passed to the SYCL kernel may exceed
@@ -2967,7 +3007,7 @@ void route_ahead(const float *logits, const float *bias, int n, int m, int T,
                         bv_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
                             .get(),
                         bi_acc_ct1.get_multi_ptr<sycl::access::decorated::no>()
-                            .get());
+                            .get(), plain);
                 });
         });
 }
