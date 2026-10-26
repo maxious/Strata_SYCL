@@ -293,12 +293,23 @@ if(STRATA_SYCL_DSV41)
   if(STRATA_SYCL_DSV41_EXE)
     add_executable(strata-dsv41 ${STRATA_ROOT}/src/dsv41/ds4_main.cpp ${STRATA_ROOT}/src/dsv41/ds4_packinfo.cpp
                                  ${STRATA_ROOT}/src/dsv41/ds4_gguf_cpu.cpp ${STRATA_ROOT}/src/dsv41/ds4_iq_cpu.cpp
-                                 ${STRATA_ROOT}/src/dsv41/ds4_tq_cpu.cpp ${STRATA_ROOT}/src/dsv41/ds4_gg_cpu.cpp)
-    target_include_directories(strata-dsv41 PRIVATE ${STRATA_ROOT}/src/dsv41 ${STRATA_ROOT}/third_party/ggml
+                                 ${STRATA_ROOT}/src/dsv41/ds4_tq_cpu.cpp ${STRATA_ROOT}/src/dsv41/ds4_gg_cpu.cpp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/ds4_model.dp.cpp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/ds4_kernels.dp.cpp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/ds4_vision.dp.cpp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/vendor/exl3.dp.cpp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/vendor/exl3_legacy.dp.cpp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/vendor/moe_win.dp.cpp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/vendor/sampler.dp.cpp
+                                 ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/vendor/exl3_cpu.cpp)
+    target_include_directories(strata-dsv41 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                  ${STRATA_ROOT}/src/dsv41 ${STRATA_ROOT}/third_party/ggml
                                                   ${STRATA_ROOT}/include ${CMAKE_CURRENT_SOURCE_DIR}/include/compat
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
-    target_compile_definitions(strata-dsv41 PRIVATE STRATA_VERSION="${PROJECT_VERSION}")
-    target_link_libraries(strata-dsv41 PRIVATE strata_dsv41)
+    target_compile_definitions(strata-dsv41 PRIVATE STRATA_VERSION="${PROJECT_VERSION}" STRATA_DSV41_TQ_CPU=1)
+    target_compile_options(strata-dsv41 PRIVATE -qmkl=sequential)
+    target_link_options(strata-dsv41 PRIVATE -qmkl=sequential)
+    target_link_libraries(strata-dsv41 PRIVATE strata_dsv41 strata_kernels_cpu ggml-cpu ggml-base)
   endif()
 endif()
 
