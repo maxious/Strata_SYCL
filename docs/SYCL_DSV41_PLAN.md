@@ -218,7 +218,10 @@ The kernel library builds, but the engine does not call it yet. Measured on 2026
   (`icpx -fsycl -c`, `OBJ_RC=0`) it compiles with 0 errors, and it asks the kernel library for 37 symbols.
 - The SYCL tree builds the front-end behind `STRATA_SYCL_DSV41_EXE` (OFF by default, so the default build and
   `ctest -R ds4` are unchanged; with it ON the parity targets still build, `PARITY_BUILD_RC=0`). All six of its
-  sources compile; the link fails with 93 undefined references (`EXE_RC=1`).
+  sources compile; the link fails with 93 undefined references (`EXE_RC=1`). Those 93 resolve to 37 distinct
+  symbols, and every one is a method of `strata::ds4::Model` (`load`, `feed`, `logits`, `sample`, `draft`,
+  `slot_save`, `restore` and the rest). The port that remains is that one class: a SYCL twin of
+  `src/dsv41/ds4_model.cu` on top of the `sycl/src/dsv41/*.dp.cpp` kernels that already build.
 - `src/dsv41/ds4_model.cu` holds the device calls: 505 lines mention `cuda`, `__global` or `exl3`. That file is
   the port that remains, and `strata-dsv41` needs it.
 - A CPU-only build with `STRATA_BUILD_DSV41=ON` builds `ds4_gg_bench` but no `strata-dsv41`: the target needs a
