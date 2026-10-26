@@ -5,7 +5,8 @@
 // and ggml's dequantize_row_q4_K/q5_K/q6_K) - not copied from the device kernel, so it checks the layout and the
 // arithmetic, not just the translation.
 //
-// Runs on the card: prints the device name, then one line per type and per set-tile row, then MATCH when every decoded
+// Runs on the card: prints the device name, then one line per type, per set-tile row and per K-quant GEMV type,
+// then MATCH when every decoded
 // BF16 bit equals the reference (or differs by one BF16 ulp, which FMA vs separate multiply-and-subtract can cause).
 // Exit 0 on MATCH.  --bad-scale / --bad-scale-gu each flip one IQ4_XS scale byte of the set tiles' input after the
 // reference is computed (down / gate row 0's scales_l[0]): the affected row must then report values outside one BF16
@@ -172,6 +173,18 @@ void fill_block(int type, uint8_t* row, Rng& rng) {
             row[2 * i] = (uint8_t) (u & 0xFF);
             row[2 * i + 1] = (uint8_t) (u >> 8);
         }
+    } else if (type == strata::ds4::gguf::iq::kQ2_K) {
+        // block_q2_K's dm pair sits after the scales and quants (bytes 80/82): d in the common small range, dmin
+        // smaller, so the min term stays a real share of each weight (a min-term regression moves the row) while no
+        // output lands near zero, where one BF16 ulp would not cover a normal float rounding.
+        const float v = 0.01f + 0.25f * (float) (rng.next() & 31);
+        const uint16_t u = sycl::bit_cast<uint16_t>(sycl::half(v));
+        row[80] = (uint8_t) (u & 0xFF);
+        row[81] = (uint8_t) (u >> 8);
+        const float vm = 0.01f + 0.05f * (float) (rng.next() & 31);
+        const uint16_t um = sycl::bit_cast<uint16_t>(sycl::half(vm));
+        row[82] = (uint8_t) (um & 0xFF);
+        row[83] = (uint8_t) (um >> 8);
     } else if (type == strata::ds4::gguf::iq::kQ6_K) {
         const float v = 0.01f + 0.25f * (float) (rng.next() & 31);
         const uint16_t u = sycl::bit_cast<uint16_t>(sycl::half(v));
@@ -803,6 +816,121 @@ void run_sparse_attn_row(sycl::queue& q, bool neg, Tally& t) {
     row_print("sparse_attn", t);
 }
 
+// ---- the K-quant GEMVs (iq::mv -> mv_kernel -> sub_dot: the dense matrices' Q2_K/Q4_K/Q5_K take this path alone) ----
+//
+// One row a quant type.  The reference is the block dot written from the same layouts the kernels decode
+// (third_party/ggml/ggml-common.h's block_q2_K / block_q4_K / block_q5_K through decode_b in
+// src/dsv41/ds4_iq.cu:152 and sycl/src/dsv41/ds4_iq.dp.cpp:179) and sub_dot's documented form
+// (src/dsv41/ds4_iq.cu:353-373, sycl/src/dsv41/ds4_iq.dp.cpp:391-425): a weight is d s q - dmin m of its 16-value
+// half, so a 32-value sub-block's dot is the exact integer dot of the codes and the int8 activations, its scales in
+// F32, minus the min term's both halves - the `v - (m0 sl + m1 sh)` form the 28bd2aaa fix restored, which no other
+// row exercises.  Computed in double; the device's F32 sums round to it within one BF16 ulp.
+double ref_k_sub_dot(int type, const uint8_t* b, int ib, const int8_t* x) {
+    int q[32], s0, s1;
+    double d, m0, m1;
+    if (type == strata::ds4::gguf::iq::kQ2_K) {   // scales[16] then qs[64], the dm pair after them (block_q2_K)
+        const int n = ib >> 2, j = ib & 3;
+        const uint8_t* qs = b + 16 + 32 * n;
+        for (int t = 0; t < 32; ++t) q[t] = (qs[t] >> (2 * j)) & 3;
+        const int c0 = b[8 * n + 2 * j], c1 = b[8 * n + 2 * j + 1];   // the two halves' scale/min pairs
+        const double dmin = fp16_to_f32(b + 82);
+        s0 = c0 & 15;
+        s1 = c1 & 15;
+        d = fp16_to_f32(b + 80);
+        m0 = dmin * (double) (c0 >> 4);
+        m1 = dmin * (double) (c1 >> 4);
+    } else {   // kQ4_K / kQ5_K: dm then scales[12] (get_scale_min_k4's 6-bit pairs); q5_K's qh[32] before its qs[128]
+        uint8_t sc, m;
+        get_scale_min_k4(ib, b + 4, &sc, &m);
+        const bool q5 = type == strata::ds4::gguf::iq::kQ5_K;
+        const uint8_t* qs = b + (q5 ? 48 : 16) + 32 * (ib >> 1);
+        const uint8_t* qh = q5 ? b + 16 : nullptr;
+        const int shl = 4 * (ib & 1);
+        for (int t = 0; t < 32; ++t) {
+            q[t] = (qs[t] >> shl) & 15;
+            if (q5) q[t] |= ((qh[t] >> ib) & 1) << 4;
+        }
+        s0 = s1 = sc;
+        d = fp16_to_f32(b);
+        m0 = m1 = fp16_to_f32(b + 2) * (double) m;
+    }
+    double lo = 0.0, hi = 0.0, sl = 0.0, sh = 0.0;
+    for (int t = 0; t < 16; ++t) { lo += (double) q[t] * x[t]; sl += x[t]; }
+    for (int t = 16; t < 32; ++t) { hi += (double) q[t] * x[t]; sh += x[t]; }
+    return d * (s0 * lo + s1 * hi) - (m0 * sl + m1 * sh);
+}
+
+// One row: n rows of k values of one type against ncol int8 activations (MvJob: y[c][r] = alpha (row r . x_c) +
+// bias[r], the q8_quant input form: int8 values, one F32 scale a 32).  The fill stays fill_block's seeded bytes and
+// the activations are strictly positive, so no output lands near zero and a pass never depends on luck.
+void run_iq_mv_row(sycl::queue& q, int type, Tally& t) {
+    const int n = 17, k = 512, ncol = 3, nsb = k / 32;
+    const float alpha = 0.75f;
+    Rng rng(0x49514D560009ull + (unsigned) type);
+    const size_t bb = (size_t) strata::ds4::gguf::iq::block_bytes(type);
+    const size_t ld = strata::ds4::gguf::iq::row_bytes(type, k);
+    std::vector<uint8_t> w((size_t) n * ld);
+    for (int r = 0; r < n; ++r) fill_block(type, w.data() + (size_t) r * ld, rng);
+    std::vector<int8_t> xq((size_t) ncol * k);
+    for (int8_t& v : xq) v = (int8_t) (1 + rng.next() % 127);
+    std::vector<float> xd((size_t) ncol * nsb);
+    for (float& v : xd) v = rand_pos(rng, 0.5f);
+    std::vector<float> bias(n), y((size_t) ncol * n);
+    for (float& v : bias) v = rand_pos(rng, 0.25f);
+    dpct::queue_ptr s = &q;
+    uint8_t* dw = (uint8_t*) sycl::malloc_device(w.size(), q);
+    int8_t* dxq = (int8_t*) sycl::malloc_device(xq.size(), q);
+    float* dxd = (float*) sycl::malloc_device(xd.size() * sizeof(float), q);
+    float* dbias = (float*) sycl::malloc_device(bias.size() * sizeof(float), q);
+    float* dy = (float*) sycl::malloc_device(y.size() * sizeof(float), q);
+    q.memcpy(dw, w.data(), w.size());
+    q.memcpy(dxq, xq.data(), xq.size());
+    q.memcpy(dxd, xd.data(), xd.size() * sizeof(float));
+    q.memcpy(dbias, bias.data(), bias.size() * sizeof(float));
+    q.wait();
+    strata::ds4::gguf::iq::MvJob job{};
+    job.w = dw;
+    job.ld = ld;
+    job.type = type;
+    job.k = k;
+    job.n = n;
+    job.ncol = ncol;
+    job.xq = dxq;
+    job.xd = dxd;
+    job.y = dy;
+    job.ycs = n;
+    job.bias = dbias;
+    job.alpha = alpha;
+    const bool launched = strata::ds4::gguf::iq::mv(&job, 1, s);
+    q.wait();
+    q.memcpy(y.data(), dy, y.size() * sizeof(float));
+    q.wait();
+    sycl::free(dw, q);
+    sycl::free(dxq, q);
+    sycl::free(dxd, q);
+    sycl::free(dbias, q);
+    sycl::free(dy, q);
+    char nm[32];
+    std::snprintf(nm, sizeof nm, "%s gemv", strata::ds4::gguf::iq::name(type));
+    if (!launched) {
+        printf("%s: FAIL (no kernel launched)\n", nm);
+        ++t.bad;
+        return;
+    }
+    for (int c = 0; c < ncol; ++c)
+        for (int r = 0; r < n; ++r) {
+            double acc = 0.0;
+            for (int kb = 0; kb < nsb; ++kb) {
+                const uint8_t* b = w.data() + (size_t) r * ld + (size_t) (kb >> 3) * bb;
+                acc += (double) xd[(size_t) c * nsb + kb] *
+                       ref_k_sub_dot(type, b, kb & 7, xq.data() + (size_t) c * k + (size_t) kb * 32);
+            }
+            double yref = (double) alpha * acc + (double) bias[r];
+            tally_f32(y[(size_t) c * n + r], yref, t);
+        }
+    row_print(nm, t);
+}
+
 const char* kFamilies[] = {"sparse_attn", "gemv_f32", "gemv_f16", "gemv_f16_rows",
                            "hc_pre_norm", "hc_mix_scale", "pred_proj_k", "softmax"};
 
@@ -1155,6 +1283,19 @@ int main(int argc, char** argv) {
             }
             sycl::free(w, q); sycl::free(bounds, q); sycl::free(didx, q); sycl::free(dxf, q); sycl::free(dxh, q);
             sycl::free(dh, q); sycl::free(dy, q);
+        }
+
+        {   // The K-quant GEMVs (iq::mv -> mv_kernel -> sub_dot): one row a type.  These rows alone cover sub_dot's
+            // min term of both halves (`v - (m0 sl + m1 sh)`, the 28bd2aaa fix).
+            for (const int type : {strata::ds4::gguf::iq::kQ2_K, strata::ds4::gguf::iq::kQ4_K,
+                                   strata::ds4::gguf::iq::kQ5_K}) {
+                Tally tt;
+                run_iq_mv_row(q, type, tt);
+                exact += tt.exact;
+                near += tt.near;
+                bad += tt.bad;
+                if (tt.max_diff > max_diff) max_diff = tt.max_diff;
+            }
         }
 
         for (const char* fam : kFamilies) {
