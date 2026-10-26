@@ -13,6 +13,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_queue.hpp"
 #include "ds4_vision.dp.hpp"
 #include <dpct/blas_utils.hpp>
 
@@ -542,7 +543,7 @@ bool VisionTower::encode(const uint8_t *rgb, int width, int height,
     */
     dpct::select_device(dev_);
     dpct::blas::descriptor_ptr h = (dpct::blas::descriptor_ptr)blas_;
-    dpct::queue_ptr s = (dpct::queue_ptr)st_, cs = (dpct::queue_ptr)cs_;
+    dpct::queue_ptr s = strata::q_of(st_), cs = strata::q_of(cs_);
     // the weights in the order the encode takes them: the blocks, then the aligner's in pieces of a slot
     std::vector<Piece> pcs;
     for (int l = 0; l < g.layers; ++l) pcs.push_back({host_ + (size_t) l * block_n_, block_n_});
