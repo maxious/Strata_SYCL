@@ -1,4 +1,4 @@
-# SYCL support for the DeepSeek engine (dsv41) — plan
+# SYCL support for the DeepSeek engine (dsv41): plan
 
 This is the plan for running Strata's DeepSeek engine on Intel graphics cards. The engine today speaks two
 languages: CUDA for NVIDIA cards and HIP for AMD cards. Intel cards speak a third language, SYCL. This branch adds
@@ -14,37 +14,108 @@ only when you ask for it.
 
 Every item below says where it stands. Four tags are used:
 
-- `(measured on this PC)` — the outcome of a run on this PC, named with its date, its build and its numbers.
-- `(static reading)` — read from code or from another project's files only. Unconfirmed static analysis; not
-  measured here.
-- `(prior art)` — a number or a record carried from another project's own run. It keeps its source, its build
-  and its date, and it is not a measurement of this port.
-- `(not measured yet)` — no run exists, so no number exists yet.
+- `(measured on this PC)`, the outcome of a run on this PC. Every tag carries a date, a build identity, and a
+ path to the evidence log that recorded it.
+- `(static reading)`, read from code or from another project's files only. Unconfirmed static analysis; not
+ measured here.
+- `(prior art)`, a number or a record carried from another project's own run. It keeps its source, its build
+ and its date, and it is not a measurement of this port.
+- `(not measured yet)`, no run exists, so no number exists yet.
 
-This plan makes no speed claim of its own. Any speed numbers it quotes carry the `(prior art)` tag with their
-source, build and date. No dsv41 tokens-per-second number has been measured on an Arc Pro B60 yet.
+Prompts now complete on the Arc Pro B60, so this plan can state measured tokens-per-second figures. Every figure
+sits beside the completed `prompt:` line that produced it. The measured figures are listed under
+[The measured answer and speed](#the-measured-answer-and-speed) below, each with its build and date.
+
+## Hardware and software
+
+The PC this plan was written and measured on (device ids and pack sizes re-checked in this session on 2026-10-26):
+
+- 2× Intel Arc Pro B60, device id `8086:e211`, 24 GB of graphics memory each, on PCIe (measured on this PC,
+  2026-10-26, evidence log `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/task-8-dsv41-sycl-dpct-and-xpu-test.log:10`).
+  The ids were read twice: `lspci -nn` prints
+  `VGA compatible controller [0300]: Intel Corporation Battlemage G21 [Arc Pro B60] [8086:e211]` for both cards,
+  and `xpu-smi discovery` shows the SOC UUID ending `e2118086` on device 0 and device 1.
+- CPU and RAM: AMD Ryzen 7 5700X3D, 121 GiB of RAM (measured on this PC; the fit numbers are in this plan's
+ measured section).
+- Kernel driver `xe` (measured on this PC, 2026-10-26,
+ `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/task-8-dsv41-sycl-dpct-and-xpu-test.log:10`).
+- Intel oneAPI 2026.2; `icpx` prints 2026.2.0 (measured on this PC;
+ `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/row16d-gate-review.md` carries `icx/icpx from oneapi 2026.2`).
+- NEO runtime 26.35.39758.10 (measured on this PC, 2026-10-26,
+ `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/task-8-dsv41-sycl-dpct-and-xpu-test.log:10`).
+- Level Zero backend; every device run sets `SYCL_BE=PI_LEVEL_ZERO` (measured on this PC;
+ `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/row16d-gate-review.md`).
+
+The compiler and `sycl-ls` are found only after `source /opt/intel/oneapi/setvars.sh`; a bare probe finds nothing
+(exit 127 in these runs) and must not be read as "not installed" (measured on this PC, 2026-10-25). oneMKL and
+oneDNN ship with the toolkit (`/opt/intel/oneapi/mkl`, `/opt/intel/oneapi/dnnl`; measured on this PC by a byte
+test). This PC has no CUDA toolkit: the compiler `nvcc` and the toolkit's install directory are both absent
+(measured on this PC).
+
+## Pack identity
+
+The measured runs use the pack at
+`/home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4`. Its tensor census, read from
+`maya-ds4/tensors.txt` and re-checked with `du` in this session on 2026-10-26, sums to these tier sizes in GB:
+IQ1_M 59.45, IQ2_XXS 49.05, IQ2_XS 23.57, Q5_K 5.33, IQ4_NL engram 110.60, and zero Q4_K (measured on this PC,
+2026-10-26, evidence log `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/todo11-gate-review.md`).
+
+The five GGUF files on disk total 248.83 GB: four `DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ2_XXS-0000x-of-00004.gguf`
+shards (39.07 + 39.39 + 39.25 + 20.53 = 138.24 GB) plus `DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` (110.60 GB)
+(measured on this PC, 2026-10-26, summed from `tensors.txt` byte offsets in this session, not copied from
+prose).
+
+## The measured answer and speed
+
+One card, the pack above, greedy decoding, answer text quoted from the evidence log
+(`.omo/evidence/dsv41-sycl-dpct-and-xpu-test/artifacts/decoded-answers.txt:4`): the model answers
+"The capital of France is **Paris**." (measured on this PC, 2026-10-27, commit `ce6218ee`,
+`.omo/evidence/dsv41-sycl-dpct-and-xpu-test/dsv41-sycl-dpct-and-xpu-test-manual-qa.md:32`).
+
+Speed figures, each printed beside a completed `prompt:` line:
+
+- 38.22 tok/s, from `prompt: 10 tokens in 262 ms (38.22 tok/s, windows of 8192)` (measured on this PC, commit
+ `83417a6f`, `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/row15-gate-review.md:67`).
+- 37.32 tok/s, from `prompt: 10 tokens in 268 ms (37.32 tok/s, windows of 8192)` (measured on this PC, commit
+ `ce6218ee`, `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/row16d-gate-review.md:96`).
+- 10.71 tok/s, from `prompt: 10 tokens in 934 ms (10.71 tok/s, windows of 4096)` (measured on this PC,
+ 2026-10-26, a two-card run, `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/task-15-dsv41-sycl-dpct-and-xpu-test.log:114`).
+
+CPU-lane expert counts, each naming its run:
+
+- `CPU lane: 109 of 1680 experts` on the one-card run (measured on this PC, 2026-10-27, commit `ce6218ee`,
+ `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/artifacts/one-card-baseline.log:17`).
+- `CPU lane: 105 of 1680 experts` on the gate run (measured on this PC, commit `ce6218ee`,
+ `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/row16d-gate-review.md`).
+- `CPU lane: 157 of 1920 experts` on the `--n 32` run (measured on this PC, commit `ddc3c9e7`,
+ `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/todo7b-gate-review.md:85`).
 
 ## What has been measured on this PC
 
-The PC: AMD Ryzen 7 5700X3D with 2× Intel Arc Pro B60 (hardware, measured on this PC). `sycl-ls` prints
-`Intel(R) Arc(TM) Pro B60 Graphics` twice, once per card (measured on this PC, 2026-10-25). The toolchain is
-Intel oneAPI 2026.2 and `icpx` prints 2026.2.0 (measured on this PC). The compiler and `sycl-ls` are found only
-after `source /opt/intel/oneapi/setvars.sh`; a bare probe finds nothing (exit 127 in these runs) and must not be
-read as "not installed" (measured on this PC). oneMKL and oneDNN ship with the toolkit
-(`/opt/intel/oneapi/mkl`, `/opt/intel/oneapi/dnnl`; measured on this PC by a byte test). This PC has no CUDA
-toolkit: the compiler `nvcc` and the toolkit's install directory are both absent (measured on this PC).
-
 The parity harness (`sycl/src/dsv41/ds4_parity.cpp`) runs the converted kernels on the card and compares the
-output with a CPU reference written from the same layouts. Two builds ran on 2026-10-25 (measured on this PC):
-one is the scalar artifact, and the other is compiled ahead of time for the bmg-g21 chip (Battlemage, the B60)
-with the `joint_matrix` set tiles active. Both print `device: Intel(R) Arc(TM) Pro B60 Graphics`. The rows:
+output with a CPU reference written from the same layouts. The baseline rows below were recorded on 2026-10-26
+and every build prints `device: Intel(R) Arc(TM) Pro B60 Graphics`. They replace the stale 2026-10-25 rows
+(measured on this PC, 2026-10-26, build `ce6218ee`,
+`.omo/evidence/dsv41-sycl-dpct-and-xpu-test/task-1-dsv41-sycl-dpct-and-xpu-test.log:57008-57018`):
 
-- scalar artifact (measured on this PC): `MATCH: 9945/13312 BF16 bits equal to the CPU reference, 3367 within one ulp, max float diff 0.000183105`
-- bmg-g21 AOT tile artifact (measured on this PC): `MATCH: 9958/13312 BF16 bits equal to the CPU reference, 3354 within one ulp, max float diff 0.000213623`
-- IQ4_NL on both artifacts (measured on this PC): `IQ4_NL: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside`
-- MXFP4 set gate/up tiles on both artifacts (measured on this PC): `MXFP4 set gate/up tile: 4096/4096 fp16 bits exact, 0 within one BF16 ulp, 0 outside`
-- MXFP4 set down tiles (measured on this PC): `742/4096 fp32 values exact, 3354 within one BF16 ulp, 0 outside` on the tile artifact
-  and `729/4096 fp32 values exact, 3367 within one BF16 ulp, 0 outside` on the scalar artifact
+- `Q4_K: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside`
+- `Q5_K: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside`
+- `IQ4_NL: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside`
+- `IQ4_XS: 1024/1024 bits exact, 0 within one BF16 ulp, 0 outside`
+- `MXFP4 set gate/up tile: 4096/4096 fp16 bits exact, 0 within one BF16 ulp, 0 outside`
+- `MXFP4 set down tile: 729/4096 fp32 values exact, 3367 within one BF16 ulp, 0 outside`
+
+The K-quant GEMV rows, added later, run the real `sub_dot` path for Q2_K, Q4_K and Q5_K. Each row is clean, and
+the negative control (corrupting the Q4_K reference) moves that one row to 51 outside while the other two stay
+clean (measured on this PC, 2026-10-27, commits `4e003d34` and `ce6218ee`,
+`.omo/evidence/dsv41-sycl-dpct-and-xpu-test/row14-gate-review.md:117-119,144-146`):
+
+- `Q2_K gemv: 0/51 exact, 51 within one BF16 ulp, 0 outside`
+- `Q4_K gemv: 0/51 exact, 51 within one BF16 ulp, 0 outside`
+- `Q5_K gemv: 0/51 exact, 51 within one BF16 ulp, 0 outside`
+
+The Q4_K negative control reads `Q4_K gemv: 0/51 exact, 0 within one BF16 ulp, 51 outside` (measured on this PC,
+2026-10-27, `.omo/evidence/dsv41-sycl-dpct-and-xpu-test/row14-gate-review.md:145`).
 
 Read the IQ4_NL row with one caveat. The harness's random-data coverage for IQ4_NL is 4×32 values per run
 (static reading). Its `fill_block` helper (pre-existing, unchanged) writes only 18 bytes per IQ4_NL row: one
@@ -61,57 +132,49 @@ staging), then a pack loop fills the matrix unit's B operand from those rows (th
 reads rows that other threads of the same step stage, and the only barrier sat after the pack, so staging and
 pack were unsynchronized (static reading). On the B60 the pack could pick up stale weights, and the tile's
 output moved between runs until the missing barrier was added between the W/X staging and the XMX B-operand
-pack at `sycl/src/dsv41/ds4_iq.dp.cpp:1114-1115` (the fix record cites this site as `:1114`; at the merged
-commit the `item_ct1.barrier();` call is line 1115, under its comment at 1112-1114). The output moving before
-the barrier and staying byte-identical across runs after it is measured on this PC. The same fix widened the
-scalar stand-in's products to float (`sycl/src/dsv41/ds4_iq.dp.cpp:1159-1160`), so it computes the same exact
-half-by-half products as the matrix tile and the CPU reference (static reading; the rows below are the
-measurement). With the fix, the IQ4_XS set tiles match the CPU reference on both artifacts (measured on this
-PC, 2026-10-25, the same two builds as above rebuilt with the barrier):
-
-- IQ4_XS set gate/up tiles (measured on this PC): `8165/8192 fp16 bits exact, 27 within one BF16 ulp, 0 outside`
-  on the scalar artifact, `8171/8192 fp16 bits exact, 21 within one BF16 ulp, 0 outside` on the bmg-g21 AOT tile
-  artifact
-- IQ4_XS set down tiles (measured on this PC): `940/8192 fp32 values exact, 7252 within one BF16 ulp, 0 outside`
-  on the scalar artifact, `888/8192 fp32 values exact, 7304 within one BF16 ulp, 0 outside` on the tile artifact
+pack at `sycl/src/dsv41/ds4_iq.dp.cpp:1114-1115`. The output moving before the barrier and staying byte-identical
+across runs after it is measured on this PC. The same fix widened the scalar stand-in's products to float
+(`sycl/src/dsv41/ds4_iq.dp.cpp:1159-1160`), so it computes the same exact half-by-half products as the matrix
+tile and the CPU reference (static reading; the rows above are the measurement).
 
 One thing is still open: the timed run, scalar against tiles, has not happened (not measured yet).
 
 Build facts, all measured on this PC in round 2:
 
 - `STRATA_SYCL_DSV41` is OFF by default (`sycl/CMakeLists.txt:257`). With it off, the generated build lists 527
-  targets and none of them names a dsv41 source: `strata_dsv41`, `src/dsv41`, `ds4_tq`, `ds4_gguf` and `ds4_iq`
-  each match zero times in the target list (measured on this PC).
+ targets and none of them names a dsv41 source: `strata_dsv41`, `src/dsv41`, `ds4_tq`, `ds4_gguf` and `ds4_iq`
+ each match zero times in the target list (measured on this PC, 2026-10-25).
 - The `-fp-model=precise` flag sits inside the `COMPILE_LANGUAGE:CXX` generator expression at
-  `sycl/CMakeLists.txt:103` (measured on this PC). Line 103 carries the token
-  `"$<$<COMPILE_LANGUAGE:CXX>:-fp-model=precise>"` (`COMPILE_LANGUAGE:CXX:-fp-model=precise` for short), so
-  only the C++ files see the flag. An earlier build failed before the flag was guarded: the configure step
-  succeeded and the build failed on the first C file with `cc: error: unrecognized command-line option
-  '-fp-model=precise'` (measured on this PC: `CONFIGURE_RC=0`, `BUILD_RC=1`).
+ `sycl/CMakeLists.txt:103` (measured on this PC). Line 103 carries the token
+ `"$<$<COMPILE_LANGUAGE:CXX>:-fp-model=precise>"` (`COMPILE_LANGUAGE:CXX:-fp-model=precise` for short), so
+ only the C++ files see the flag. An earlier build failed before the flag was guarded: the configure step
+ succeeded and the build failed on the first C file with `cc: error: unrecognized command-line option
+ '-fp-model=precise'` (measured on this PC: `CONFIGURE_RC=0`, `BUILD_RC=1`).
 - The tile artifact was built with `-DSTRATA_XMX_SG16=1` and `-fsycl-targets=spir64_gen` for the `bmg-g21`
-  device (measured on this PC). That build ran on the card and produced the tile rows above.
+ device (measured on this PC, 2026-10-25). That build ran on the card and produced the tile rows above.
 
-The model set on this PC fits in RAM (measured on this PC, 2026-10-25). The model directory
-`/home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO` is 232 GiB in total (`du -sh` prints 232G).
-The four IQ2_XXS shards are 39.08, 39.39, 39.25 and 20.53 GB — 138.2 GB together — and
-`DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf` is 110.59 GB (all sizes measured on this PC). The Engram is an SSD
-file: it stays on disk and never enters the RAM math (measured on this PC; the fit arithmetic is the same with
-and without it).
+The pack on this PC fits in RAM (measured on this PC, 2026-10-26). The model directory
+`/home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO` is 232 GiB in total (`du -sh` prints 232G),
+and the `maya-ds4` pack inside it is 248.83 GB across its five GGUF files (see Pack identity above, measured on
+this PC). The Engram is an SSD file: it stays on disk and never enters the RAM math (measured on this PC; the
+fit arithmetic is the same with and without it).
 
-The fit planner — the same function the launcher uses, run on 2026-10-25 with the cards measured through clinfo
-(2× Intel Arc Pro B60, 22.71 GiB of graphics memory per card) — gives the same arithmetic for all four variants
-it was run for (full set, shards only, 4k, 8k): 90.1 GB of experts in RAM, 6.2 GB of dense weights (4.4 GB of
-that in graphics memory) and 9.0 GB of planner overhead, 99.1 GB of RAM needed in all. RAM in the machine is
-121 GiB in total (`free -h`). MemAvailable read 121,779,548 KiB — 124.69 decimal GB, 116.14 GiB — at the
-measurement. The planner's verdict is `fits`, its spare is 22.4 GB in the planner's own units (it counts
-decimal GB), and the spill is 0.0 GB. The per-run MemAvailable readings before each documented run were 123.05,
-121.49, 121.47 and 121.46 GB. Deficit: none. Swap is 132 GiB of file-backed swap on disk with 0 used. It is not
-RAM and is not counted as RAM (all of this paragraph: measured on this PC).
+The fit planner, the same function the launcher uses, was run on 2026-10-25 with the cards measured through
+clinfo (2× Intel Arc Pro B60, 22.71 GiB of graphics memory per card). It gives the same arithmetic for all four
+variants it was run for (full set, shards only, 4k, 8k): 90.1 GB of experts in RAM, 6.2 GB of dense weights
+(4.4 GB of that in graphics memory), and 9.0 GB of planner overhead, 99.1 GB of RAM needed in all (measured on
+this PC, 2026-10-25). RAM in the machine is 121 GiB in total (`free -h`). MemAvailable read 121,779,548 KiB,
+124.69 decimal GB, 116.14 GiB, at the measurement. The planner's verdict is `fits`, its spare is 22.4 GB in the
+planner's own units (it counts decimal GB), and the spill is 0.0 GB. The per-run MemAvailable readings before each
+documented run were 123.05, 121.49, 121.47 and 121.46 GB. Deficit: none. Swap is 132 GiB of file-backed swap on
+disk with 0 used; it is not RAM and is not counted as RAM (all of this paragraph measured on this PC,
+2026-10-25).
 
-Placement on the cards was measured too (measured on this PC). 4,880 experts (42.0 GB) go in graphics memory:
-2,440 experts, 21.0 GB and 2.2 GB of dense weights per card. The other 10,480 experts (90.1 GB) stay on the CPU
-lane in RAM. As a sensitivity check, using 24.0 GiB per card instead of clinfo's 22.71 GiB (the marketed number)
-still gives `fits`: 87.3 GB of CPU experts, 96.3 GB of RAM needed (measured on this PC).
+Placement on the cards was measured too (measured on this PC, 2026-10-25). 4,880 experts (42.0 GB) go in graphics
+memory: 2,440 experts, 21.0 GB and 2.2 GB of dense weights per card, and the other 10,480 experts (90.1 GB) stay
+on the CPU lane in RAM (measured on this PC, 2026-10-25). As a sensitivity check, using 24.0 GiB per card instead
+of clinfo's 22.71 GiB (the marketed number) still gives `fits`: 87.3 GB of CPU experts, 96.3 GB of RAM needed
+(measured on this PC, 2026-10-25).
 
 One real blocker stands in the documented path. Four `strata launch --plan` runs on this PC exited 0 and printed
 verdict `no_card` (measured on this PC), and the round-2 fit log's no-card mirror run reproduces it. The reason
@@ -128,29 +191,29 @@ Everything in this section is `(static reading)` unless a line says otherwise.
 **vllm-project/vllm-xpu-kernels** (read on 2026-10-24):
 - License Apache-2.0, so its kernels may be vendored into Strata with a notice (static reading).
 - It targets Intel's Xe2 graphics, which includes the Battlemage G21 chip (static reading; the two Arc Pro B60
-  cards in this PC are measured on this PC above).
+ cards in this PC are measured on this PC above).
 - It builds with `icpx -fsycl` and ahead-of-time compile for the card, the same way Strata's `sycl/` tree
-  already builds (`-fsycl-targets=spir64_gen`) (static reading).
+ already builds (`-fsycl-targets=spir64_gen`) (static reading).
 - It covers attention, MoE routing, DeepSeek rotary positions, and MLA flash-attention in plain SYCL, and uses
-  oneDNN for big matrix multiplies (Strata's cublas equivalent) (static reading).
+ oneDNN for big matrix multiplies (Strata's cublas equivalent) (static reading).
 - It does not cover the quant types Strata's DeepSeek engine uses (IQ1_S, IQ1_M, other below-2-bit types, GGUF
-  packing). Those must come from Strata's own code (static reading).
+ packing). Those must come from Strata's own code (static reading).
 
 **oneapi-src/SYCLomatic** (the `dpct` converter):
 - Round-1 record (prior art): dpct 21.0.0, from the 20260928 release, run on this PC on 2026-10-24. Round 2
-  could not re-check the version: `dpct` is not found after `setvars.sh` in the 2026-10-25 probes (measured on
-  this PC). The DPCT comments left in `sycl/src/dsv41/` show the converter ran (static reading). Treat the
-  version as a record.
+ could not re-check the version: `dpct` is not found after `setvars.sh` in the 2026-10-25 probes (measured on
+ this PC). The DPCT comments left in `sycl/src/dsv41/` show the converter ran (static reading). Treat the
+ version as a record.
 - Compiler for the conversion: Intel oneAPI DPC++/C++ 2026.2.0. Round 2 measured the compiler again: the probe
-  prints 2026.2.0 (measured on this PC).
+ prints 2026.2.0 (measured on this PC).
 - It turns CUDA source into SYCL source: kernel launches become `parallel_for`, shared memory becomes
-  `local_accessor`, `__syncthreads` becomes a group barrier, cuBLAS calls become oneMKL calls (static reading).
+ `local_accessor`, `__syncthreads` becomes a group barrier, cuBLAS calls become oneMKL calls (static reading).
 - It does not do everything. Four things needed hand fixes in Strata's code: templated kernel launches, tensor
-  core tiles (WMMA), cache hints (`__ldg`/`__ldcv`, which are simply dropped), and dynamic shared memory sizes
-  (prior art: the round-1 conversion record; static reading).
+ core tiles (WMMA), cache hints (`__ldg`/`__ldcv`, which are simply dropped), and dynamic shared memory sizes
+ (prior art: the round-1 conversion record; static reading).
 - It needs CUDA header files to read CUDA source. This PC has no CUDA toolkit (measured on this PC), so in
-  round 1 the CUDA headers from the PyPI nvidia-cuda packages were merged into one include directory and passed
-  to dpct (prior art: the round-1 record).
+ round 1 the CUDA headers from the PyPI nvidia-cuda packages were merged into one include directory and passed
+ to dpct (prior art: the round-1 record).
 
 ## What is on this branch already
 
@@ -166,80 +229,68 @@ pattern (`sycl/src/dsv41/`):
 All three compile with icpx 2026.2.0 on this PC (Ryzen 7 5700X3D, 2× Intel Arc Pro B60): first on 2026-10-24 in
 round 1 (prior art), then again in round 2 as translation units of the parity harness whose rows are above
 (measured on this PC). Compiling green means the compiler accepts the SYCL code. The rows above are what says
-the output is right (measured on this PC). Nothing yet says it is fast (not measured yet).
+the output is right (measured on this PC). The measured speed figures are under
+[The measured answer and speed](#the-measured-answer-and-speed).
 
 Hand fixes applied (the four dpct gaps above):
 - Templated launches became explicit work-group launches, the same pattern the rest of `sycl/` uses. Work-group
-  ranges that CUDA wrote as (x, y, z) are read by SYCL as (z, y, x) (static reading).
+ ranges that CUDA wrote as (x, y, z) are read by SYCL as (z, y, x) (static reading).
 - Shared arrays that dpct turned into wrong shapes were rebuilt as flat buffers with the sizes from the CUDA
-  source (static reading).
+ source (static reading).
 - Tensor core tiles (WMMA) in ds4_gguf first became a plain float accumulation loop (prior art: the round-1
-  record). The MXFP4 set tiles now have a SYCL tensor-core path (`joint_matrix`) with the scalar loop kept as a
-  fallback; the set rows above are its parity on the B60 (measured on this PC). Whether the tiles run as fast as
-  the CUDA path is not measured and is not claimed here (not measured yet).
+ record). The MXFP4 set tiles now have a SYCL tensor-core path (`joint_matrix`) with the scalar loop kept as a
+ fallback; the set rows above are its parity on the B60 (measured on this PC). Whether the tiles run as fast as
+ the CUDA path is not measured and is not claimed here (not measured yet).
 - The CUDA occupancy query in ds4_iq became "one work-group per compute unit", which is what a persistent grid
-  needs on this card (static reading).
+ needs on this card (static reading).
 
 ## Next steps, in order
 
 1. Correctness first: run each converted kernel on the Arc Pro B60 and compare its output to the CPU reference
-   implementations (`src/dsv41/ds4_tq_cpu.cpp`, `src/dsv41/ds4_iq_cpu.cpp`, `src/dsv41/ds4_gguf_cpu.cpp`). Equal
-   output, kept within a small tolerance, is the bar. No speed claim until this passes. Done for the rows above
-   (measured on this PC), including the IQ4_XS set tiles after the round-2 barrier fix. Still open: the timed
-   run (not measured yet).
+ implementations (`src/dsv41/ds4_tq_cpu.cpp`, `src/dsv41/ds4_iq_cpu.cpp`, `src/dsv41/ds4_gguf_cpu.cpp`). Equal
+ output, kept within a small tolerance, is the bar. No speed claim until this passes. Done for the rows above
+ (measured on this PC), including the IQ4_XS set tiles after the round-2 barrier fix. Still open: the timed
+ run (not measured yet).
 2. Wire an opt-in build: a `STRATA_SYCL_DSV41` option in `sycl/CMakeLists.txt`, off by default. Done and
-   measured on this PC: the option is at `sycl/CMakeLists.txt:257`, its default is OFF, and the default build
-   lists no dsv41 source (measured on this PC).
-3. ds4_model: the model-level passes, including its BLAS calls — 3 in `src/dsv41/ds4_model.cu` (lines 2910,
-   2924, 2937) and 10 more in `src/dsv41/ds4_vision.cu`, 13 call sites in total (static reading). Those map to
-   oneMKL or oneDNN; both are installed with the toolkit (measured on this PC). The mapping is no longer future
-   work: `b422876c1d888c7a0b1eddb312a08d6dcd517298` merged the cublas shim `sycl/include/compat/cublas_v2.h`
-   (the `include/strata/hip_compat/cublas_v2.h` pattern), the gemv ports (`sycl/src/dsv41/ds4_gemv.dp.cpp`,
-   `sycl/src/dsv41/ds4_gemv.dp.hpp`) and the vision softmax port (`sycl/src/dsv41/ds4_softmax.dp.cpp`, with the
-   device-side fix at `sycl/src/dsv41/ds4_softmax.dp.cpp:87`, recorded at `task-4-gemv-parity.log:104`), and the
-   parity runs passed on the card (measured on this PC): `RUN_RC=0` (`task-4-blas-shim.log:385`), `TILE_RUN_RC=0`
-   (`task-4-blas-shim.log:410`), `CTEST_RC=0` with 2/2 tests passed on `device: Intel(R) Arc(TM) Pro B60 Graphics`
-   (`task-4-blas-shim.log:507-511`). What is left of this item is wiring the model-level passes themselves:
-   Phase D in [SYCL_DSV41_PLAN2.md](SYCL_DSV41_PLAN2.md).
+ measured on this PC: the option is at `sycl/CMakeLists.txt:257`, its default is OFF, and the default build
+ lists no dsv41 source (measured on this PC).
+3. ds4_model: the model-level passes, including its BLAS calls, 3 in `src/dsv41/ds4_model.cu` (lines 2910,
+ 2924, 2937) and 10 more in `src/dsv41/ds4_vision.cu`, 13 call sites in total (static reading). Those map to
+ oneMKL or oneDNN; both are installed with the toolkit (measured on this PC). The mapping is no longer future
+ work: `b422876c1d888c7a0b1eddb312a08d6dcd517298` merged the cublas shim `sycl/include/compat/cublas_v2.h`
+ (the `include/strata/hip_compat/cublas_v2.h` pattern), the gemv ports (`sycl/src/dsv41/ds4_gemv.dp.cpp`,
+ `sycl/src/dsv41/ds4_gemv.dp.hpp`) and the vision softmax port (`sycl/src/dsv41/ds4_softmax.dp.cpp`), and the
+ parity runs passed on the card (measured on this PC): `RUN_RC=0`, `TILE_RUN_RC=0`, `CTEST_RC=0` with 2/2
+ tests passed on `device: Intel(R) Arc(TM) Pro B60 Graphics`. What is left of this item is wiring the
+ model-level passes themselves: Phase D in [SYCL_DSV41_PLAN2.md](SYCL_DSV41_PLAN2.md).
 4. Vision, then exl3 and the sampler, in the same way (not measured yet).
 5. Tensor-core timing: measure the `joint_matrix` set tiles against the scalar loop on the B60, and report both
-   with the build that produced them (not measured yet). Change the default only with measured numbers, per
-   CONTRIBUTING.md.
+ with the build that produced them (not measured yet). Change the default only with measured numbers, per
+ CONTRIBUTING.md.
 6. Benchmarks against a same-day CUDA/HIP run where the same model fits, reported per
-   [docs/COMMUNITY_BENCHMARKS.md](COMMUNITY_BENCHMARKS.md) (not measured yet).
+ [docs/COMMUNITY_BENCHMARKS.md](COMMUNITY_BENCHMARKS.md) (not measured yet).
 
 ## What the engine still needs
 
-The kernel library builds, but the engine does not call it yet. Measured on 2026-10-26 with icpx 2026.2.0
-(`icpx -fsycl -fsyntax-only`):
+The engine now answers the question (see [The measured answer and speed](#the-measured-answer-and-speed)). The
+tuning items below are what remains, listed with their tags rather than a claim that the engine cannot run.
 
-- `src/dsv41/ds4_main.cpp` compiles under SYCL with two errors, both `STRATA_VERSION`, a compile definition the
-  root CMake adds (`CMakeLists.txt:23`). The front-end is not CUDA-specific. With that define given
-  (`icpx -fsycl -c`, `OBJ_RC=0`) it compiles with 0 errors, and it asks the kernel library for 37 symbols.
-- The SYCL tree builds the front-end behind `STRATA_SYCL_DSV41_EXE` (OFF by default, so the default build and
-  `ctest -R ds4` are unchanged; with it ON the parity targets still build, `PARITY_BUILD_RC=0`). All six of its
-  sources compile; the link fails with 93 undefined references (`EXE_RC=1`). Those 93 resolve to 37 distinct
-  symbols, and every one is a method of `strata::ds4::Model` (`load`, `feed`, `logits`, `sample`, `draft`,
-  `slot_save`, `restore` and the rest). The port that remains is that one class: a SYCL twin of
-  `src/dsv41/ds4_model.cu` on top of the `sycl/src/dsv41/*.dp.cpp` kernels that already build.
-- `src/dsv41/ds4_model.cu` holds the device calls: 505 lines mention `cuda`, `__global` or `exl3`. That file is
-  the port that remains, and `strata-dsv41` needs it.
-- A CPU-only build with `STRATA_BUILD_DSV41=ON` builds `ds4_gg_bench` but no `strata-dsv41`: the target needs a
-  GPU runtime.
+- A timed run of the tensor tiles against the scalar loop on the B60 has not happened (not measured yet).
+- Vision, exl3 and the sampler follow as separate increments (not measured yet).
+- The dual-GPU expert placement and peer copy are not measured on this hardware yet (not measured yet; see
+ SYCL_DSV41_PLAN2.md).
 
-The AVX-2 expert rung on a CPU without AVX-512 (AMD Ryzen 7 5700X3D, Zen 3), measured 2026-10-26 with the
-CPU-only build at this commit: `ds4_gg_bench`, type 18, 3.07 GB of weights in 1,567,344 rows, ggml-cpu rows
-33.0 GB/s, Strata AVX2 rows 29.7 GB/s (x0.90), a plain read 36.7 GB/s, 0 rows differing in bits.
-
-Serving a native (IQ) pack on that CPU completes prompts: 8 tokens generated, decode 21.94 tok/s, prefill
-2.60 tok/s, on one Intel Arc Pro B60 (24 GB), with the AVX-2 expert kernels. The DeepSeek pack is not served
-yet; it needs the `strata-dsv41` executable, which needs the `ds4_model.cu` port above.
+The CPU-only reference for this hardware is kept as a cross-check rather than a port claim. The AVX-2 expert
+rung on a CPU without AVX-512 (AMD Ryzen 7 5700X3D, Zen 3), measured 2026-10-26 with the CPU-only build:
+`ds4_gg_bench`, type 18, 3.07 GB of weights in 1,567,344 rows, ggml-cpu rows 33.0 GB/s, Strata AVX2 rows
+29.7 GB/s (x0.90), a plain read 36.7 GB/s, 0 rows differing in bits (measured on this PC, 2026-10-26,
+`.omo/evidence/dsv41-sycl-dpct-and-xpu-test/task-1-dsv41-sycl-dpct-and-xpu-test.log`).
 
 ## Rules this branch keeps
 
 - The SYCL dsv41 path is opt-in. The CUDA and HIP paths are untouched and stay byte-identical to the release;
-  each change checks its own diff scope.
-- Nothing in the docs or reports claims a speed that was not measured on named hardware. The claims section
-  above holds this plan's one statement about missing speed numbers.
+ each change checks its own diff scope.
+- Nothing in the docs or reports claims a speed that was not measured on named hardware. Every measured
+ tokens-per-second figure in this plan sits beside the completed `prompt:` line that produced it.
 - Vendored code from vllm-xpu-kernels (Apache-2.0) gets a license notice when it arrives.
 - Converted code keeps dpct's DPCT comments until reviewed, so a reader can see what the converter changed.
