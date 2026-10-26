@@ -1,15 +1,15 @@
-// Hand-ported SYCL copies of the dsv41 kernel-launcher families that src/dsv41/ds4_model.cu calls and that no other
-// port covers: the window sparse attention (ds4_kernels.cu's sparse_attn_kernel :771, sparse_attn_packed_kernel :951
-// and their launcher), the Hyper-Connections pre-norm (hc_pre_norm_kernel :338) and mix scaling
-// (hc_mix_scale_kernel :1689), and the debug projection (pred_proj_k, ds4_model.cu:509).  The two F16 GEMVs and the
-// F32 GEMV are ds4_gemv.dp.hpp's and the vision tower's softmax is ds4_softmax.dp.hpp's.  Hand-ported: dpct exits
-// -46 on ds4_model.cu and its draft does not compile.  Everything here is behind STRATA_SYCL_DSV41; the CUDA / HIP
-// paths keep their own ds4_kernels.cu.
+// The parity harness's declarations for the dsv41 kernel-launcher families (ds4_parity.cpp calls them): the window
+// sparse attention, the Hyper-Connections pre-norm and mix scaling, and the debug projection (pred_proj_k,
+// ds4_model.cu:509).  The first three have one home, ds4_attn_hc.dp.cpp - the SYCLomatic copies of
+// src/dsv41/ds4_kernels.cu that the engine (strata-dsv41) also links, split-KV variant and all (off by default
+// behind DS4_ATTN_SPLIT, as in CUDA) - so the harness checks the copies the engine runs.  pred_proj_k is
+// hand-ported in ds4_launch.dp.cpp (dpct exits -46 on ds4_model.cu and its draft does not compile).  The two F16
+// GEMVs and the F32 GEMV are ds4_gemv.dp.hpp's and the vision tower's softmax is ds4_softmax.dp.hpp's.
+// Everything here is behind STRATA_SYCL_DSV41; the CUDA / HIP paths keep their own ds4_kernels.cuh.
 //
 // The declarations and structs mirror the in-scope parts of src/dsv41/ds4_kernels.cuh (kWin, the KV row formats,
 // AttnScratch / AttnRows, the launcher signatures with dpct::queue_ptr in place of cudaStream_t), so a later
-// ds4_model port can call them the way the CUDA engine does.  What is NOT here: the split-KV attention variant
-// (src/dsv41/ds4_attn_split.cuh, off by default behind DS4_ATTN_SPLIT) and ds4_kernels.cu's other families.
+// ds4_model port can call them the way the CUDA engine does.  What is NOT here: ds4_kernels.cu's other families.
 #pragma once
 
 #include <cstddef>
