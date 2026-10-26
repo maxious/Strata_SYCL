@@ -420,7 +420,9 @@ __dpct_inline__ float sub_dot(const Sub &s, const sycl::int4 &xa,
         correctness. SYCL math built-in function rounding mode is aligned with
         OpenCL C 1.2 standard.
         */
-        v = v - s.m0 * (float)sl + s.m1 * (float)sh;
+        // the min term: both halves are subtracted (the K-quant weight is d sc q - dmin m), as the CUDA's
+        // __fsub_rn(v, __fadd_rn(m0 * sl, m1 * sh)) does - the port had the second half added
+        v = v - (s.m0 * (float)sl + s.m1 * (float)sh);
     }
     return v;
 }
