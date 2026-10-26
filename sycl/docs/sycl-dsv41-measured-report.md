@@ -9,7 +9,7 @@ measured on. Nothing on this page is a guess.
 The build was made from branch `sycl/dsv41-sycl-support` at commit `ce6218ee`.
 It ran on a machine with two Intel Arc Pro B60 cards, 24 GB of graphics memory
 each, with Intel oneAPI 2026.2, the Level Zero driver and the `xe` graphics
-driver. The model is DeepSeek V4.1 Flash, Q4_K quantised, about 115 GB, with
+driver. The model is DeepSeek V4.1 Flash in the `DeepSeek-V4.1-Flash-1017-GSQ-RCO` pack: IQ1_M 59.45 GB, IQ2_XXS 49.05 GB, IQ2_XS 23.57 GB, Q5_K 5.33 GB and an IQ4_NL engram of 110.60 GB, with zero Q4_K tensors and 248.83 GB on disk in total (231.7 GiB; main shards 138.24 GB). It is run with
 most of its experts kept in system RAM.
 
 Every run asked the same prompt, "Reply with exactly: The capital of France is",
@@ -55,7 +55,7 @@ no matches (exit code 1 means nothing was found).
 
 ## The checks that must pass
 
-- `ds4_parity` and `ds4_blas_parity` pass on Linux, CUDA, HIP and SYCL.
+- The default test suites and both ds4 parity tests, `ds4_parity` and `ds4_blas_parity`, pass on the Linux SYCL build. The CUDA and HIP builds were not run because no CUDA or HIP hardware is present here.
 - For the Q2_K, Q4_K and Q5_K expert shapes, the SYCL code and the CPU code
   agree: no value matched exactly (0 of 51), every value was within one BF16
   rounding step (51 of 51), and none was outside it (0 of 51). Measured on the
