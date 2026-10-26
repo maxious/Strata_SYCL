@@ -22,6 +22,14 @@
 #include <sstream>
 #include <stack>
 #include <sycl/sycl.hpp>
+// Strata: dev_mgr numbers real GPU devices in Level Zero discovery order (see detail::ordered_gpu_devices
+// below). The native-handle interop is the same path as src/dsv41/ds4_mem.cpp.
+#if __has_include(<sycl/ext/oneapi/backend/level_zero.hpp>) && __has_include(<level_zero/ze_api.h>)
+#include <sycl/backend.hpp>
+#include <sycl/ext/oneapi/backend/level_zero.hpp>
+#include <level_zero/ze_api.h>
+#define DPCT_STRATA_L0_ORDER 1
+#endif
 #include <thread>
 #include <vector>
 #if defined(__linux__)
@@ -721,6 +729,70 @@ static inline unsigned int get_tid() {
 #endif
 }
 
+namespace detail {
+// Strata: a device ordinal names a real GPU device in a stable physical order, like a CUDA
+// ordinal. The plain SYCL enumeration interleaves backends in runtime order (this PC lists
+// [opencl:cpu] first, then the OpenCL copies of the cards, then the Level Zero devices), so
+// ordinal 1 bound the host CPU and not the second card. The Level Zero discovery index is the
+// driver's physical order, so the Level Zero GPU devices are numbered in that order; the
+// non-GPU devices and the OpenCL copies of a card that already has a Level Zero interface take
+// no ordinal. A machine with no Level Zero GPU keeps the SYCL GPU devices in runtime order.
+static inline std::vector<sycl::device> ordered_gpu_devices() {
+  std::vector<sycl::device> gpus;
+  try {
+    gpus = sycl::device::get_devices(sycl::info::device_type::gpu);
+  } catch (const sycl::exception &) {
+    return gpus;
+  }
+#ifdef DPCT_STRATA_L0_ORDER
+  std::vector<sycl::device> l0;
+  for (auto &dev : gpus) {
+    if (dev.get_platform().get_backend() == sycl::backend::ext_oneapi_level_zero)
+      l0.push_back(dev);
+  }
+  if (!l0.empty()) {
+    std::vector<sycl::device> ordered;
+    try {
+      if (zeInit(0) == ZE_RESULT_SUCCESS) {
+        uint32_t driver_count = 0;
+        if (zeDriverGet(&driver_count, nullptr) == ZE_RESULT_SUCCESS && driver_count > 0) {
+          std::vector<ze_driver_handle_t> drivers(driver_count);
+          if (zeDriverGet(&driver_count, drivers.data()) == ZE_RESULT_SUCCESS) {
+            for (uint32_t di = 0; di < driver_count; ++di) {
+              uint32_t count = 0;
+              if (zeDeviceGet(drivers[di], &count, nullptr) != ZE_RESULT_SUCCESS || count == 0)
+                continue;
+              std::vector<ze_device_handle_t> handles(count);
+              if (zeDeviceGet(drivers[di], &count, handles.data()) != ZE_RESULT_SUCCESS)
+                continue;
+              for (uint32_t hi = 0; hi < count; ++hi) {
+                ze_device_properties_t props = {};
+                props.stype = ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES;
+                if (zeDeviceGetProperties(handles[hi], &props) != ZE_RESULT_SUCCESS ||
+                    props.type != ZE_DEVICE_TYPE_GPU)
+                  continue;
+                for (size_t k = 0; k < l0.size(); ++k) {
+                  if (sycl::get_native<sycl::backend::ext_oneapi_level_zero>(l0[k]) != handles[hi])
+                    continue;
+                  ordered.push_back(l0[k]);
+                  l0.erase(l0.begin() + k);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch (const sycl::exception &) {
+    }
+    for (auto &dev : l0) ordered.push_back(dev); // discovery did not name it: keep runtime order
+    return ordered;
+  }
+#endif
+  return gpus;
+}
+} // namespace detail
+
 /// device manager
 class dev_mgr {
 public:
@@ -856,23 +928,12 @@ public:
 private:
   mutable std::recursive_mutex m_mutex;
   dev_mgr() {
-    sycl::device default_device =
-        sycl::device(sycl::default_selector_v);
-    _devs.push_back(std::make_shared<device_ext>(default_device));
-
-    std::vector<sycl::device> sycl_all_devs =
-        sycl::device::get_devices(sycl::info::device_type::all);
-    // Collect other devices except for the default device.
-    if (default_device.is_cpu())
-      _cpu_device = 0;
-    for (auto &dev : sycl_all_devs) {
-      if (dev == default_device) {
-        continue;
-      }
+    // Strata: the ordinal list is detail::ordered_gpu_devices(), not "the default device plus
+    // everything else": ordinal 0 is the first Level Zero GPU in discovery order. On a machine
+    // whose default selector picks that same device (all of ours) the old ordinal 0 keeps its
+    // exact device, so the default path is unchanged; the ordinals after it now name cards.
+    for (auto &dev : detail::ordered_gpu_devices()) {
       _devs.push_back(std::make_shared<device_ext>(dev));
-      if (_cpu_device == -1 && dev.is_cpu()) {
-        _cpu_device = _devs.size() - 1;
-      }
     }
 #ifdef DPCT_HELPER_VERBOSE
     list_devices();
