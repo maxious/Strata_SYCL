@@ -15,6 +15,7 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "ds4_mem.hpp"
 #include "ds4_model.hpp"
 #include "ds4_pick_rule.hpp"
 #include "ds4_experts_rule.hpp"
@@ -2081,8 +2082,8 @@ struct Model::Impl {
             for device information which may not be supported by all compilers
             or runtimes. You may need to adjust the code.
             */
-            CK(DPCT_CHECK_ERROR(
-                dpct::get_current_device().get_memory_info(d.free0, d.total)));
+            // sysman reads the card's free bytes where dpct's aspect query reports 0 (#1545)
+            strata::dsv41::get_memory_size(dpct::get_current_device(), d.free0, d.total);
         }
         // the groups' width: o.tp, less while the experts' blocks do not split in it (a member takes n_ff / tp of each
         // expert: the down's inputs in whole blocks - a GGUF's 256-value types split n_ff 2304 in 1, 3 or 9 parts)
