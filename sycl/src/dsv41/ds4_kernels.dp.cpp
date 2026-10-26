@@ -1886,8 +1886,10 @@ void confidence_kernel(const float* __restrict__ x, const uint16_t* __restrict__
 // ggml's IQ4_NL: a block of 32 values is 18 bytes, an fp16 d then 16 packed nibble bytes; the low nibble of qs[j] is
 // value j and its high nibble value j + 16, each an index into this codebook (ggml-common.h's kvalues_iq4nl,
 // dequantize_row_iq4_nl).  A row is hd / 32 of these blocks, the d of every one inside it - no separate scales.
-inline dpct::constant_memory<int8_t, 1>
-    kIq4nl(sycl::range<1>(16), {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13,
+// never freed: exit-order safe (its queue is gone by the time a static destructor runs: the free would call
+// through it - "Pure virtual function called!", RC 134 at exit)
+inline dpct::constant_memory<int8_t, 1>& kIq4nl =
+    *new dpct::constant_memory<int8_t, 1>(sycl::range<1>(16), {-127, -104, -83, -65, -49, -35, -22, -10, 1, 13,
                                 25, 38, 53, 69, 89, 113});
 __dpct_inline__ float iq4nl_value(const uint8_t *b, int e,
                                   int8_t const *kIq4nl) {
