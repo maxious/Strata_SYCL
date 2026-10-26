@@ -284,6 +284,22 @@ if(STRATA_SYCL_DSV41)
   target_link_options(ds4_blas_parity PRIVATE -qmkl=sequential)
   target_link_libraries(ds4_blas_parity PRIVATE strata_dsv41 ${DNNL_LIBRARY})
   add_test(NAME ds4_blas_parity COMMAND ds4_blas_parity --selftest)
+
+  # The engine front-end, opt-in and OFF by default so the default build stays as it is. ds4_main.cpp compiles
+  # under SYCL with no CUDA left in it (measured 2026-10-26 with icpx 2026.2.0: -fsycl -c, 0 errors), and it asks
+  # the kernel library for 37 symbols. The port that answers them is ds4_model.cu; until it lands, this target
+  # compiles but does not link.
+  option(STRATA_SYCL_DSV41_EXE "Build the SYCL engine front-end (strata-dsv41) from src/dsv41/ds4_main.cpp" OFF)
+  if(STRATA_SYCL_DSV41_EXE)
+    add_executable(strata-dsv41 ${STRATA_ROOT}/src/dsv41/ds4_main.cpp ${STRATA_ROOT}/src/dsv41/ds4_packinfo.cpp
+                                 ${STRATA_ROOT}/src/dsv41/ds4_gguf_cpu.cpp ${STRATA_ROOT}/src/dsv41/ds4_iq_cpu.cpp
+                                 ${STRATA_ROOT}/src/dsv41/ds4_tq_cpu.cpp ${STRATA_ROOT}/src/dsv41/ds4_gg_cpu.cpp)
+    target_include_directories(strata-dsv41 PRIVATE ${STRATA_ROOT}/src/dsv41 ${STRATA_ROOT}/third_party/ggml
+                                                  ${STRATA_ROOT}/include ${CMAKE_CURRENT_SOURCE_DIR}/include/compat
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41)
+    target_compile_definitions(strata-dsv41 PRIVATE STRATA_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(strata-dsv41 PRIVATE strata_dsv41)
+  endif()
 endif()
 
 strata_resolve(_engine src/core/layer.cpp src/core/session.cpp src/core/expert_source.cpp src/core/remote_experts.cpp
