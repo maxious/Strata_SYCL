@@ -44,4 +44,68 @@ __dpct_inline__ float e4m3_round(float v) {
     return v < 0.0f ? -r : r;
 }
 
+__dpct_inline__ float bf16f(uint16_t b) {
+  return sycl::bit_cast<float>((uint32_t)b << 16);
+}
+
+__dpct_inline__ float warp_sum(float v) {
+    for (int o = 16; o > 0; o >>= 1) v += dpct::permute_sub_group_by_xor(
+        sycl::ext::oneapi::this_work_item::get_sub_group(), v, o);
+    return v;
+}
+__dpct_inline__ float warp_max(float v) {
+    for (int o = 16; o > 0; o >>= 1) v = sycl::fmax(
+        v, dpct::permute_sub_group_by_xor(
+               sycl::ext::oneapi::this_work_item::get_sub_group(), v, o));
+    return v;
+}
+
+// block-wide sum for blockDim.x <= 1024 (a multiple of 32); every thread gets the result
+__dpct_inline__ float block_sum(float v, float *red, float &total) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+
+    const int lane = item_ct1.get_local_id(2) & 31,
+              w = item_ct1.get_local_id(2) >> 5;
+    v = warp_sum(v);
+    if (lane == 0) red[w] = v;
+    /*
+    DPCT1065:76: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
+    item_ct1.barrier();
+    if (w == 0) {
+        float t = lane < (int)(item_ct1.get_local_range(2) >> 5) ? red[lane] : 0.0f;
+        t = warp_sum(t);
+        if (lane == 0) total = t;
+    }
+    /*
+    DPCT1065:77: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
+    item_ct1.barrier();
+    const float r = total;
+    /*
+    DPCT1065:78: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
+    item_ct1.barrier();
+    return r;
+}
+
+// an E2M1 code's value times 2^-14, by the conversion of an FP16 (the code's sign, exponent and mantissa bit are an
+// FP16's at bits 15 and 11..9: exact, subnormals too) - the readers' decode: (value 2^-14) (scale 2^14) is value * scale
+// exactly, both products exact
+__dpct_inline__ float e2m1_val14(uint32_t c) {
+    return sycl::vec<sycl::half, 1>(
+               sycl::bit_cast<sycl::half, unsigned short>(
+                   (unsigned short)(((c & 8u) << 12) | ((c & 7u) << 9))))
+        .convert<float, sycl::rounding_mode::automatic>()[0];
+}
+
 }  // namespace strata::ds4
