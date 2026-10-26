@@ -34,6 +34,7 @@ __dpct_inline__ float q6k_value(const uint8_t *__restrict__ b, int i) {
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     return d * (float)sc[(l >> 4) + 2 * quarter] * (float)q;
 }
 

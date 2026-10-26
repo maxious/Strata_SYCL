@@ -182,6 +182,7 @@ exceeds 128 bytes and may cause high register pressure. Consult with your
 hardware vendor to find the total register size available and adjust the code,
 or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 __dpct_inline__ void tile_dot(const uint8_t *const *wrows, int nblk,
                               const uint32_t *lut, const Act &act, int ne,
                               float (*acc_out)[8]) {
@@ -314,6 +315,7 @@ __dpct_inline__ float swiglu(float gv, float uv, float limit) { // ds4_iq.cu's
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     return gv / (1.0f + sycl::native::exp(-gv)) * uv;
 }
 
@@ -341,11 +343,13 @@ template <int K, bool COMPUTED> __dpct_inline__ void load_lut(uint32_t *lut) {
         DPCT1118:1: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:10: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
 }
@@ -376,6 +380,7 @@ gate_up_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void gate_up_kernel(const Args a, uint32_t *lut, int *ent, int *xr) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 
@@ -396,11 +401,13 @@ void gate_up_kernel(const Args a, uint32_t *lut, int *ent, int *xr) {
         DPCT1118:3: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:11: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if ((int)item_ct1.get_local_id(2) < ne) {
             const int e = a.grp_ptr != nullptr
@@ -413,11 +420,13 @@ void gate_up_kernel(const Args a, uint32_t *lut, int *ent, int *xr) {
         DPCT1118:4: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:12: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if (tile * kTileRows >= a.n_ff) continue;
         const ActQ8 act{a.xq, a.xd, xr, a.n_embd};
@@ -440,6 +449,7 @@ down_kernel exceeds 128 bytes and may cause high register pressure. Consult with
 your hardware vendor to find the total register size available and adjust the
 code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void down_kernel(const Args a, uint32_t *lut, int *ent) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 
@@ -459,11 +469,13 @@ void down_kernel(const Args a, uint32_t *lut, int *ent) {
         DPCT1118:6: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:13: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if ((int)item_ct1.get_local_id(2) < ne) ent[item_ct1.get_local_id(2)] =
             a.grp_ptr != nullptr ? a.grp_ent[mm + item_ct1.get_local_id(2)]
@@ -472,11 +484,13 @@ void down_kernel(const Args a, uint32_t *lut, int *ent) {
         DPCT1118:7: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:14: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if (tile * kTileRows >= a.n_embd) continue;
         const ActQ8 act{a.hq, a.hd, ent, a.n_ff};
@@ -502,6 +516,7 @@ exceeds 128 bytes and may cause high register pressure. Consult with your
 hardware vendor to find the total register size available and adjust the code,
 or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void set_kernel(const SetArgs a, uint32_t *lut, int *rowsel) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 
@@ -526,6 +541,7 @@ void set_kernel(const SetArgs a, uint32_t *lut, int *rowsel) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (tile * kTileRows >= N) return;
     float res[2][8];
@@ -567,6 +583,7 @@ void mv_kernel(const MvJob j, uint32_t *lut,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     const int lane = item_ct1.get_local_id(2) & 31, r = lane & 15,
               kg = lane >> 4, wave = item_ct1.get_local_id(2) >> 5;

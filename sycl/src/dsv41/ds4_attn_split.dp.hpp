@@ -54,6 +54,7 @@ exceeds 128 bytes and may cause high register pressure. Consult with your
 hardware vendor to find the total register size available and adjust the code,
 or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void attn_part(const float *__restrict__ q, const uint16_t *__restrict__ win,
                const uint8_t *__restrict__ ckv, size_t ckv_row_bytes,
                const int *__restrict__ sel, int sel_stride, AttnRows ar,
@@ -146,6 +147,7 @@ void attn_part(const float *__restrict__ q, const uint16_t *__restrict__ win,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     // ---- scores
     for (int jj = wp; jj < nr; jj += 8) {
@@ -173,6 +175,7 @@ void attn_part(const float *__restrict__ q, const uint16_t *__restrict__ win,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     // ---- local softmax: warp g handles head g
     if (wp < G) {
@@ -193,6 +196,7 @@ void attn_part(const float *__restrict__ q, const uint16_t *__restrict__ win,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     for (int i = item_ct1.get_local_id(2); i < nr * G; i += 256) {
       const int j = i / G, g = i % G; ((float *)&pr[j][0])[g] = sc[g][j];
@@ -202,6 +206,7 @@ void attn_part(const float *__restrict__ q, const uint16_t *__restrict__ win,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     // ---- partial output: thread = values 2 tid, 2 tid + 1 of every head
     float o0[G], o1[G];
@@ -274,6 +279,7 @@ void sparse_attn_split(const float *q, const uint16_t *win, const uint8_t *ckv,
             code to use the original expression, provided in comments, if it is
             correct.
             */
+            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
             sycl::local_accessor<uint16_t[R][512 /*D*/], 0> rows_acc_ct1(cgh);
             sycl::local_accessor<float[G][R], 0> sc_acc_ct1(cgh);
             sycl::local_accessor<sycl::float4[R][(G + 3) / 4], 0> pr_acc_ct1(

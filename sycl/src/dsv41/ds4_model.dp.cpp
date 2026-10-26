@@ -74,14 +74,17 @@ namespace gg = strata::ds4::gguf;
 /*
 DPCT1001:31: The statement could not be removed.
 */
+// audit note: DPCT1001 accepted — the statement dpct could not remove is the port's own launch-error counter, and the port wants that counter
 /*
 DPCT1000:32: Error handling if-stmt was detected but could not be rewritten.
 */
+// audit note: DPCT1000 accepted — error-handling boilerplate on the launch-check pattern the port keeps on purpose; the exception rewrite does not apply
 /*
 DPCT1009:33: SYCL reports errors using exceptions and does not use error codes.
 Please replace the "get_error_string_dummy(...)" with a real error-handling
 function.
 */
+// audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
 #define CK(call)                                                               \
   do {                                                                         \
     dpct::err0 e_ = (call);                                                    \
@@ -880,6 +883,7 @@ struct Model::Impl {
         DPCT1093:20: The "devs[(size_t) di].id" device may be not the one
         intended for use. Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(devs[(size_t)di].id);
         if (c.flow)
             for (size_t i = c.base; i < c.n_read; ++i)
@@ -1246,6 +1250,7 @@ struct Model::Impl {
         DPCT1093:21: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id); // (events of another device are an "invalid
                                    // resource handle")
         dpct::event_ptr e = nullptr;
@@ -1260,6 +1265,7 @@ struct Model::Impl {
         DPCT1093:22: The "cur" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(cur);
         prof_marks.push_back({&d, e, stage});
     }
@@ -1275,6 +1281,7 @@ struct Model::Impl {
                 DPCT1093:23: The "m.d->id" device may be not the one intended
                 for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(m.d->id);
                 if (DPCT_CHECK_ERROR(
                         ms = (m.ev->get_profiling_info<
@@ -1299,6 +1306,7 @@ struct Model::Impl {
         DPCT1093:24: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         /*
         DPCT1124:25: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -1306,6 +1314,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         d.st->memcpy(v.data(), h, v.size() * 4);
         d.st->wait();
         std::lock_guard<std::mutex> lk(dump_mu);
@@ -1326,6 +1335,7 @@ struct Model::Impl {
                 DPCT1093:26: The "devs[i].id" device may be not the one intended
                 for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(devs[i].id);
                 delete (chunks[i]->blas);
             }
@@ -1351,6 +1361,7 @@ struct Model::Impl {
             DPCT1093:27: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             for (void *p : d.allocs) DPCT_CHECK_ERROR(
                 dpct::dpct_free(p, dpct::get_in_order_queue()));
@@ -1372,6 +1383,7 @@ struct Model::Impl {
             memory for use by device. Use USM to allocate memory for use by host
             and device.
             */
+            // audit note: DPCT1027 accepted — cublasSetWorkspace is redundant in SYCL, and SYCL has no host-memory registration; these CUDA calls do not exist in this code path
             if (chunk > 0) 0;
             os::anon_free(m.first, m.second);
         }
@@ -1386,6 +1398,7 @@ struct Model::Impl {
         DPCT1093:29: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         const size_t b = align256(n * sizeof(T));
         if (DPCT_CHECK_ERROR(v = (void *)sycl::malloc_device(
@@ -1431,11 +1444,13 @@ struct Model::Impl {
         the migrated code and was removed or replaced with 0. You may need to
         check the migrated code.
         */
+        // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
         /*
         DPCT1048:1: The original value cudaHostAllocPortable is not meaningful
         in the migrated code and was removed or replaced with 0. You may need to
         check the migrated code.
         */
+        // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
         if (DPCT_CHECK_ERROR(
                 v = (void *)sycl::malloc_host(
                     n * sizeof(T) + 64, dpct::get_in_order_queue())) != 0) {
@@ -1459,6 +1474,7 @@ struct Model::Impl {
         in the migrated code and was removed or replaced with 0. You may need to
         check the migrated code.
         */
+        // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
         if (DPCT_CHECK_ERROR(
                 v = (void *)sycl::malloc_host(
                     n * sizeof(T) + 64, dpct::get_in_order_queue())) != 0) {
@@ -1486,6 +1502,7 @@ struct Model::Impl {
         DPCT1093:30: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         CK(DPCT_CHECK_ERROR(dpct::get_in_order_queue()
                                 .memcpy(dst, tmp.data(), t.bytes)
@@ -1536,6 +1553,7 @@ struct Model::Impl {
         DPCT1093:34: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         CK(DPCT_CHECK_ERROR(
             dpct::get_in_order_queue().memcpy(dp, w.data(), w.size()).wait()));
@@ -1601,6 +1619,7 @@ struct Model::Impl {
         DPCT1093:35: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         CK(DPCT_CHECK_ERROR(
             dpct::get_in_order_queue().memcpy(dp, w.data(), w.size()).wait()));
@@ -1687,6 +1706,7 @@ struct Model::Impl {
             DPCT1093:36: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             CK(DPCT_CHECK_ERROR(dpct::get_in_order_queue()
                                     .memcpy(dt, t1.data(), t1.size())
@@ -1763,6 +1783,7 @@ struct Model::Impl {
         DPCT1093:37: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         CK(DPCT_CHECK_ERROR(
             dpct::get_in_order_queue().memcpy(p, v.data(), n * 4).wait()));
@@ -1797,6 +1818,7 @@ struct Model::Impl {
             DPCT1093:38: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             CK(DPCT_CHECK_ERROR(
                 dpct::get_in_order_queue().memcpy(p, h.data(), n * 2).wait()));
@@ -2087,11 +2109,13 @@ struct Model::Impl {
             DPCT1093:39: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             CK(DPCT_CHECK_ERROR(dpct::select_device(d.id)));
             /*
             DPCT1025:40: The SYCL queue is created ignoring the flag and
             priority options.
             */
+            // audit note: DPCT1025 accepted — the CUDA flag and priority options have no SYCL counterpart; the port creates plain in-order queues at these calls, and the thread-binding question at the same calls is the DPCT1093 row
             CK(DPCT_CHECK_ERROR(d.st = dpct::get_current_device().create_queue()));
             // the answer's copy queue: the payload and the flag go into the card's memory through it, so the card
             // never has to see a host store (the copy engine's write is what the card's wait reads).
@@ -2101,6 +2125,7 @@ struct Model::Impl {
                 err = "exl3 scratch on CUDA" + std::to_string(d.id);
                 return false;
             }
+            // audit note: DPCT1106 accepted — the card-memory query is the port's own mirror: a sysman path with the SYCL API as fallback, called with attribution; the SYCL dsv41 target builds only with oneAPI, where the extension exists
             /*
             DPCT1106:41: 'cudaMemGetInfo' was migrated with the Intel extensions
             for device information which may not be supported by all compilers
@@ -2279,6 +2304,7 @@ struct Model::Impl {
                         differentiate between integrated and discrete GPU
                         devices.
                         */
+                        // audit note: DPCT1006 accepted — the query only warns about integrated GPUs, and both sites guard it so a runtime without it skips the warning; the Intel target has the query
                         if (DPCT_CHECK_ERROR(
                                 dpct::get_device(dv.id).get_device_info(ip)) ==
                                 0 &&
@@ -2607,6 +2633,7 @@ struct Model::Impl {
             DPCT1093:43: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             CK(DPCT_CHECK_ERROR(
                 dpct::get_in_order_queue()
@@ -2670,6 +2697,7 @@ struct Model::Impl {
             DPCT1093:46: The "devs[(size_t) d_dev].id" device may be not the one
             intended for use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             CK(DPCT_CHECK_ERROR(dpct::select_device(devs[(size_t)d_dev].id)));
             CK(DPCT_CHECK_ERROR(ev_seed = new sycl::event()));
             /*
@@ -2678,6 +2706,7 @@ struct Model::Impl {
             replaced with 0. You may need to rewrite the program logic consuming
             the error code.
             */
+            // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
             CK(DPCT_CHECK_ERROR(dpct::sync_barrier(ev_seed, devs[(size_t)d_dev].st)));
         }
         // the dense weights, each device's layers by a thread of its own
@@ -2886,6 +2915,7 @@ struct Model::Impl {
                     DPCT1093:48: The "d.id" device may be not the one intended
                     for use. Adjust the selected device if needed.
                     */
+                    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                     dpct::select_device(d.id);
                     dpct::get_current_device().queues_wait_and_throw();
                     if (di < chunks.size() && chunks[di]) {
@@ -2931,6 +2961,7 @@ struct Model::Impl {
                 DPCT1093:49: The "d.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(d.id);
                 size_t fr = 0, tot = 0;
                 /*
@@ -2938,6 +2969,7 @@ struct Model::Impl {
                 extensions for device information which may not be supported by
                 all compilers or runtimes. You may need to adjust the code.
                 */
+                // audit note: DPCT1106 accepted — the card-memory query is the port's own mirror: a sysman path with the SYCL API as fallback, called with attribution; the SYCL dsv41 target builds only with oneAPI, where the extension exists
                 CK(DPCT_CHECK_ERROR(
                     dpct::get_current_device().get_memory_info(fr, tot)));
                 room += std::max(0.0, (double) fr - (double) ((size_t) o.reserve_mib << 20)) * o.vram_experts;
@@ -2985,6 +3017,7 @@ struct Model::Impl {
                 host memory for use by device. Use USM to allocate memory for
                 use by host and device.
                 */
+                // audit note: DPCT1027 accepted — cublasSetWorkspace is redundant in SYCL, and SYCL has no host-memory registration; these CUDA calls do not exist in this code path
                 if (0 != 0) {
                     err = "pinning the CPU lane's experts (" + std::to_string(m.second >> 20) + " MiB) failed";
                     return false;
@@ -3034,6 +3067,7 @@ struct Model::Impl {
                     DPCT1093:52: The "devs[di].id" device may be not the one
                     intended for use. Adjust the selected device if needed.
                     */
+                    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                     dpct::select_device(devs[di].id);
                     cp->flow = true;
                     cp->dev = (int) di;
@@ -3076,11 +3110,13 @@ struct Model::Impl {
             in the migrated code and was removed or replaced with 0. You may
             need to check the migrated code.
             */
+            // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
             /*
             DPCT1048:4: The original value cudaHostAllocPortable is not
             meaningful in the migrated code and was removed or replaced with 0.
             You may need to check the migrated code.
             */
+            // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
             if (DPCT_CHECK_ERROR(m = (void *)strata::host_malloc_polled(
                                      sizeof(Req) * kRing,
                                      dpct::get_in_order_queue())) != 0) {
@@ -3094,11 +3130,13 @@ struct Model::Impl {
             in the migrated code and was removed or replaced with 0. You may
             need to check the migrated code.
             */
+            // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
             /*
             DPCT1048:6: The original value cudaHostAllocPortable is not
             meaningful in the migrated code and was removed or replaced with 0.
             You may need to check the migrated code.
             */
+            // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
             if (DPCT_CHECK_ERROR(m = (void *)strata::host_malloc_polled(
                                      sizeof(Resp) * kRing,
                                      dpct::get_in_order_queue())) != 0) {
@@ -3137,12 +3175,14 @@ struct Model::Impl {
                     DPCT1093:53: The "d.id" device may be not the one intended
                     for use. Adjust the selected device if needed.
                     */
+                    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                     dpct::select_device(d.id);
                     dpct::queue_ptr cs = &dpct::get_in_order_queue();
                     /*
                     DPCT1025:54: The SYCL queue is created ignoring the flag and
                     priority options.
                     */
+                    // audit note: DPCT1025 accepted — the CUDA flag and priority options have no SYCL counterpart; the port creates plain in-order queues at these calls, and the thread-binding question at the same calls is the DPCT1093 row
                     CK(DPCT_CHECK_ERROR(cs = dpct::get_current_device().create_queue()));
                     B.st.push_back(cs);
                 }
@@ -3154,6 +3194,7 @@ struct Model::Impl {
             DPCT1093:55: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             CK(DPCT_CHECK_ERROR(d.st->wait()));
         }
@@ -3196,6 +3237,7 @@ struct Model::Impl {
             DPCT1093:56: The "devs[di].id" device may be not the one intended
             for use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(devs[di].id);
             (void)DPCT_CHECK_ERROR(oneapi::mkl::blas::column_major::gemm(
                 (c.blas)->get_queue(), oneapi::mkl::transpose::trans,
@@ -3216,6 +3258,7 @@ struct Model::Impl {
             the error codes. The cudaGetLastError function call was replaced
             with 0. You need to rewrite this code.
             */
+            // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
             (void)0;
         }
     }
@@ -3283,6 +3326,7 @@ struct Model::Impl {
             DPCT1093:58: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             chunks[di] = std::make_unique<Chunk>();
             Chunk& c = *chunks[di];
@@ -3344,6 +3388,7 @@ struct Model::Impl {
             DPCT1025:59: The SYCL queue is created ignoring the flag and
             priority options.
             */
+            // audit note: DPCT1025 accepted — the CUDA flag and priority options have no SYCL counterpart; the port creates plain in-order queues at these calls, and the thread-binding question at the same calls is the DPCT1093 row
             CK(DPCT_CHECK_ERROR(c.cs = dpct::get_current_device().create_queue()));
             for (int i = 0; i < Chunk::kParts; ++i) {
                 CK(DPCT_CHECK_ERROR(c.filled[i] = new sycl::event()));
@@ -3462,6 +3507,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     ok = DPCT_CHECK_ERROR(cs->memcpy(dst, src, l.blob)) == 0;
                 else
                     for (int r = 0; r < 3; ++r)
@@ -3472,6 +3518,7 @@ struct Model::Impl {
                         need to call wait() on event return by memcpy API to
                         ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         ok = ok && DPCT_CHECK_ERROR(cs->memcpy(
                                        dst + l.lay.trellis[r], mat_r(r),
                                        mx_part_bytes(l, r))) == 0;
@@ -3488,6 +3535,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     ok = ok && DPCT_CHECK_ERROR(
                                    cs->memcpy(dst + l.hlay.trellis[r],
                                               mat_r(r) + (size_t)m * ffh * gr,
@@ -3499,6 +3547,7 @@ struct Model::Impl {
                 wait() on event return by memcpy API to ensure synchronization
                 behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 ok = ok && DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                                dst + l.hlay.trellis[2], dh,
                                mat_r(2) + (size_t)m * dh, dr, dh, (size_t)g.dim,
@@ -3516,6 +3565,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             return DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                        d0, dp, s0, sp, w, h, dpct::host_to_device, *cs)) == 0;
         };
@@ -3526,6 +3576,7 @@ struct Model::Impl {
             operand memory, so you may need to call wait() on event return by
             memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             return DPCT_CHECK_ERROR(cs->memcpy(d0, s0, n)) == 0;
         };
         bool ok = true;
@@ -3693,6 +3744,7 @@ struct Model::Impl {
             replaced with 0. You may need to rewrite the program logic consuming
             the error code.
             */
+            // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
             CK(DPCT_CHECK_ERROR(dpct::sync_barrier(c.filled[half], c.cs)));
             ++S.cp;
             S.done.store(S.cp, std::memory_order_relaxed);
@@ -3921,10 +3973,12 @@ struct Model::Impl {
                     /*
                     DPCT1001:67: The statement could not be removed.
                     */
+                    // audit note: DPCT1001 accepted — the statement dpct could not remove is the port's own launch-error counter, and the port wants that counter
                     /*
                     DPCT1002:68: Special case error handling if-stmt was
                     detected. You may need to rewrite this code.
                     */
+                    // audit note: DPCT1002 accepted — exception-versus-error-code boilerplate on a special-case break in a read loop; the error-code flow stays
                     if (q == 1) break;
                     CK(q);
                 }
@@ -3995,6 +4049,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(c.cs->memcpy(
                     dst + lay.trellis[p], it.src[p], mx_read_len(l, p))));
             if (l.nm > 1) {   // (the down's part: in each of its rows the member's blocks)
@@ -4007,6 +4062,7 @@ struct Model::Impl {
                 wait() on event return by memcpy API to ensure synchronization
                 behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                     dst + lay.trellis[2], dh, it.src[2] + (size_t)it.mi * dh,
                     dr, dh, (size_t)g.dim, dpct::host_to_device, *(c.cs))));
@@ -4017,6 +4073,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(c.cs->memcpy(
                     dst + lay.trellis[2], it.src[2], mx_part_bytes(l, 2))));
             /*
@@ -4025,6 +4082,7 @@ struct Model::Impl {
             replaced with 0. You may need to rewrite the program logic consuming
             the error code.
             */
+            // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
             CK(DPCT_CHECK_ERROR(dpct::sync_barrier(c.ring_fill[r], c.cs)));
             /*
             DPCT1024:73: The original code returned the error code that was
@@ -4032,6 +4090,7 @@ struct Model::Impl {
             replaced with 0. You may need to rewrite the program logic consuming
             the error code.
             */
+            // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
             if (it.stage >= 0) CK(DPCT_CHECK_ERROR(
                 dpct::sync_barrier(c.stage_ev[(size_t)it.stage], c.cs)));
             c.stream_bytes += (double) unit(l);
@@ -4094,6 +4153,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(s->memcpy(bcd, bc, (size_t)(n + 1) * 4)));
                 if (!run_set(d, c, L0, c.ring + (i0 % R) * c.ring_stride, 0, c.ring_stride, bcd, bc, 0, n, T, err))
                     return false;
@@ -4104,6 +4164,7 @@ struct Model::Impl {
             replaced with 0. You may need to rewrite the program logic consuming
             the error code.
             */
+            // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
             for (size_t i = i0; i < i1; ++i)
                 CK(DPCT_CHECK_ERROR(dpct::sync_barrier(c.ring_free[i % R], s)));
             kick(s);
@@ -4221,6 +4282,7 @@ struct Model::Impl {
         DPCT1093:76: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         size_t* acct = &d.weights;
         for (Layer& l0 : L)
@@ -4478,6 +4540,7 @@ struct Model::Impl {
                 DPCT1093:77: The "devs[(size_t) m].id" device may be not the one
                 intended for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(devs[(size_t)m].id);
                 size_t fr = 0, tot = 0;
                 /*
@@ -4485,6 +4548,7 @@ struct Model::Impl {
                 extensions for device information which may not be supported by
                 all compilers or runtimes. You may need to adjust the code.
                 */
+                // audit note: DPCT1106 accepted — the card-memory query is the port's own mirror: a sysman path with the SYCL API as fallback, called with attribution; the SYCL dsv41 target builds only with oneAPI, where the extension exists
                 CK(DPCT_CHECK_ERROR(
                     dpct::get_current_device().get_memory_info(fr, tot)));
                 // (an integrated GPU, Windows: its memory is the system's.  What it allocates after the experts - the long
@@ -4582,6 +4646,7 @@ struct Model::Impl {
                 DPCT1093:79: The "d.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(d.id);
                 void* v = nullptr;
                 if (DPCT_CHECK_ERROR(v = (void *)sycl::malloc_device(
@@ -4667,6 +4732,7 @@ struct Model::Impl {
                 DPCT1093:80: The "devs[(size_t) x.dev].id" device may be not the
                 one intended for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(devs[(size_t)x.dev].id);
                 CK(DPCT_CHECK_ERROR(
                     dpct::get_in_order_queue()
@@ -4710,12 +4776,14 @@ struct Model::Impl {
                 meaningful in the migrated code and was removed or replaced with
                 0. You may need to check the migrated code.
                 */
+                // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
                 stage = (uint8_t *)sycl::malloc_host(maxb, dpct::get_in_order_queue());
                 /*
                 DPCT1048:8: The original value cudaHostAllocPortable is not
                 meaningful in the migrated code and was removed or replaced with
                 0. You may need to check the migrated code.
                 */
+                // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
                 stage2 = (uint8_t *)sycl::malloc_host(maxb, dpct::get_in_order_queue());
                 for (;;) {
                     const size_t i = next.fetch_add(1);
@@ -4730,6 +4798,7 @@ struct Model::Impl {
                         not the one intended for use. Adjust the selected device
                         if needed.
                         */
+                        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                         dpct::select_device(devs[(size_t)x.dev].id);
                         if (l.nm > 1) blob_to_half(l, stage, m, stage2);
                         ok = DPCT_CHECK_ERROR(
@@ -5074,12 +5143,14 @@ struct Model::Impl {
                 meaningful in the migrated code and was removed or replaced with
                 0. You may need to check the migrated code.
                 */
+                // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
                 stage = (uint8_t *)sycl::malloc_host(maxb, dpct::get_in_order_queue());
                 /*
                 DPCT1048:10: The original value cudaHostAllocPortable is not
                 meaningful in the migrated code and was removed or replaced with
                 0. You may need to check the migrated code.
                 */
+                // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
                 stage2 = (uint8_t *)sycl::malloc_host(maxb, dpct::get_in_order_queue());
                 int cur_dev = -1;
                 for (;;) {
@@ -5106,6 +5177,7 @@ struct Model::Impl {
                                 one intended for use. Adjust the selected device
                                 if needed.
                                 */
+                                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                                 dpct::select_device(d.id);
                                 cur_dev = d.id;
                             }
@@ -5173,12 +5245,14 @@ struct Model::Impl {
             DPCT1093:83: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             /*
             DPCT1106:84: 'cudaMemGetInfo' was migrated with the Intel extensions
             for device information which may not be supported by all compilers
             or runtimes. You may need to adjust the code.
             */
+            // audit note: DPCT1106 accepted — the card-memory query is the port's own mirror: a sysman path with the SYCL API as fallback, called with attribution; the SYCL dsv41 target builds only with oneAPI, where the extension exists
             dpct::get_current_device().get_memory_info(fr, tot);
             const size_t gsz = groups.empty() ? 1 : groups[(size_t) d.grp].mem.size();
             char tp[64] = "";
@@ -5322,16 +5396,19 @@ struct Model::Impl {
                 DPCT1093:85: The "dev0" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(dev0);
                 /*
                 DPCT1006:86: SYCL does not provide a standard API to
                 differentiate between integrated and discrete GPU devices.
                 */
+                // audit note: DPCT1006 accepted — the query only warns about integrated GPUs, and both sites guard it so a runtime without it skips the warning; the Intel target has the query
                 /*
                 DPCT1106:87: 'cudaMemGetInfo' was migrated with the Intel
                 extensions for device information which may not be supported by
                 all compilers or runtimes. You may need to adjust the code.
                 */
+                // audit note: DPCT1106 accepted — the card-memory query is the port's own mirror: a sysman path with the SYCL API as fallback, called with attribution; the SYCL dsv41 target builds only with oneAPI, where the extension exists
                 if (DPCT_CHECK_ERROR(
                         dpct::get_device(dev0).get_device_info(zp)) == 0 &&
                     zp.get_integrated() &&
@@ -5348,6 +5425,7 @@ struct Model::Impl {
                 DPCT1093:88: The "dev0" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(dev0);
                 // SYCL has no host-memory registration (DPCT1027:89); the store is read
                 // through USM, so the CUDA flags are not carried over.
@@ -5362,12 +5440,14 @@ struct Model::Impl {
                 host memory for use by device. Use USM to allocate memory for
                 use by host and device.
                 */
+                // audit note: DPCT1027 accepted — cublasSetWorkspace is redundant in SYCL, and SYCL has no host-memory registration; these CUDA calls do not exist in this code path
                 if (0 != 0) {
                     /*
                     DPCT1010:90: SYCL uses exceptions to report errors and does
                     not use the error codes. The cudaGetLastError function call
                     was replaced with 0. You need to rewrite this code.
                     */
+                    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                     (void)0;
                     return nullptr;
                 }
@@ -5378,6 +5458,7 @@ struct Model::Impl {
                     not use the error codes. The cudaGetLastError function call
                     was replaced with 0. You need to rewrite this code.
                     */
+                    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                     (void)0;
                     /*
                     DPCT1026:91: The call to cudaHostUnregister was removed
@@ -5385,6 +5466,7 @@ struct Model::Impl {
                     existing host memory for use by device. Use USM to allocate
                     memory for use by host and device.
                     */
+                    // audit note: DPCT1026 accepted — the removed calls are CUDA-only; cudaGetLastError is redundant in SYCL, and cudaFuncSetAttribute has no SYCL setting; local accessors size the shared memory instead
                     return nullptr;
                 }
                 if (d != h) std::fprintf(stderr, "ds4: RAM store: chunk host %p -> device %p (not the identity)\n", h, d);
@@ -5395,6 +5477,7 @@ struct Model::Impl {
                 DPCT1093:93: The "dev0" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(dev0);
                 /*
                 DPCT1026:94: The call to cudaHostUnregister was removed because
@@ -5402,6 +5485,7 @@ struct Model::Impl {
                 memory for use by device. Use USM to allocate memory for use by
                 host and device.
                 */
+                // audit note: DPCT1026 accepted — the removed calls are CUDA-only; cudaGetLastError is redundant in SYCL, and cudaFuncSetAttribute has no SYCL setting; local accessors size the shared memory instead
             };
         }
         bool direct = true;
@@ -5430,6 +5514,7 @@ struct Model::Impl {
                 DPCT1093:95: The "devs[0].id" device may be not the one intended
                 for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(devs[0].id);
                 if (DPCT_CHECK_ERROR(
                         zc_stage_buf = (uint8_t *)sycl::malloc_device(
@@ -5440,6 +5525,7 @@ struct Model::Impl {
                     not use the error codes. The cudaGetLastError function call
                     was replaced with 0. You need to rewrite this code.
                     */
+                    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                     (void)0;
                     zc_stage_buf = nullptr;
                     for (Layer& l : L) l.zc.clear();
@@ -5461,6 +5547,7 @@ struct Model::Impl {
                             cudaGetLastError function call was replaced with 0.
                             You need to rewrite this code.
                             */
+                            // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                             (void)0;
                             l.zc.clear();
                         }
@@ -5548,6 +5635,7 @@ struct Model::Impl {
             DPCT1093:98: The "devs[0].id" device may be not the one intended for
             use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(devs[0].id);
             /*
             DPCT1124:99: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -5555,6 +5643,7 @@ struct Model::Impl {
             operand memory, so you may need to call wait() on event return by
             memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             devs[0].st->memcpy(l.zc_tab, tab.data(), tab.size() * 8);
         }
     }
@@ -5619,6 +5708,7 @@ struct Model::Impl {
                 DPCT1093:100: The "d.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(d.id);
                 d.st->memset(l.win, 0, (size_t)g.win * win_rb());
                 if (l.c_kv) d.st->memset(l.c_kv, 0, (size_t)l.ratio * g.hd * 4);
@@ -5629,6 +5719,7 @@ struct Model::Impl {
             DPCT1093:101: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             d.st->wait();
         }
@@ -5648,6 +5739,7 @@ struct Model::Impl {
             DPCT1093:102: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             c.win[i].resize((size_t) g.win * win_rb());
             /*
@@ -5656,6 +5748,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             d.st->memcpy(c.win[i].data(), l.win, c.win[i].size());
             if (l.c_kv) {
                 c.comp[2 * i].resize((size_t) l.ratio * g.hd);
@@ -5666,6 +5759,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 d.st->memcpy(c.comp[2 * i].data(), l.c_kv, c.comp[2 * i].size() * 4);
                 /*
                 DPCT1124:105: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -5673,6 +5767,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 d.st->memcpy(c.comp[2 * i + 1].data(), l.c_score,
                              c.comp[2 * i + 1].size() * 4);
             }
@@ -5682,6 +5777,7 @@ struct Model::Impl {
             DPCT1093:106: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             d.st->wait();
         }
@@ -5738,6 +5834,7 @@ struct Model::Impl {
                 DPCT1093:107: The "d.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(d.id);
                 /*
                 DPCT1124:108: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -5745,6 +5842,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 d.st->memcpy(l.win, c.win[i].data(), c.win[i].size());
                 if (l.c_kv) {
                     /*
@@ -5754,6 +5852,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     d.st->memcpy(l.c_kv, c.comp[2 * i].data(), c.comp[2 * i].size() * 4);
                     /*
                     DPCT1124:110: cudaMemcpyAsync is migrated to asynchronous
@@ -5762,6 +5861,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     d.st->memcpy(l.c_score, c.comp[2 * i + 1].data(),
                                  c.comp[2 * i + 1].size() * 4);
                 }
@@ -5771,6 +5871,7 @@ struct Model::Impl {
             DPCT1093:111: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             d.st->wait();
         }
@@ -5840,6 +5941,7 @@ struct Model::Impl {
             DPCT1093:112: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             d.st->wait();
         }
@@ -5850,6 +5952,7 @@ struct Model::Impl {
             DPCT1093:113: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             const uint64_t wb = (uint64_t) g.win * win_rb();
             put(&wb, 8);
@@ -5862,11 +5965,13 @@ struct Model::Impl {
                 "get_error_string_dummy(...)" with a real error-handling
                 function.
                 */
+                // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
                 /*
                 DPCT1010:115: SYCL uses exceptions to report errors and does not
                 use the error codes. The cudaGetLastError function call was
                 replaced with 0. You need to rewrite this code.
                 */
+                // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                 err = l.name + "window ring: " + dpct::get_error_string_dummy(0);
                 return 0;
             }
@@ -5887,11 +5992,13 @@ struct Model::Impl {
                     "get_error_string_dummy(...)" with a real error-handling
                     function.
                     */
+                    // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
                     /*
                     DPCT1010:117: SYCL uses exceptions to report errors and does
                     not use the error codes. The cudaGetLastError function call
                     was replaced with 0. You need to rewrite this code.
                     */
+                    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                     err = l.name + "compressor's group: " +
                           dpct::get_error_string_dummy(0);
                     return 0;
@@ -5915,6 +6022,7 @@ struct Model::Impl {
             DPCT1093:118: The "devs[(size_t) di].id" device may be not the one
             intended for use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(devs[(size_t)di].id);
             if (DPCT_CHECK_ERROR(dpct::get_in_order_queue()
                                      .memcpy(p + off, ckv, cb)
@@ -5929,11 +6037,13 @@ struct Model::Impl {
                 "get_error_string_dummy(...)" with a real error-handling
                 function.
                 */
+                // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
                 /*
                 DPCT1010:120: SYCL uses exceptions to report errors and does not
                 use the error codes. The cudaGetLastError function call was
                 replaced with 0. You need to rewrite this code.
                 */
+                // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                 err = "source layer " + std::to_string(s.layer) +
                       "'s compressed KV: " + dpct::get_error_string_dummy(0);
                 return 0;
@@ -6020,6 +6130,7 @@ struct Model::Impl {
             DPCT1093:121: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             d.st->wait();
         }
@@ -6030,6 +6141,7 @@ struct Model::Impl {
             DPCT1093:122: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             uint64_t wb = 0, cn = 0;
             if (!room(8)) {
@@ -6054,11 +6166,13 @@ struct Model::Impl {
                     "get_error_string_dummy(...)" with a real error-handling
                     function.
                     */
+                    // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
                     /*
                     DPCT1010:124: SYCL uses exceptions to report errors and does
                     not use the error codes. The cudaGetLastError function call
                     was replaced with 0. You need to rewrite this code.
                     */
+                    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                     err = l.name + "window ring: " + dpct::get_error_string_dummy(0);
                     return false;
                 }
@@ -6091,12 +6205,14 @@ struct Model::Impl {
                         "get_error_string_dummy(...)" with a real error-handling
                         function.
                         */
+                        // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
                         /*
                         DPCT1010:126: SYCL uses exceptions to report errors and
                         does not use the error codes. The cudaGetLastError
                         function call was replaced with 0. You need to rewrite
                         this code.
                         */
+                        // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                         err = l.name + "compressor's group: " +
                               dpct::get_error_string_dummy(0);
                         return false;
@@ -6129,6 +6245,7 @@ struct Model::Impl {
                 DPCT1093:127: The "devs[di].id" device may be not the one
                 intended for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(devs[di].id);
                 if (s.ckv[di] != nullptr &&
                     DPCT_CHECK_ERROR(dpct::get_in_order_queue()
@@ -6140,11 +6257,13 @@ struct Model::Impl {
                     "get_error_string_dummy(...)" with a real error-handling
                     function.
                     */
+                    // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
                     /*
                     DPCT1010:129: SYCL uses exceptions to report errors and does
                     not use the error codes. The cudaGetLastError function call
                     was replaced with 0. You need to rewrite this code.
                     */
+                    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                     err =
                         "source layer " + std::to_string(s.layer) +
                         "'s compressed KV: " + dpct::get_error_string_dummy(0);
@@ -6160,11 +6279,13 @@ struct Model::Impl {
                     "get_error_string_dummy(...)" with a real error-handling
                     function.
                     */
+                    // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
                     /*
                     DPCT1010:131: SYCL uses exceptions to report errors and does
                     not use the error codes. The cudaGetLastError function call
                     was replaced with 0. You need to rewrite this code.
                     */
+                    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
                     err = "source layer " + std::to_string(s.layer) +
                           "'s index keys: " + dpct::get_error_string_dummy(0);
                     return false;
@@ -6338,12 +6459,14 @@ struct Model::Impl {
         DPCT1093:132: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         CK(DPCT_CHECK_ERROR(dpct::select_device(d.id)));
         /*
         DPCT1106:133: 'cudaMemGetInfo' was migrated with the Intel extensions
         for device information which may not be supported by all compilers or
         runtimes. You may need to adjust the code.
         */
+        // audit note: DPCT1106 accepted — the card-memory query is the port's own mirror: a sysman path with the SYCL API as fallback, called with attribution; the SYCL dsv41 target builds only with oneAPI, where the extension exists
         CK(DPCT_CHECK_ERROR(dpct::get_current_device().get_memory_info(
             d.free0, d.total))); // (the split sees what the tower left)
         if (o.verbose)
@@ -6622,6 +6745,7 @@ struct Model::Impl {
             register size available and adjust the code, or use smaller
             sub-group size to avoid high register pressure.
             */
+            // audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
             f[X] = [&, X](int j) {
                 const Ent& en = ents[(size_t) (ord != nullptr ? ord[j / GB] : j / GB)];
                 const int r0 = X * FFh + (j % GB) * RB, r1 = std::min(X * FFh + FFh, r0 + RB);
@@ -6662,6 +6786,7 @@ struct Model::Impl {
             register size available and adjust the code, or use smaller
             sub-group size to avoid high register pressure.
             */
+            // audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
             f[X] = [&, X](int j) {
                 const Ent& en = ents[(size_t) (ord != nullptr ? ord[j / DB] : j / DB)];
                 const int r0 = X * Eh + (j % DB) * RB, r1 = std::min(X * Eh + Eh, r0 + RB);
@@ -6731,6 +6856,7 @@ struct Model::Impl {
             register size available and adjust the code, or use smaller
             sub-group size to avoid high register pressure.
             */
+            // audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
             f[X] = [&, X](int j) {
                 const Ent& en = ents[(size_t) (ord != nullptr ? ord[j / GB] : j / GB)];
                 const int r0 = X * FFh + (j % GB) * RB, r1 = std::min(X * FFh + FFh, r0 + RB);
@@ -6760,6 +6886,7 @@ struct Model::Impl {
             register size available and adjust the code, or use smaller
             sub-group size to avoid high register pressure.
             */
+            // audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
             f[X] = [&, X](int j) {
                 const Ent& en = ents[(size_t) (ord != nullptr ? ord[j / DB] : j / DB)];
                 const int r0 = X * Eh + (j % DB) * RB, r1 = std::min(X * Eh + Eh, r0 + RB);
@@ -6897,6 +7024,7 @@ struct Model::Impl {
             register size available and adjust the code, or use smaller
             sub-group size to avoid high register pressure.
             */
+            // audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
             f[X] = [&, X](int j) {
                 const Ent& en = ents[(size_t) (j / (2 * GQ))];
                 const int r = (j / GQ) % 2, q = j % GQ;
@@ -6923,6 +7051,7 @@ struct Model::Impl {
             register size available and adjust the code, or use smaller
             sub-group size to avoid high register pressure.
             */
+            // audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
             f[X] = [&, X](int j) {
                 const Ent& en = ents[(size_t) (j / GB)];
                 const int b = j % GB;
@@ -6961,6 +7090,7 @@ struct Model::Impl {
             register size available and adjust the code, or use smaller
             sub-group size to avoid high register pressure.
             */
+            // audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
             f[X] = [&, X](int j) {
                 const Ent& en = ents[(size_t) (j / DQ)];
                 const int q = j % DQ;
@@ -6983,6 +7113,7 @@ struct Model::Impl {
             register size available and adjust the code, or use smaller
             sub-group size to avoid high register pressure.
             */
+            // audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
             f[X] = [&, X](int j) {
                 const Ent& en = ents[(size_t) (j / DB)];
                 const int b = j % DB;
@@ -7055,6 +7186,7 @@ struct Model::Impl {
                 DPCT1093:134: The "d.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(d.id);
                 dpct::queue_ptr cs = B.st[(size_t)l.dev];
                 /*
@@ -7063,6 +7195,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 cs->memcpy(l.vram_base + (size_t)l.spare_vram * l.blob, B.a, l.blob);
                 if (!file_experts)
                     /*
@@ -7072,6 +7205,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     cs->memcpy(B.b,
                                l.vram_base +
                                    (size_t)l.slot[(size_t)sw.out] * l.blob,
@@ -7085,6 +7219,7 @@ struct Model::Impl {
                     not the one intended for use. Adjust the selected device if
                     needed.
                     */
+                    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                     dpct::select_device(devs[(size_t)x.dev].id);
                     dpct::queue_ptr cs = B.st[(size_t)x.dev];
                     blob_to_half(l, B.a, m, B.h);
@@ -7095,6 +7230,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     cs->memcpy(x.vram_base + (size_t)l.spare_vram * x.hblob,
                                B.h, x.hblob);
                     cs->wait();
@@ -7106,6 +7242,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     cs->memcpy(B.h,
                                x.vram_base +
                                    (size_t)l.slot[(size_t)sw.out] * x.hblob,
@@ -7141,6 +7278,7 @@ struct Model::Impl {
                                 m).dev].id" device may be not the one intended
                                 for use. Adjust the selected device if needed.
                                 */
+                                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                                 dpct::select_device(devs[(size_t)member(l, m).dev].id);
                                 dpct::get_in_order_queue()
                                     .memcpy(h.data(),
@@ -7189,6 +7327,7 @@ struct Model::Impl {
             DPCT1093:141: The "devs[(size_t) x.dev].id" device may be not the
             one intended for use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(devs[(size_t)x.dev].id);
             dpct::queue_ptr cs = copy_st[(size_t)x.dev];
             if (l.nm > 1) blob_to_half(l, sw_a, m, sw_h);
@@ -7198,6 +7337,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             ok = DPCT_CHECK_ERROR(
                      cs->memcpy(x.vram_base + (size_t)l.spare_vram * unit(l),
                                 l.nm > 1 ? sw_h : sw_a, unit(l))) == 0 &&
@@ -7211,6 +7351,7 @@ struct Model::Impl {
                 DPCT1093:143: The "devs[(size_t) x.dev].id" device may be not
                 the one intended for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(devs[(size_t)x.dev].id);
                 dpct::queue_ptr cs = copy_st[(size_t)x.dev];
                 /*
@@ -7219,6 +7360,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 got =
                     DPCT_CHECK_ERROR(cs->memcpy(
                         l.nm > 1 ? sw_h : sw_b,
@@ -7238,6 +7380,7 @@ struct Model::Impl {
                 DPCT1093:145: The "devs[(size_t) x.dev].id" device may be not
                 the one intended for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(devs[(size_t)x.dev].id);
                 dpct::get_in_order_queue()
                     .memcpy(l.nm > 1 ? h.data() : dev.data(),
@@ -7378,6 +7521,7 @@ struct Model::Impl {
                     DPCT1093:146: The "devs[0].id" device may be not the one
                     intended for use. Adjust the selected device if needed.
                     */
+                    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                     dpct::select_device(devs[0].id);
                     devs[0].st->memset(l.zc_tab + sw.in, 0, 8);
                 }
@@ -7407,6 +7551,7 @@ struct Model::Impl {
                 DPCT1093:147: The "dm.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(dm.id); // (stream order: before the next window)
                 /*
                 DPCT1124:148: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -7414,6 +7559,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 dm.st->memcpy(x.vram_tab + sw.in, &l.tab_pin[2 * m], 8);
                 /*
                 DPCT1124:149: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -7421,6 +7567,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 dm.st->memcpy(x.vram_tab + sw.out, &l.tab_pin[2 * m + 1], 8);
             }
             l.swap_pending = false;
@@ -7868,6 +8015,7 @@ struct Model::Impl {
         DPCT1093:150: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         const int nt = (int) g.d_targets.size(), D = g.dim, HD = g.hd;
         if (dump_d != nullptr) {   // DS4_DSPARK_DUMP: 'S', the first position, the rows, then the taps
@@ -7876,6 +8024,7 @@ struct Model::Impl {
                 DPCT1093:152: The "e.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(e.id);
                 CK(DPCT_CHECK_ERROR(e.st->wait()));
             }
@@ -7883,6 +8032,7 @@ struct Model::Impl {
             DPCT1093:151: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             const int64_t hdr[4] = {'S', p0, n, (int64_t) nt * D};
             std::fwrite(hdr, 8, 4, dump_d);
@@ -7897,6 +8047,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(
                 d.st->memcpy(d.xe, h_taps + (size_t)(row0 + a) * nt * D,
                              (size_t)na * nt * D * 4)));
@@ -7907,6 +8058,7 @@ struct Model::Impl {
         consumed by the program logic. This original code was replaced with 0.
         You may need to rewrite the program logic consuming the error code.
         */
+        // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
         CK(DPCT_CHECK_ERROR(dpct::sync_barrier(ev_seed, d.st)));
         Finish fm;
         fm.w = d_main_norm;
@@ -7977,6 +8129,7 @@ struct Model::Impl {
         DPCT1093:155: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         for (int t = 0; t < T; ++t) std::memcpy(h_emb + (size_t) t * D, embed_pinned + (size_t) tk[t] * D, (size_t) D * 2);
         /*
@@ -7985,6 +8138,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(d.st->memcpy(d.emb_rows, h_emb, (size_t)T * D * 2)));
         embed(d.emb_rows, T, d.h, D, H, d.st);
         init_pre(d.pre, T, d.st);
@@ -8009,6 +8163,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(
                     d.st->memcpy(h_dump_ring + (size_t)i * rs, d.ext, rs * 2)));
             }
@@ -8018,6 +8173,7 @@ struct Model::Impl {
                 DPCT1093:159: The "d.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(d.id);
                 /*
                 DPCT1124:160: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -8025,6 +8181,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(
                     d.st->memcpy(h_dump + (size_t)i * hs, d.h, hs * 4)));
             }
@@ -8033,6 +8190,7 @@ struct Model::Impl {
         DPCT1093:156: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         hc_pre_norm(d.h, d.pre, nullptr, D, H, T, g.eps, d.x, d.st);   // (the confidence head reads it before the norm)
         Dev& hd = devs[(size_t) head_dev];
@@ -8045,6 +8203,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(d.st->memcpy(d.bounce, d.x, (size_t)T * D * 4)));
             // The copy crosses devices through the host. The host waits for the
             // source copy: a Level Zero queue dependency on an event from the
@@ -8056,6 +8215,7 @@ struct Model::Impl {
             DPCT1093:163: The "hd.id" device may be not the one intended for
             use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(hd.id);
             /*
             DPCT1124:164: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -8063,6 +8223,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(hd.st->memcpy(hd.x, d.bounce, (size_t)T * D * 4)));
         }
         // the drafter's final norm and the trunk's head, on every member of the head group (the others' shares first)
@@ -8074,6 +8235,7 @@ struct Model::Impl {
             DPCT1093:165: The "e.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(e.id);
             if (m > 0) {
                 /*
@@ -8082,6 +8244,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(e.st->memcpy(e.ao, d.bounce, (size_t)T * D * 4)));
             } else
                 /*
@@ -8090,6 +8253,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(e.st->memcpy(e.ao, e.x, (size_t)T * D * 4)));
             Finish fn;
             fn.w = e.d_norm;
@@ -8110,6 +8274,7 @@ struct Model::Impl {
                 DPCT1093:169: The "e.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(e.id);
                 /*
                 DPCT1124:170: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -8117,6 +8282,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(e.st->memcpy(e.mk_ints, h_idx, 4)));
                 /*
                 DPCT1124:171: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -8124,6 +8290,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(e.st->memcpy(
                     e.mk_erow, h_mk_embed + (size_t)y * R, (size_t)R * 2)));
             }
@@ -8134,6 +8301,7 @@ struct Model::Impl {
                     DPCT1093:172: The "e.id" device may be not the one intended
                     for use. Adjust the selected device if needed.
                     */
+                    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                     dpct::select_device(e.id);
                     float* row = m == 0 ? hd.logits + (size_t) i * V : e.logits_part + (size_t) i * e.mk_vn;
                     markov_share(row, e.mk_share, e.mk_erow, e.mk_vn, R, e.st);
@@ -8145,6 +8313,7 @@ struct Model::Impl {
             DPCT1093:168: The "hd.id" device may be not the one intended for
             use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(hd.id);
         } else {
             /*
@@ -8153,6 +8322,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(hd.st->memcpy(d_ints, h_idx, 4)));
             strata::dsv41k::SamplerParams sp;
             sp.greedy = true;
@@ -8183,6 +8353,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(hd.st->memcpy(h_idx, d_ints, (size_t)(T + 1) * 4)));
         /*
         DPCT1124:175: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -8190,6 +8361,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(hd.st->memcpy(h_w, d_confv, (size_t)T * 4)));
         CK(DPCT_CHECK_ERROR(hd.st->wait()));
         for (int i = 0; i <= T; ++i) tok[i] = h_idx[i];
@@ -8203,6 +8375,7 @@ struct Model::Impl {
             DPCT1093:176: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             CK(DPCT_CHECK_ERROR(d.st->wait()));
             const int64_t hdr[4] = {'D', p0, y, T};
@@ -8219,6 +8392,7 @@ struct Model::Impl {
             DPCT1093:177: The "hd.id" device may be not the one intended for
             use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(hd.id);
         }
         for (int i = 0; i < T; ++i) {
@@ -8240,6 +8414,7 @@ struct Model::Impl {
         DPCT1093:178: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         strata::dsv41k::SamplerParams sp;
         sp.temperature = temperature;
@@ -8258,6 +8433,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         d.st->memcpy(&t, d.tok, 4);
         d.st->wait();
         return t;
@@ -8289,6 +8465,7 @@ struct Model::Impl {
         DPCT1093:180: The "hd.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(hd.id);
         int m = 0;
         if (temperature <= 0.0f) {
@@ -8302,6 +8479,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(hd.st->memcpy(h_idx, d_ints + 16, (size_t)T * 4)));
             CK(DPCT_CHECK_ERROR(hd.st->wait()));
             while (m < n && h_idx[m] == drafts[(size_t) m]) ++m;
@@ -8325,6 +8503,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(hd.st->memcpy(
                     d_specq, h_specq.data(),
                     (size_t)n * sizeof(strata::dsv41k::SpecList))));
@@ -8336,6 +8515,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(hd.st->memcpy(d_ints + 32, h_idx, (size_t)n * 4)));
             strata::dsv41k::SamplerParams sp;
             sp.greedy = false;
@@ -8352,6 +8532,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(hd.st->memcpy(h_idx, d_ints + 16, (size_t)n * 4)));
             CK(DPCT_CHECK_ERROR(hd.st->wait()));
             while (m < n && h_idx[m] == drafts[(size_t) m]) ++m;
@@ -8392,6 +8573,7 @@ struct Model::Impl {
                     not the one intended for use. Adjust the selected device if
                     needed.
                     */
+                    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                     dpct::select_device(devs[(size_t)l.dev].id);
                     ring_restore(l.win, l.ring_bak, p0, g.win, keep, T, g.hd, devs[(size_t) l.dev].st);
                     continue;
@@ -8405,6 +8587,7 @@ struct Model::Impl {
                 DPCT1093:186: The "devs[di].id" device may be not the one
                 intended for use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(devs[di].id);
                 ring_restore_batch(rb[di], p0, g.win, keep, T, g.hd, devs[di].st);
             }
@@ -8417,6 +8600,7 @@ struct Model::Impl {
                     DPCT1093:187: The "d.id" device may be not the one intended
                     for use. Adjust the selected device if needed.
                     */
+                    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                     dpct::select_device(d.id);
                     const size_t ns = (size_t) l.ratio * g.hd * 4;
                     /*
@@ -8426,6 +8610,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     d.st->memcpy(l.c_kv, l.c_snap, ns);
                     /*
                     DPCT1124:189: cudaMemcpyAsync is migrated to asynchronous
@@ -8434,6 +8619,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     d.st->memcpy(l.c_score, l.c_snap + (size_t)l.ratio * g.hd, ns);
                     compress_win(l.c_rows, l.c_rows + (size_t) kWin * g.hd, l.c_kv, l.c_score, l.ratio, (int) p0, keep,
                                  g.hd, l.c_norm, g.eps, d.latent, d.st);
@@ -8462,6 +8648,7 @@ struct Model::Impl {
         DPCT1093:190: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         dpct::queue_ptr s = d.st;
         prof_mark(d, 0);
@@ -8481,6 +8668,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(s->memcpy(c.eg_rows, host, (size_t)T * per)));
             /*
             DPCT1024:192: The original code returned the error code that was
@@ -8488,6 +8676,7 @@ struct Model::Impl {
             replaced with 0. You may need to rewrite the program logic consuming
             the error code.
             */
+            // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
             CK(DPCT_CHECK_ERROR(dpct::sync_barrier(c.eg_ev[slot], s)));
             for (int s0 = 0; s0 < T; s0 += 256) {
                 const int ns = std::min(256, T - s0);
@@ -8537,6 +8726,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(
                     s->memcpy(L0.snap_win, l.win, (size_t)g.win * win_rb())));
                 if (wp.snap_t > 0) ext_to_ring(c.ext, L0.snap_win, p0, g.win, wp.snap_t, HD, s, nullptr);
@@ -8573,6 +8763,7 @@ struct Model::Impl {
                             return by memcpy API to ensure synchronization
                             behavior.
                             */
+                            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                             CK(DPCT_CHECK_ERROR(
                                 s->memcpy(L0.snap_kv + (size_t)sl * HD, kv,
                                           (size_t)HD * 4)));
@@ -8584,6 +8775,7 @@ struct Model::Impl {
                             return by memcpy API to ensure synchronization
                             behavior.
                             */
+                            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                             CK(DPCT_CHECK_ERROR(
                                 s->memcpy(L0.snap_sc + (size_t)sl * HD, sc,
                                           (size_t)HD * 4)));
@@ -8756,6 +8948,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(s->memcpy(l.vs_dev, l.vs_pin,
                                       (size_t)l.n_exp * 4))); // (this member's)
         moe_sort(c.ridx, T, l.k_exp, l.vs_dev, n_vs, c.bounds, c.row_tok, c.pos, s);
@@ -8765,6 +8958,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(
             s->memcpy(c.bounds_pin, c.bounds, (size_t)(n_vs + 1) * 4)));
         prof_mark(d, 10);
@@ -8839,6 +9033,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(s->memcpy(hp.data(), dp, hp.size() * 4)));
                 /*
                 DPCT1124:199: cudaMemcpy2DAsync is migrated to asynchronous
@@ -8847,6 +9042,7 @@ struct Model::Impl {
                 wait() on event return by memcpy API to ensure synchronization
                 behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                     hl.data(), (size_t)l.n_exp * 4, c.glog, 1024 * 4,
                     (size_t)l.n_exp * 4, (size_t)T, dpct::device_to_host, *s)));
@@ -8869,6 +9065,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(s->memcpy(hx.data(), c.x, hx.size() * 4)));
                 CK(DPCT_CHECK_ERROR(s->wait()));
                 const uint8_t hd[3] = {(uint8_t) l.il, (uint8_t) (tk & 255), (uint8_t) (tk >> 8)};
@@ -8914,6 +9111,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(s->memcpy(c.pre, c.f_pre, (size_t)T * 8 * 4)));
             prof_mark(d, 3);
             return true;
@@ -8938,6 +9136,7 @@ struct Model::Impl {
             replaced with 0. You may need to rewrite the program logic consuming
             the error code.
             */
+            // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
             CK(DPCT_CHECK_ERROR(dpct::sync_barrier(c.freed[half], s)));
             ++S.kp;
             if (!copy_ahead(d, c, S, di, err)) return false;
@@ -8954,6 +9153,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(s->memcpy(c.pre, c.f_pre, (size_t)T * 8 * 4)));
         prof_mark(d, 3);
         return true;
@@ -9049,6 +9249,7 @@ struct Model::Impl {
         DPCT1093:204: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         dpct::queue_ptr s = d.st;
         const int D = g.dim, H = g.hc, nk = (int) run.T.size();
@@ -9105,6 +9306,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     CK(DPCT_CHECK_ERROR(
                         s->memcpy(c.emb, c.emb_host[slot], (size_t)T * D * 2)));
                     /*
@@ -9113,6 +9315,7 @@ struct Model::Impl {
                     code was replaced with 0. You may need to rewrite the
                     program logic consuming the error code.
                     */
+                    // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
                     CK(DPCT_CHECK_ERROR(dpct::sync_barrier(c.emb_ev[slot], s)));
                     embed(c.emb, T, c.h, D, H, s);
                     init_pre(c.pre, T, s);
@@ -9126,6 +9329,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(x.dst[i], x.src[i], x.bytes[i])));
                 }
                 if (last_k && g.n_mtp > 0) {   // the drafter's taps: the last chunk's last rows
@@ -9142,6 +9346,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                             h_taps + j * D, nt * D * 4, d.tap, (size_t)D * 4,
                             (size_t)D * 4, (size_t)nr, dpct::device_to_host,
@@ -9162,6 +9367,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(x.dst[i], x.src[i], x.bytes[i])));
                     continue;
                 }
@@ -9173,6 +9379,7 @@ struct Model::Impl {
                     code was replaced with 0. You may need to rewrite the
                     program logic consuming the error code.
                     */
+                    // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
                     CK(DPCT_CHECK_ERROR(dpct::sync_barrier(chunk_done[(size_t)k], s)));
                     chunk_rec[(size_t) k].store(1, std::memory_order_release);
                 }
@@ -9189,6 +9396,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(
                             chunk_logits.data() + base + (size_t)r0 * g.vocab,
                             d.logits, (size_t)nr * g.vocab * 4)));
@@ -9216,6 +9424,7 @@ struct Model::Impl {
         DPCT1093:212: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         dpct::queue_ptr s = d.st;
         const int D = g.dim, H = g.hc, nk = (int) run.T.size();
@@ -9331,6 +9540,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(c.emb, c.emb_host[slot],
                                                       (size_t)T * D * 2)));
                         /*
@@ -9339,6 +9549,7 @@ struct Model::Impl {
                         original code was replaced with 0. You may need to
                         rewrite the program logic consuming the error code.
                         */
+                        // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
                         CK(DPCT_CHECK_ERROR(dpct::sync_barrier(c.emb_ev[slot], s)));
                         embed(c.emb, T, c.h, D, H, s);
                         init_pre(c.pre, T, s);
@@ -9383,6 +9594,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                             h_taps + j * D, nt * D * 4, d.tap, (size_t)D * 4,
                             (size_t)D * 4, (size_t)nr, dpct::device_to_host,
@@ -9405,6 +9617,7 @@ struct Model::Impl {
                 replaced with 0. You may need to rewrite the program logic
                 consuming the error code.
                 */
+                // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
                 CK(DPCT_CHECK_ERROR(dpct::sync_barrier(chunk_done[(size_t)k], s)));
                 chunk_rec[(size_t) k].store(1, std::memory_order_release);
             }
@@ -9423,6 +9636,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(
                             chunk_logits.data() + base + (size_t)r0 * g.vocab,
                             d.logits, (size_t)nr * g.vocab * 4)));
@@ -9462,6 +9676,7 @@ struct Model::Impl {
         DPCT1093:218: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         const double t0 = now_ms();
         // the DMA: staging -> the ring (once to warm up, once timed)
@@ -9475,12 +9690,14 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             if (DPCT_CHECK_ERROR(c.cs->memcpy(c.ring, c.stage, nb)) != 0 ||
                 DPCT_CHECK_ERROR(c.cs->wait()) != 0) {
                 /*
                 DPCT1026:220: The call to cudaGetLastError was removed because
                 this functionality is redundant in SYCL.
                 */
+                // audit note: DPCT1026 accepted — the removed calls are CUDA-only; cudaGetLastError is redundant in SYCL, and cudaFuncSetAttribute has no SYCL setting; local accessors size the shared memory instead
                 return;
             }
             ms = now_ms() - a;
@@ -9793,6 +10010,7 @@ struct Model::Impl {
         in the migrated code and was removed or replaced with 0. You may need to
         check the migrated code.
         */
+        // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
         c.lm_pinned =
             DPCT_CHECK_ERROR(st_p = (void *)sycl::malloc_host(
                                  state_b, dpct::get_in_order_queue())) == 0;
@@ -9801,6 +10019,7 @@ struct Model::Impl {
             DPCT1026:221: The call to cudaGetLastError was removed because this
             functionality is redundant in SYCL.
             */
+            // audit note: DPCT1026 accepted — the removed calls are CUDA-only; cudaGetLastError is redundant in SYCL, and cudaFuncSetAttribute has no SYCL setting; local accessors size the shared memory instead
             st_p = os::anon_alloc(state_b, -1, 1);
             if (st_p == nullptr) return false;
         }
@@ -9827,6 +10046,7 @@ struct Model::Impl {
             DPCT1093:222: The "devs[di].id" device may be not the one intended
             for use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(devs[di].id);
             devs[di].st->wait(); // (nothing of the run's still reads or writes
                                  // them: the device's
@@ -9939,6 +10159,7 @@ struct Model::Impl {
             DPCT1093:224: The "devs[(size_t) head_dev].id" device may be not the
             one intended for use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(devs[(size_t)head_dev].id);
             while (chunk_done.size() < run.T.size()) {
                 dpct::event_ptr e = nullptr;
@@ -10016,6 +10237,7 @@ struct Model::Impl {
         DPCT1093:223: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         const double th = now_ms();
         CK(DPCT_CHECK_ERROR(d.st->wait()));
@@ -10026,6 +10248,7 @@ struct Model::Impl {
                 DPCT1093:226: The "dv.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(dv.id);
                 CK(DPCT_CHECK_ERROR(dv.st->wait()));
             }
@@ -10033,6 +10256,7 @@ struct Model::Impl {
             DPCT1093:225: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             prof_collect();
             std::fprintf(stderr,
@@ -10060,6 +10284,7 @@ struct Model::Impl {
                         DPCT1093:227: The "m.dev" device may be not the one
                         intended for use. Adjust the selected device if needed.
                         */
+                        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                         dpct::select_device(m.dev);
                         a = (m.e1->get_profiling_info<
                                  sycl::info::event_profiling::command_end>() -
@@ -10157,6 +10382,7 @@ struct Model::Impl {
                 DPCT1093:228: The "dv.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(dv.id);
                 const bool kept = !l.mtp && l.snap_win != nullptr;
                 ckp.win[i].resize((size_t) g.win * win_rb());
@@ -10166,6 +10392,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(dv.st->memcpy(ckp.win[i].data(),
                                                   kept ? l.snap_win : l.win,
                                                   ckp.win[i].size())));
@@ -10179,6 +10406,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     CK(DPCT_CHECK_ERROR(
                         dv.st->memcpy(ckp.comp[2 * i].data(),
                                       kept && l.snap_kv ? l.snap_kv : l.c_kv,
@@ -10190,6 +10418,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     CK(DPCT_CHECK_ERROR(
                         dv.st->memcpy(ckp.comp[2 * i + 1].data(),
                                       kept && l.snap_sc ? l.snap_sc : l.c_score,
@@ -10201,6 +10430,7 @@ struct Model::Impl {
                 DPCT1093:232: The "dv.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(dv.id);
                 CK(DPCT_CHECK_ERROR(dv.st->wait()));
             }
@@ -10267,6 +10497,7 @@ struct Model::Impl {
         DPCT1093:233: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         // (an EXL3 head: as many activations at a time as its split-K partials fit the scratch - 8 for a shared head, 4
         // for a whole one, each pass reading the whole share; a GGUF's: 4 at a time, as before)
@@ -10304,6 +10535,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
                 d.logits + (size_t)m0, (size_t)V * 4, d.logits_part,
                 (size_t)mn * 4, (size_t)mn * 4, (size_t)rows,
@@ -10320,6 +10552,7 @@ struct Model::Impl {
         DPCT1093:235: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         const int D = g.dim, H = g.hc;
         if (n_logits <= 0) return true;
@@ -10339,6 +10572,7 @@ struct Model::Impl {
         DPCT1093:236: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         hc_mean(d.h, T, g.hc, D, d.tap, D, d.st);
         CK(DPCT_CHECK_ERROR((d.st)->ext_oneapi_submit_barrier({*ev_seed})));
@@ -10348,6 +10582,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(dpct::async_dpct_memcpy(
             h_taps + j * D, nt * D * 4, d.tap, (size_t)D * 4, (size_t)D * 4,
             (size_t)T, dpct::device_to_host, *(d.st))));
@@ -10414,6 +10649,7 @@ struct Model::Impl {
         DPCT1093:238: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         const double th = now_ms();
         CK(DPCT_CHECK_ERROR(d.st->wait()));
@@ -10441,6 +10677,7 @@ struct Model::Impl {
             DPCT1093:239: The "d.id" device may be not the one intended for use.
             Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(d.id);
             /*
             DPCT1124:240: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10448,6 +10685,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(d.st->memcpy(d.emb_rows, h_emb, (size_t)T * D * 2)));
             embed(d.emb_rows, T, d.h, D, H, d.st);
             init_pre(d.pre, T, d.st);
@@ -10463,6 +10701,7 @@ struct Model::Impl {
                 DPCT1093:241: The "a.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(a.id);
                 const size_t nh = (size_t) T * H * D * 4, np = (size_t) T * 8 * 4, nk = (size_t) T * topk_stride() * 4,
                              nc = (size_t) T * cand_stride() * 4;
@@ -10473,6 +10712,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(a.st->memcpy(bb, a.h, nh)));
                 /*
                 DPCT1124:244: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10480,6 +10720,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(a.st->memcpy(bb + nh, a.pre, np)));
                 /*
                 DPCT1124:245: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10487,6 +10728,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(a.st->memcpy(bb + nh + np, a.topk, nk)));
                 /*
                 DPCT1124:246: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10494,6 +10736,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(a.st->memcpy(bb + nh + np + nk, a.cand, nc)));
                 // The host waits for the source copies before the destination
                 // queue reads the staging buffer. A Level Zero queue dependency
@@ -10504,6 +10747,7 @@ struct Model::Impl {
                 DPCT1093:242: The "b.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(b.id);
                 /*
                 DPCT1124:248: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10511,6 +10755,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(b.st->memcpy(b.h, bb, nh)));
                 /*
                 DPCT1124:249: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10518,6 +10763,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(b.st->memcpy(b.pre, bb + nh, np)));
                 /*
                 DPCT1124:250: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10525,6 +10771,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(b.st->memcpy(b.topk, bb + nh + np, nk)));
                 /*
                 DPCT1124:251: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10532,6 +10779,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(b.st->memcpy(b.cand, bb + nh + np + nk, nc)));
                 cur = l.dev;
             }
@@ -10544,6 +10792,7 @@ struct Model::Impl {
                 DPCT1093:252: The "dd.id" device may be not the one intended for
                 use. Adjust the selected device if needed.
                 */
+                // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
                 dpct::select_device(dd.id);
                 /*
                 DPCT1124:253: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10551,6 +10800,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(dd.st->memcpy(hv.data(), dd.h, hv.size() * 4)));
                 CK(DPCT_CHECK_ERROR(dd.st->wait()));
                 for (int t = 0; t < T; ++t)
@@ -10614,6 +10864,7 @@ struct Model::Impl {
         DPCT1093:254: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         dpct::queue_ptr s = d.st;
         const int D = g.dim, H = g.hc;
@@ -10635,6 +10886,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     CK(DPCT_CHECK_ERROR(s->memcpy(d.emb_rows, h_emb, (size_t)T * D * 2)));
                     embed(d.emb_rows, T, d.h, D, H, s);
                     init_pre(d.pre, T, s);
@@ -10695,6 +10947,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(d.st->memcpy(stage, src, bytes)));
         // The host orders the destination copies after the source copy. A
         // cross-context event dependency can reset the destination's exec queue.
@@ -10706,6 +10959,7 @@ struct Model::Impl {
             DPCT1093:259: The "o2.id" device may be not the one intended for
             use. Adjust the selected device if needed.
             */
+            // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
             dpct::select_device(o2.id);
             /*
             DPCT1124:260: cudaMemcpyAsync is migrated to asynchronous memcpy
@@ -10713,12 +10967,14 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(o2.st->memcpy(copies[od] + at, stage, bytes)));
         }
         /*
         DPCT1093:256: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         return true;
     }
@@ -10738,6 +10994,7 @@ struct Model::Impl {
         DPCT1093:261: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         dpct::queue_ptr s = d.st;
         const int nm = L0.nm;
@@ -10758,6 +11015,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(
                     s->memcpy(d.eg_rows + (size_t)t * cols * ehd,
                               src + (size_t)t * per, (size_t)cols * ehd)));
@@ -10769,6 +11027,7 @@ struct Model::Impl {
                 the type of operand memory, so you may need to call wait() on
                 event return by memcpy API to ensure synchronization behavior.
                 */
+                // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                 CK(DPCT_CHECK_ERROR(
                     s->memcpy(sc + (size_t)t * cols * (ehd / 32),
                               src + (size_t)t * per + (size_t)cols * ehd,
@@ -10853,6 +11112,7 @@ struct Model::Impl {
                     call wait() on event return by memcpy API to ensure
                     synchronization behavior.
                     */
+                    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                     CK(DPCT_CHECK_ERROR(s->memcpy(d.latent, d.ckr, (size_t)T * HD * 4)));
                 } else {
                     if (spec_win && l.c_snap != nullptr) {   // to replay the accepted rows if drafts are rejected
@@ -10864,6 +11124,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(l.c_snap, l.c_kv, ns)));
                         /*
                         DPCT1124:266: cudaMemcpyAsync is migrated to
@@ -10872,6 +11133,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(l.c_snap + (size_t)R * HD,
                                                       l.c_score, ns)));
                         /*
@@ -10881,6 +11143,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(l.c_rows, d.ckr, nr)));
                         /*
                         DPCT1124:268: cudaMemcpyAsync is migrated to
@@ -10889,6 +11152,7 @@ struct Model::Impl {
                         so you may need to call wait() on event return by memcpy
                         API to ensure synchronization behavior.
                         */
+                        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
                         CK(DPCT_CHECK_ERROR(s->memcpy(
                             l.c_rows + (size_t)kWin * HD, d.cgr, nr)));
                     }
@@ -11135,6 +11399,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(s->memcpy(d.pre, d.f_pre, (size_t)T * 8 * 4)));
             prof_mark(d, 5);
             return true;
@@ -11155,6 +11420,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(s->memcpy(h_idx, d.ridx, (size_t)T * kPicks * 4)));
         /*
         DPCT1124:271: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -11162,6 +11428,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(s->memcpy(h_w, d.rw, (size_t)T * kPicks * 4)));
         /*
         DPCT1124:272: cudaMemcpyAsync is migrated to asynchronous memcpy API.
@@ -11169,12 +11436,14 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(s->memcpy(h_x, d.x, (size_t)T * D * 4)));
         /*
         DPCT1024:273: The original code returned the error code that was further
         consumed by the program logic. This original code was replaced with 0.
         You may need to rewrite the program logic consuming the error code.
         */
+        // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
         CK(DPCT_CHECK_ERROR(dpct::sync_barrier(d.ev, s)));
         // the shared expert while the host looks at the picks
         if (!mv(d, {job(l.s1, d.x, d.sg, T, D, g.ff), job(l.s3, d.x, d.su, T, D, g.ff)}, err)) return false;
@@ -11277,6 +11546,7 @@ struct Model::Impl {
             type of operand memory, so you may need to call wait() on event
             return by memcpy API to ensure synchronization behavior.
             */
+            // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
             CK(DPCT_CHECK_ERROR(s->memcpy(d.cpu_part, h_part, (size_t)T * D * 4)));
         }
         combine(d.ed, ents.empty() ? nullptr : d.cpu_part, d.sh_out, cm, T, D, d.moe_out, s);
@@ -11288,6 +11558,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         CK(DPCT_CHECK_ERROR(s->memcpy(d.pre, d.f_pre, (size_t)T * 8 * 4)));
         // (h_part / h_x are written again only after the next layer's route has synchronized, which follows these)
         return true;
@@ -11304,6 +11575,7 @@ struct Model::Impl {
         DPCT1093:276: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         strata::dsv41k::SamplerParams sp;
         sp.temperature = temperature;
@@ -11322,6 +11594,7 @@ struct Model::Impl {
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         d.st->memcpy(&t, d.tok, 4);
         d.st->wait();
         return t;
@@ -11337,6 +11610,7 @@ struct Model::Impl {
         DPCT1093:278: The "d.id" device may be not the one intended for use.
         Adjust the selected device if needed.
         */
+        // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
         dpct::select_device(d.id);
         out.resize((size_t) std::max(1, n_logits) * g.vocab);
         return DPCT_CHECK_ERROR(

@@ -126,11 +126,13 @@ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vocab,
         DPCT1118:35: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:143: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         for (int i = item_ct1.get_local_id(2); i < hlen;
              i += item_ct1.get_local_range(2))
@@ -142,11 +144,13 @@ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vocab,
         DPCT1118:36: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:144: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
     auto hit_count = [&](int v, uint8_t *dpct_local) -> int {
@@ -181,6 +185,7 @@ void sampler_greedy_kernel(const float* __restrict__ logits, int n_vocab,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (warp == 0) {
         const int nw = (int)((item_ct1.get_local_range(2) + 31) >> 5);
@@ -226,6 +231,7 @@ sampler_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
                     const int *__restrict__ history, int history_len,
                     const SamplerParams p, int *__restrict__ out,
@@ -266,11 +272,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         DPCT1118:38: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:147: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         for (int i = item_ct1.get_local_id(2); i < hlen;
              i += item_ct1.get_local_range(2))
@@ -282,11 +290,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         DPCT1118:39: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:148: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
     auto hit_count = [&](int v, uint8_t *dpct_local) -> int {
@@ -345,6 +355,7 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     for (int v = item_ct1.get_local_id(2); v < n_vocab;
          v += item_ct1.get_local_range(2))
@@ -355,6 +366,7 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     {   // the bin holding the k-th largest: suffix counts over the bins (2 bins a thread, a block scan)
         const int nt = (int)item_ct1.get_local_range(2),
@@ -370,6 +382,7 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         for (int off = 1; off < nt; off <<= 1) {
             const unsigned int add = (int)item_ct1.get_local_id(2) >= off
@@ -379,22 +392,26 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
             DPCT1118:40: SYCL group functions and algorithms must be encountered
             in converged control flow. You may need to adjust the code.
             */
+            // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
             /*
             DPCT1065:151: Consider replacing sycl::nd_item::barrier() with
             sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
             better performance if there is no access to global memory.
             */
+            // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
             item_ct1.barrier();
             scan[item_ct1.get_local_id(2)] += add;
             /*
             DPCT1118:41: SYCL group functions and algorithms must be encountered
             in converged control flow. You may need to adjust the code.
             */
+            // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
             /*
             DPCT1065:152: Consider replacing sycl::nd_item::barrier() with
             sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
             better performance if there is no access to global memory.
             */
+            // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
             item_ct1.barrier();
         }
         unsigned int above = scan[item_ct1.get_local_id(2)] -
@@ -410,6 +427,7 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
     const int bin = sh_bin;
@@ -429,11 +447,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         DPCT1118:42: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:153: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         const int nc = (int)sycl::min(sh_ncoarse, (unsigned int)kCap);
         for (int i = item_ct1.get_local_id(2); i < nc;
@@ -454,11 +474,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         DPCT1118:43: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:154: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     } else {
         if (item_ct1.get_local_id(2) == 0) {
@@ -475,11 +497,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
             DPCT1118:47: SYCL group functions and algorithms must be encountered
             in converged control flow. You may need to adjust the code.
             */
+            // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
             /*
             DPCT1065:158: Consider replacing sycl::nd_item::barrier() with
             sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
             better performance if there is no access to global memory.
             */
+            // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
             item_ct1.barrier();
             const unsigned int prefix = sh_prefix;
             for (int v = item_ct1.get_local_id(2); v < n_vocab;
@@ -493,11 +517,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
             DPCT1118:48: SYCL group functions and algorithms must be encountered
             in converged control flow. You may need to adjust the code.
             */
+            // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
             /*
             DPCT1065:159: Consider replacing sycl::nd_item::barrier() with
             sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
             better performance if there is no access to global memory.
             */
+            // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
             item_ct1.barrier();
             if (item_ct1.get_local_id(2) ==
                 0) { // the digit that holds the remaining-th largest, from the
@@ -516,11 +542,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
             DPCT1118:49: SYCL group functions and algorithms must be encountered
             in converged control flow. You may need to adjust the code.
             */
+            // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
             /*
             DPCT1065:160: Consider replacing sycl::nd_item::barrier() with
             sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
             better performance if there is no access to global memory.
             */
+            // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
             item_ct1.barrier();
         }
         const unsigned int T = sh_prefix;      // the k-th largest ordered score
@@ -539,11 +567,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         DPCT1118:44: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:155: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if (item_ct1.get_local_id(2) == 0) sh_tie_base = sh_ncand;
         // the ties in index order: each thread counts its own contiguous range, an exclusive scan orders the ranges
@@ -560,11 +590,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
             DPCT1118:50: SYCL group functions and algorithms must be encountered
             in converged control flow. You may need to adjust the code.
             */
+            // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
             /*
             DPCT1065:161: Consider replacing sycl::nd_item::barrier() with
             sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
             better performance if there is no access to global memory.
             */
+            // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
             item_ct1.barrier();
             for (int off = 1; off < nt; off <<= 1) {   // Hillis-Steele inclusive scan
                 const unsigned int add =
@@ -576,11 +608,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
                 encountered in converged control flow. You may need to adjust
                 the code.
                 */
+                // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
                 /*
                 DPCT1065:162: Consider replacing sycl::nd_item::barrier() with
                 sycl::nd_item::barrier(sycl::access::fence_space::local_space)
                 for better performance if there is no access to global memory.
                 */
+                // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
                 item_ct1.barrier();
                 scan[item_ct1.get_local_id(2)] += add;
                 /*
@@ -588,11 +622,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
                 encountered in converged control flow. You may need to adjust
                 the code.
                 */
+                // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
                 /*
                 DPCT1065:163: Consider replacing sycl::nd_item::barrier() with
                 sycl::nd_item::barrier(sycl::access::fence_space::local_space)
                 for better performance if there is no access to global memory.
                 */
+                // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
                 item_ct1.barrier();
             }
             unsigned int rank =
@@ -608,11 +644,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         DPCT1118:45: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:156: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         // rank sort: candidate i's place is the number of candidates with a larger composite key
         if ((int)item_ct1.get_local_id(2) < k) {
@@ -630,11 +668,13 @@ void sampler_kernel(const float *__restrict__ logits, int n_vocab, int n_tokens,
         DPCT1118:46: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:157: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
 
@@ -771,6 +811,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
     from the original code. Check that the allocated memory size in the migrated
     code is correct.
     */
+    // audit note: DPCT1083 accepted — the local-memory sizes come from the port's own formulas at each launch, and the ds4 launch parity rows run them; a change needs a measured divergence
     const unsigned shmem =
         (history != nullptr && history_len > 0 && p.penalty_last_n > 0)
             ? (unsigned)((n_vocab + 31) / 32) *
@@ -784,6 +825,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         the limit. To get the device limit, query
         info::device::max_work_group_size. Adjust the work-group size if needed.
         */
+        // audit note: DPCT1049 accepted — a work-group size hint on the migrated launches; the plan forbids a speculative resize, and a change needs a measurement first
                 strata::q_of(stream)
                     ->submit([&](sycl::handler &cgh) {
                             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
@@ -830,6 +872,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         the limit. To get the device limit, query
         info::device::max_work_group_size. Adjust the work-group size if needed.
         */
+        // audit note: DPCT1049 accepted — a work-group size hint on the migrated launches; the plan forbids a speculative resize, and a change needs a measurement first
                 dpct::has_capability_or_fail(
                     strata::q_of(stream)->get_device(),
                     {sycl::aspect::fp64});
@@ -843,6 +886,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                             value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<int, 1> sel_ids_acc_ct1(
                                 sycl::range<1>(64 /*KMAX*/), cgh);
                             /*
@@ -850,6 +894,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                             value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<float, 1> sel_logit_acc_ct1(
                                 sycl::range<1>(64 /*KMAX*/), cgh);
                             sycl::local_accessor<unsigned int, 0>
@@ -865,6 +910,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
                             with a value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<unsigned int, 1> pool_acc_ct1(
                                 sycl::range<1>(3072 /*kBins + 1024*/), cgh);
                             sycl::local_accessor<int, 0> sh_bin_acc_ct1(cgh);
@@ -914,6 +960,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
     error codes. The cudaGetLastError function call was replaced with 0. You
     need to rewrite this code.
     */
+    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
@@ -934,6 +981,7 @@ void spec_launched(const char* who, void* stream) {
     error codes. The cudaGetLastError function call was replaced with 0. You
     need to rewrite this code.
     */
+    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
     const dpct::err0 e = 0;
 
     if (stream == nullptr) dpct::get_current_device().queues_wait_and_throw();
@@ -949,6 +997,7 @@ void sample_draft(const float* logits, int n_tokens, int n_vocab, const SamplerP
     limit. To get the device limit, query info::device::max_work_group_size.
     Adjust the work-group size if needed.
     */
+    // audit note: DPCT1049 accepted — a work-group size hint on the migrated launches; the plan forbids a speculative resize, and a change needs a measurement first
         {
                 dpct::has_capability_or_fail(
                     strata::q_of(stream)->get_device(),
@@ -963,6 +1012,7 @@ void sample_draft(const float* logits, int n_tokens, int n_vocab, const SamplerP
                             value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<int, 1> sel_ids_acc_ct1(
                                 sycl::range<1>(64 /*KMAX*/), cgh);
                             /*
@@ -970,6 +1020,7 @@ void sample_draft(const float* logits, int n_tokens, int n_vocab, const SamplerP
                             value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<float, 1> sel_logit_acc_ct1(
                                 sycl::range<1>(64 /*KMAX*/), cgh);
                             sycl::local_accessor<unsigned int, 0>
@@ -985,6 +1036,7 @@ void sample_draft(const float* logits, int n_tokens, int n_vocab, const SamplerP
                             with a value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<unsigned int, 1> pool_acc_ct1(
                                 sycl::range<1>(3072 /*kBins + 1024*/), cgh);
                             sycl::local_accessor<int, 0> sh_bin_acc_ct1(cgh);
@@ -1040,6 +1092,7 @@ void sample_verify(const float* logits, int n_tokens, int n_vocab, const Sampler
     limit. To get the device limit, query info::device::max_work_group_size.
     Adjust the work-group size if needed.
     */
+    // audit note: DPCT1049 accepted — a work-group size hint on the migrated launches; the plan forbids a speculative resize, and a change needs a measurement first
         {
                 dpct::has_capability_or_fail(
                     strata::q_of(stream)->get_device(),
@@ -1054,6 +1107,7 @@ void sample_verify(const float* logits, int n_tokens, int n_vocab, const Sampler
                             value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<int, 1> sel_ids_acc_ct1(
                                 sycl::range<1>(64 /*KMAX*/), cgh);
                             /*
@@ -1061,6 +1115,7 @@ void sample_verify(const float* logits, int n_tokens, int n_vocab, const Sampler
                             value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<float, 1> sel_logit_acc_ct1(
                                 sycl::range<1>(64 /*KMAX*/), cgh);
                             sycl::local_accessor<unsigned int, 0>
@@ -1076,6 +1131,7 @@ void sample_verify(const float* logits, int n_tokens, int n_vocab, const Sampler
                             with a value. Modify the code to use the original
                             expression, provided in comments, if it is correct.
                             */
+                            // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                             sycl::local_accessor<unsigned int, 1> pool_acc_ct1(
                                 sycl::range<1>(3072 /*kBins + 1024*/), cgh);
                             sycl::local_accessor<int, 0> sh_bin_acc_ct1(cgh);

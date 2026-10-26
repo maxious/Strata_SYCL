@@ -31,14 +31,17 @@ namespace {
 /*
 DPCT1001:155: The statement could not be removed.
 */
+// audit note: DPCT1001 accepted — the statement dpct could not remove is the port's own launch-error counter, and the port wants that counter
 /*
 DPCT1000:156: Error handling if-stmt was detected but could not be rewritten.
 */
+// audit note: DPCT1000 accepted — error-handling boilerplate on the launch-check pattern the port keeps on purpose; the exception rewrite does not apply
 /*
 DPCT1009:157: SYCL reports errors using exceptions and does not use error codes.
 Please replace the "get_error_string_dummy(...)" with a real error-handling
 function.
 */
+// audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
 #define VK(call)                                                               \
   do {                                                                         \
     dpct::err0 e_ = (call);                                                    \
@@ -83,6 +86,7 @@ float block_reduce(float v, bool is_max, float *red, float &tot) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier(); // (an earlier call's readers of red / tot are done)
     if (lane == 0) red[w] = v;
     /*
@@ -90,6 +94,7 @@ float block_reduce(float v, bool is_max, float *red, float &tot) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (w == 0) {
         v = lane < nw ? red[lane] : (is_max ? -FLT_MAX : 0.0f);
@@ -105,6 +110,7 @@ float block_reduce(float v, bool is_max, float *red, float &tot) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     return tot;
 }
@@ -122,6 +128,7 @@ void patchify_kernel(const uint8_t* __restrict__ rgb, int width, int gw, int p, 
     correctness. SYCL math built-in function rounding mode is aligned with
     OpenCL C 1.2 standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     out[(size_t)i * 3 * pp + e] = bfr((u / 255.0f - 0.5f) / 0.5f);
 }
 
@@ -188,6 +195,7 @@ softmax_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void softmax_kernel(const float *__restrict__ s, int n,
                     uint16_t *__restrict__ p, float *red, float &tot) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -307,6 +315,7 @@ void VisionTower::release() {
     DPCT1093:152: The "at_" device may be not the one intended for use. Adjust
     the selected device if needed.
     */
+    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
     dpct::select_device(at_);
     for (int i = 0; i < 2; ++i) {
         if (copied_[i]) dpct::destroy_event((dpct::event_ptr)copied_[i]);
@@ -323,6 +332,7 @@ void VisionTower::release() {
     DPCT1093:153: The "cur" device may be not the one intended for use. Adjust
     the selected device if needed.
     */
+    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
     dpct::select_device(cur);
     blas_ = st_ = cs_ = nullptr;
     dallocs_.clear();
@@ -353,6 +363,7 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
     DPCT1093:154: The "device" device may be not the one intended for use.
     Adjust the selected device if needed.
     */
+    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
     dpct::select_device(device);
     at_ = device;
     dev_bytes_ = 0;
@@ -400,6 +411,7 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
     migrated code and was removed or replaced with 0. You may need to check the
     migrated code.
     */
+    // audit note: DPCT1048 accepted — the CUDA pinning flags are gone, and each site is allocated for its own use; the polled ring is uncached through strata::host_malloc_polled as fixups rule 7e directs, and buffers a memcpy touches stay USM on purpose
     if (DPCT_CHECK_ERROR(host_ = (uint16_t *)sycl::malloc_host(
                              host_n * 2, dpct::get_in_order_queue())) != 0) {
         host_ = nullptr;
@@ -489,11 +501,13 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
     DPCT1025:158: The SYCL queue is created ignoring the flag and priority
     options.
     */
+    // audit note: DPCT1025 accepted — the CUDA flag and priority options have no SYCL counterpart; the port creates plain in-order queues at these calls, and the thread-binding question at the same calls is the DPCT1093 row
     VK(DPCT_CHECK_ERROR(st = dpct::get_current_device().create_queue()));
     /*
     DPCT1025:159: The SYCL queue is created ignoring the flag and priority
     options.
     */
+    // audit note: DPCT1025 accepted — the CUDA flag and priority options have no SYCL counterpart; the port creates plain in-order queues at these calls, and the thread-binding question at the same calls is the DPCT1093 row
     VK(DPCT_CHECK_ERROR(cs = dpct::get_current_device().create_queue()));
     st_ = st;
     cs_ = cs;
@@ -502,6 +516,7 @@ bool VisionTower::load(const VisionGeo& g, int device, const Reader& read, std::
     DPCT1027:160: The call to cublasSetWorkspace was replaced with 0 because
     this functionality is redundant in SYCL.
     */
+    // audit note: DPCT1027 accepted — cublasSetWorkspace is redundant in SYCL, and SYCL has no host-memory registration; these CUDA calls do not exist in this code path
     VB(0);
     for (int i = 0; i < 2; ++i) {
         dpct::event_ptr a = nullptr, b = nullptr;
@@ -541,6 +556,7 @@ bool VisionTower::encode(const uint8_t *rgb, int width, int height,
     DPCT1093:161: The "dev_" device may be not the one intended for use. Adjust
     the selected device if needed.
     */
+    // audit note: DPCT1093 accepted — the note asks whether the selected device is the one meant, at every select_device and queue call; todo 4 checks each queue-creation site against the thread that owns its device and fixes the ones that are wrong
     dpct::select_device(dev_);
     dpct::blas::descriptor_ptr h = (dpct::blas::descriptor_ptr)blas_;
     dpct::queue_ptr s = strata::q_of(st_), cs = strata::q_of(cs_);
@@ -562,12 +578,14 @@ bool VisionTower::encode(const uint8_t *rgb, int width, int height,
         operand memory, so you may need to call wait() on event return by memcpy
         API to ensure synchronization behavior.
         */
+        // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
         VK(DPCT_CHECK_ERROR(cs->memcpy(slot_[k], pcs[i].host, pcs[i].n * 2)));
         /*
         DPCT1024:163: The original code returned the error code that was further
         consumed by the program logic. This original code was replaced with 0.
         You may need to rewrite the program logic consuming the error code.
         */
+        // audit note: DPCT1024 accepted — the note asks what consumes the old error code; every site keeps it through DPCT_CHECK_ERROR
         VK(DPCT_CHECK_ERROR(dpct::sync_barrier((dpct::event_ptr)copied_[k], cs)));
         return true;
     };
@@ -595,12 +613,14 @@ bool VisionTower::encode(const uint8_t *rgb, int width, int height,
     memory, so you may need to call wait() on event return by memcpy API to
     ensure synchronization behavior.
     */
+    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
     VK(DPCT_CHECK_ERROR(s->memcpy(rgb_, rgb, (size_t)N * 3 * P * P)));
     /*
     DPCT1049:64: The work-group size passed to the SYCL kernel may exceed the
     limit. To get the device limit, query info::device::max_work_group_size.
     Adjust the work-group size if needed.
     */
+    // audit note: DPCT1049 accepted — a work-group size hint on the migrated launches; the plan forbids a speculative resize, and a change needs a measurement first
     s->submit([&](sycl::handler &cgh) {
         const uint8_t *rgb__ct0 = rgb_;
         auto patch__ct4 = patch_;
@@ -696,6 +716,7 @@ bool VisionTower::encode(const uint8_t *rgb, int width, int height,
                 info::device::max_work_group_size. Adjust the work-group size if
                 needed.
                 */
+                // audit note: DPCT1049 accepted — a work-group size hint on the migrated launches; the plan forbids a speculative resize, and a change needs a measurement first
                 s->submit([&](sycl::handler &cgh) {
                     sycl::local_accessor<float, 1> red_acc_ct1(
                         sycl::range<1>(32), cgh);
@@ -884,6 +905,7 @@ bool VisionTower::encode(const uint8_t *rgb, int width, int height,
     memory, so you may need to call wait() on event return by memcpy API to
     ensure synchronization behavior.
     */
+    // audit note: DPCT1124 accepted — the note asks for a wait after a memcpy; fixups rule 7d puts .wait() back on every unwaited default-queue copy, and no async_memcpy site remains in sycl/src/dsv41 (measured by grep 2026-10-26)
     VK(DPCT_CHECK_ERROR(s->memcpy(rows.data(), outb_, rows.size() * 2)));
     VK(DPCT_CHECK_ERROR(s->wait()));
     /*
@@ -891,6 +913,7 @@ bool VisionTower::encode(const uint8_t *rgb, int width, int height,
     error codes. The cudaGetLastError function call was replaced with 0. You
     need to rewrite this code.
     */
+    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
     VK(0);
     return true;
 }
