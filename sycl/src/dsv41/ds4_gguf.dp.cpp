@@ -4,6 +4,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
+#include "strata/sycl_doorbell.hpp"
 #include <cuda_runtime.h>   // compat shim (sycl/include/compat): CUDA qualifiers the unconverted headers use
 #include <cuda_fp16.h>      // compat shim: __half2float for the f16 activation load below
 #include "ds4_gguf.dp.hpp"
@@ -128,6 +129,7 @@ void bf16_mv_kernel(const BfJobs J) {
                     functionality. Check the generated code for potential
                     precision and/or performance issues.
                     */
+                    // audit note: CORRECT - xp is device-resident activation memory (BfJob.x from job() d.* buffers)
                     const sycl::float4 x0 = *xp, x1 = *(xp + 1);
                     float a = acc[c];
                     a = sycl::fma((float)(wf[0]), (float)(x0.x()), a);
@@ -258,7 +260,8 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
-    if (cpu_part != nullptr) m = m + *cpu_part;
+    // audit note: WRONG - cpu_part is the host-mapped CPU-lane part (resps, host_malloc_polled): uncached read
+    if (cpu_part != nullptr) m = m + strata::sys_load_mapped(cpu_part);
     /*
     DPCT1013:39: The rounding mode could not be specified and the generated code
     may have different accuracy than the original code. Verify the correctness.
@@ -612,6 +615,7 @@ void mx_mv_kernel(const BfJobs J, float *lut) {
                         exact same functionality. Check the generated code for
                         potential precision and/or performance issues.
                         */
+                        // audit note: CORRECT - x is device-resident activation memory (BfJob.x from job() d.* buffers)
                         const sycl::float4 xv = *((const sycl::float4 *)x + q);
                         a = sycl::fma(wv[4 * q], (float)(xv.x()), a);
                         a = sycl::fma(wv[4 * q + 1], (float)(xv.y()), a);
@@ -876,14 +880,16 @@ void mx_combine_kernel(const CombArgs a) {
     }
     a.out[(size_t) t * a.out_stride + r] =
         combine(a.plan_w + t * 8, p, a.k,
-                a.cpu_flag != nullptr && a.cpu_flag[t] ? a.cpu_part + (size_t) t * a.cpu_stride + r : nullptr,
+                // audit note: WRONG - the CPU-lane flags are host-mapped (resps): uncached reads
+                a.cpu_flag != nullptr && strata::sys_load((const volatile unsigned *)a.cpu_flag + t) != 0 ? a.cpu_part + (size_t) t * a.cpu_stride + r : nullptr,
                 a.sh_out != nullptr ? a.sh_out[(size_t) t * a.n_embd + r] : 0.0f);
 }
 
 void mx_wait_kernel(const unsigned* p, unsigned v) {
     if (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2) !=
         0) return;
-    while (*(volatile const unsigned*) p != v) {
+    // audit note: WRONG - p is the host-written resps slot seq (host_malloc_polled): uncached read (spin bound untouched)
+    while (strata::sys_load(p) != v) {
     }
     /*
     DPCT1078:9: Consider replacing memory_order::acq_rel with

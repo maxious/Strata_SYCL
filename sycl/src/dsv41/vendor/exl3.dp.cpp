@@ -22,6 +22,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/sycl_math.hpp"
+#include "strata/sycl_doorbell.hpp"
 #include "strata/dsv41/exl3.hpp"
 
 #include <algorithm>
@@ -357,6 +358,7 @@ __dpct_inline__ void load_tiles(const uint32_t *__restrict__ tile0,
             Check the generated code for potential precision and/or performance
             issues.
             */
+            // audit note: CORRECT - tile0 is a device-resident expert blob (plan_ptr / grp_ptr VRAM slot): plain load fresh
             w[s][r] = (W % 32 == 0 || i < W)
                           ? *(tile0 + (size_t)s * sstride + i)
                           : 0u;
@@ -776,7 +778,8 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
-    if (cpu_part != nullptr) m = m + *cpu_part;
+    // audit note: WRONG - cpu_part is the host-mapped CPU-lane part (resps, host_malloc_polled): uncached read
+    if (cpu_part != nullptr) m = m + strata::sys_load_mapped(cpu_part);
     /*
     DPCT1013:75: The rounding mode could not be specified and the generated code
     may have different accuracy than the original code. Verify the correctness.
@@ -868,7 +871,8 @@ void EXL3_BOUNDS(kMinBlocksX<K>) moe_down_kernel(const KMoe a, BlockSmem<K> &sm,
         const int r = g * kCols + item_ct1.get_local_id(2);
         float p[8];
         for (int i = 0; i < a.k; ++i) p[i] = *(volatile const float*) &a.part[(size_t) i * a.n_embd + r];
-        a.out[r] = combine(a.plan_w, p, a.k, a.cpu_flag != nullptr && *a.cpu_flag ? a.cpu_part + r : nullptr,
+        // audit note: WRONG - the CPU-lane flag is host-mapped (resps): uncached read
+        a.out[r] = combine(a.plan_w, p, a.k, a.cpu_flag != nullptr && strata::sys_load((const volatile unsigned *)a.cpu_flag) != 0 ? a.cpu_part + r : nullptr,
                            a.sh_out != nullptr ? a.sh_out[r] : 0.0f);
     }
     if (item_ct1.get_local_id(2) == 0) a.cnt[g] = 0u;
@@ -988,14 +992,16 @@ void win_combine_kernel(const KWin a) {
     }
     a.out[(size_t) t * a.out_stride + r] =
         combine(a.plan_w + t * 8, p, a.k,
-                a.cpu_flag != nullptr && a.cpu_flag[t] ? a.cpu_part + (size_t) t * a.cpu_stride + r : nullptr,
+                // audit note: WRONG - the CPU-lane flags are host-mapped (resps): uncached reads
+                a.cpu_flag != nullptr && strata::sys_load((const volatile unsigned *)a.cpu_flag + t) != 0 ? a.cpu_part + (size_t) t * a.cpu_stride + r : nullptr,
                 a.sh_out != nullptr ? a.sh_out[(size_t) t * a.n_embd + r] : 0.0f);
 }
 
 void win_wait_kernel(const unsigned* p, unsigned v) {
     if (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2) !=
         0) return;
-    while (*(volatile const unsigned*) p != v) {
+    // audit note: WRONG - p is the host-written resps slot seq (host_malloc_polled): uncached read (spin bound untouched)
+    while (strata::sys_load(p) != v) {
 #if defined(DPCT_COMPATIBILITY_TEMP) && DPCT_COMPATIBILITY_TEMP >= 700
         /*
         DPCT1008:80: __nanosleep function is not defined in SYCL. This is a
