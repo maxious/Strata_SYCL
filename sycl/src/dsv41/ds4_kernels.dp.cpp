@@ -128,6 +128,7 @@ template <class T> __dpct_inline__ T ld_fresh(const T *p) {
     */
     // the SYCL port: the payload is in host-mapped memory, and a plain read of it is served from the GPU's cache
     // (strata/sycl_doorbell.hpp), so the host's stores are not seen: the uncached read goes to memory every time
+    // audit note: CORRECT - this helper is the uncached read path itself (the uncached L1+L3 hints carry __ldcv)
     if constexpr (std::is_same_v<T, sycl::float4>) return strata::load_mapped_float4(p);
     else return strata::sys_load_mapped(p);
 #endif
@@ -1821,10 +1822,11 @@ void markov_pick_kernel(const unsigned* slots, int nm, unsigned seq, int* tok, c
                                    uint16_t* erow, int R, int &pick) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 
+    // audit note: WRONG - mk_slots is host-mapped (hmap at ds4_model.dp.cpp:2664) cross-member traffic: uncached reads
     if ((int)item_ct1.get_local_id(2) < nm)
         while (
-            (int)(*(volatile const unsigned
-                        *)(slots + (size_t)item_ct1.get_local_id(2) * 4 + 2) -
+            (int)(strata::sys_load(
+                        slots + (size_t)item_ct1.get_local_id(2) * 4 + 2) -
                   seq) < 0) {
 #if defined(DPCT_COMPATIBILITY_TEMP) && DPCT_COMPATIBILITY_TEMP >= 700
             /*
@@ -1842,8 +1844,8 @@ void markov_pick_kernel(const unsigned* slots, int nm, unsigned seq, int* tok, c
         int bi = 0x7fffffff;
         for (int m = 0; m < nm; ++m) {   // (members in vocabulary order: a tie keeps the lower index)
             const float v = sycl::bit_cast<float>(
-                *(volatile const unsigned *)(slots + (size_t)m * 4));
-            const int i = (int) *(volatile const unsigned*) (slots + (size_t) m * 4 + 1);
+                strata::sys_load(slots + (size_t)m * 4));
+            const int i = (int) strata::sys_load(slots + (size_t) m * 4 + 1);
             if (v > bv || (v == bv && i < bi)) bv = v, bi = i;
         }
         pick = bi;
@@ -1858,9 +1860,10 @@ void markov_pick_kernel(const unsigned* slots, int nm, unsigned seq, int* tok, c
     two expressions do not provide the exact same functionality. Check the
     generated code for potential precision and/or performance issues.
     */
+    // audit note: WRONG - E is host-mapped (hmap at ds4_model.dp.cpp:2663), not device-resident: the read must be uncached
     for (int i = item_ct1.get_local_id(2); i < R;
          i += item_ct1.get_local_range(2))
-        erow[i] = *(E + (size_t)pick * R + i);
+        erow[i] = ld_fresh(E + (size_t)pick * R + i);
 #endif
 }
 
