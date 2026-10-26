@@ -17,6 +17,7 @@
 // draw chain (its header says why the selection must be parallel and why the tie rule keeps the semantics).
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_queue.hpp"
 #include "strata/dsv41/sampler.hpp"
 
 #include <cmath>
@@ -783,7 +784,7 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         the limit. To get the device limit, query
         info::device::max_work_group_size. Adjust the work-group size if needed.
         */
-                ((sycl::queue *)((dpct::queue_ptr)stream))
+                strata::q_of(stream)
                     ->submit([&](sycl::handler &cgh) {
                             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                                 sycl::range<1>(shmem), cgh);
@@ -830,10 +831,10 @@ void sample_tokens(const float* logits, int n_tokens, int n_vocab, const int* hi
         info::device::max_work_group_size. Adjust the work-group size if needed.
         */
                 dpct::has_capability_or_fail(
-                    ((sycl::queue *)((dpct::queue_ptr)stream))->get_device(),
+                    strata::q_of(stream)->get_device(),
                     {sycl::aspect::fp64});
 
-                ((sycl::queue *)((dpct::queue_ptr)stream))
+                strata::q_of(stream)
                     ->submit([&](sycl::handler &cgh) {
                             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                                 sycl::range<1>(shmem), cgh);
@@ -950,10 +951,10 @@ void sample_draft(const float* logits, int n_tokens, int n_vocab, const SamplerP
     */
         {
                 dpct::has_capability_or_fail(
-                    ((sycl::queue *)((dpct::queue_ptr)stream))->get_device(),
+                    strata::q_of(stream)->get_device(),
                     {sycl::aspect::fp64});
 
-                ((sycl::queue *)((dpct::queue_ptr)stream))
+                strata::q_of(stream)
                     ->submit([&](sycl::handler &cgh) {
                             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                                 sycl::range<1>(0), cgh);
@@ -1041,10 +1042,10 @@ void sample_verify(const float* logits, int n_tokens, int n_vocab, const Sampler
     */
         {
                 dpct::has_capability_or_fail(
-                    ((sycl::queue *)((dpct::queue_ptr)stream))->get_device(),
+                    strata::q_of(stream)->get_device(),
                     {sycl::aspect::fp64});
 
-                ((sycl::queue *)((dpct::queue_ptr)stream))
+                strata::q_of(stream)
                     ->submit([&](sycl::handler &cgh) {
                             sycl::local_accessor<uint8_t, 1> dpct_local_acc_ct1(
                                 sycl::range<1>(0), cgh);

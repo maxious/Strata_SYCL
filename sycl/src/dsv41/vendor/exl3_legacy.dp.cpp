@@ -21,6 +21,7 @@
 #if !defined(STRATA_USE_HIP)   // (AMD runs exl3.cu's kernels; EXL3 does not run there anyway)
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include "strata/dsv41/exl3.hpp"
 
 #include <algorithm>
@@ -75,7 +76,7 @@ __dpct_inline__ uint32_t bytesum_plus(uint32_t x, uint32_t acc) {
 #if defined(STRATA_USE_HIP)
     return acc + (x & 0xffu) + ((x >> 8) & 0xffu) + ((x >> 16) & 0xffu) + (x >> 24);
 #else
-    return dpct::dp4a(x, 0x01010101u, acc);
+    return strata::dp4a(x, 0x01010101u, acc);
 #endif
 }
 
