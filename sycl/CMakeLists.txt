@@ -259,8 +259,13 @@ option(STRATA_SYCL_DSV41 "Build the ported dsv41 quant kernels (sycl/src/dsv41/*
 if(STRATA_SYCL_DSV41)
   strata_resolve(_dsv41 src/dsv41/ds4_tq.cu src/dsv41/ds4_gguf.cu src/dsv41/ds4_iq.cu
                        src/dsv41/ds4_gemv.dp.cpp src/dsv41/ds4_softmax.dp.cpp src/dsv41/ds4_launch.dp.cpp)
-  add_library(strata_dsv41 STATIC ${_dsv41})
+  add_library(strata_dsv41 STATIC ${_dsv41} ${CMAKE_CURRENT_SOURCE_DIR}/src/dsv41/ds4_mem.cpp)
   target_include_directories(strata_dsv41 PRIVATE ${STRATA_ROOT}/third_party/ggml ${CMAKE_CURRENT_SOURCE_DIR}/include/compat)
+  # the sysman query (ds4_mem.cpp) calls zes* symbols, which live in the Level Zero loader
+  find_library(STRATA_ZE_LOADER ze_loader)
+  if(STRATA_ZE_LOADER)
+    target_link_libraries(strata_dsv41 PUBLIC ${STRATA_ZE_LOADER})
+  endif()
   target_link_libraries(strata_dsv41 PUBLIC strata_includes)
   # dsv41's parity tests, named with the ds4 prefix so `ctest -R ds4` selects them: the quant parity harness
   # (iq / tq / gguf rows) and the Wave 3 one (the oneMKL BLAS shim plus the gemv / softmax ports).
