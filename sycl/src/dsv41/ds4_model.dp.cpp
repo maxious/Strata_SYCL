@@ -15,6 +15,8 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_queue.hpp"
+#include "strata/sycl_doorbell.hpp"
 #include "ds4_mem.hpp"
 #include "ds4_model.hpp"
 #include "ds4_pick_rule.hpp"
@@ -1334,11 +1336,11 @@ struct Model::Impl {
             dpct::select_device(d.id);
             for (void *p : d.allocs) DPCT_CHECK_ERROR(
                 dpct::dpct_free(p, dpct::get_in_order_queue()));
+            if (d.ev) dpct::destroy_event(d.ev);   // before its queue: the event belongs to it
             if (d.st) dpct::get_current_device().destroy_queue(d.st);
-            if (d.ev) dpct::destroy_event(d.ev);
         }
         for (void *p : host_allocs)
-            DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));
+            strata::host_free_polled(p, dpct::get_in_order_queue());
         for (Layer& l : L)
             for (uint8_t* b : l.host)
                 if (b != nullptr) {
@@ -2849,7 +2851,7 @@ struct Model::Impl {
                     d.scratch = sc0[di];
                 }
                 while (host_allocs.size() > nh) {
-                    sycl::free(host_allocs.back(), dpct::get_in_order_queue());
+                    strata::host_free_polled(host_allocs.back(), dpct::get_in_order_queue());
                     host_allocs.pop_back();
                 }
                 chunks.clear();
@@ -3030,7 +3032,7 @@ struct Model::Impl {
             meaningful in the migrated code and was removed or replaced with 0.
             You may need to check the migrated code.
             */
-            if (DPCT_CHECK_ERROR(m = (void *)sycl::malloc_host(
+            if (DPCT_CHECK_ERROR(m = (void *)strata::host_malloc_polled(
                                      sizeof(Req) * kRing,
                                      dpct::get_in_order_queue())) != 0) {
                 err = "host-mapped memory for the decode path's requests";
@@ -3048,7 +3050,7 @@ struct Model::Impl {
             meaningful in the migrated code and was removed or replaced with 0.
             You may need to check the migrated code.
             */
-            if (DPCT_CHECK_ERROR(m = (void *)sycl::malloc_host(
+            if (DPCT_CHECK_ERROR(m = (void *)strata::host_malloc_polled(
                                      sizeof(Resp) * kRing,
                                      dpct::get_in_order_queue())) != 0) {
                 err = "host-mapped memory for the decode path's answers";
@@ -7504,7 +7506,7 @@ struct Model::Impl {
         std::vector<Ent> ents;
         while (!quit.load(std::memory_order_relaxed)) {
             Req& r = reqs[next % kRing];
-            if (*(volatile unsigned*) &r.seq != next) {
+            if (*(volatile unsigned*) &r.seq != next) {   // the ring: an uncached page, so the GPU's store is seen
                 cpu_relax();
                 if (std::chrono::steady_clock::now() - last > std::chrono::milliseconds(2))
                     std::this_thread::sleep_for(std::chrono::microseconds(20));
@@ -7657,7 +7659,7 @@ struct Model::Impl {
                 }
             }
             std::atomic_thread_fence(std::memory_order_release);
-            *(volatile unsigned*) &rp.seq = next;
+            *(volatile unsigned*) &rp.seq = next;   // the answer: the release fence above orders the payload before it
             ++next;
             last = std::chrono::steady_clock::now();
         }

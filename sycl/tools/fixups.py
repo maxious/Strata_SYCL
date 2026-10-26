@@ -329,6 +329,61 @@ edit("src/program/generate.cpp", sub(
     r"(    const strata::core::OnDevice on\(dev\);\n        size_t fb = 0, tb = 0;\n)(?!        dpct::get_current_device)",
     r"\1        dpct::get_current_device().get_memory_info(fb, tb);   // #423 (tmking01): dpct dropped cudaMemGetInfo here\n"))
 
+# 7d. the dsv41 port's doorbell, spelled its own way. 7c matched the other engine's `uint32_t` and
+#     `strata_spin_pause()` spellings only, so the dsv41 handshake shipped with the bug: the card cached the host
+#     page on its first read and never saw the host's later store (measured on the Arc Pro B60 under the xe driver).
+#     System-scope load/store do bypass the caches (include/strata/sycl_doorbell.hpp).
+#     The waits stay unbounded here: the bound is a kernel argument (7c'), so bounding these needs the launchers
+#     to pass strata::spin_max(queue) - a signature change, not a string rule.
+def doorbell_dsv41(s):
+    if "sycl_doorbell.hpp" not in s:
+        s = s.replace('#include <dpct/dpct.hpp>\n', '#include <dpct/dpct.hpp>\n#include "strata/sycl_doorbell.hpp"\n', 1)
+    # the GPU rings the sequence number into host-mapped slots
+    s = s.replace("        *(volatile unsigned*) (slot + 2) = seq;",
+                  "        strata::sys_store((volatile unsigned*) (slot + 2), seq);")
+    s = s.replace("    *(volatile unsigned*) &req->seq = seq;",
+                  "    strata::sys_store((volatile unsigned*) &req->seq, seq);")
+    s = s.replace("        *(volatile unsigned*) flag = seq;",
+                  "        strata::sys_store((volatile unsigned*) flag, seq);")
+    s = s.replace("    *(volatile unsigned*) flag = v;",
+                  "    strata::sys_store((volatile unsigned*) flag, v);")
+    s = s.replace("    if (item_ct1.get_local_id(2) == 0) * (volatile unsigned *)rflag(mi) = seq;",
+                  "    if (item_ct1.get_local_id(2) == 0) strata::sys_store((volatile unsigned *) rflag(mi), seq);")
+    s = s.replace("    if (item_ct1.get_local_id(2) == 0) * (volatile unsigned *)sflag(mi) = seq;",
+                  "    if (item_ct1.get_local_id(2) == 0) strata::sys_store((volatile unsigned *) sflag(mi), seq);")
+    # the GPU's waits on the host's write
+    s = s.replace("    while (*(volatile const unsigned*) seq_ptr != seq) {",
+                  "    while (strata::sys_load(seq_ptr) != seq) {")
+    s = s.replace("    while ((int) (*(volatile const unsigned*) flag - seq) < 0) {",
+                  "    while ((int) (strata::sys_load(flag) - seq) < 0) {")
+    # payload rows the GPU reads after the ring: dpct left __ldcv as a plain load (DPCT1098), which reads a cached line
+    s = s.replace("    return *p;\n#endif\n}", "    return strata::sys_load_mapped(p);\n#endif\n}", 1)
+    return s
+
+for rel in ("src/dsv41/ds4_kernels.dp.cpp", "src/dsv41/ds4_model.dp.cpp"):
+    edit(rel, doorbell_dsv41)
+
+# 7e. the host memory a kernel polls must be uncached on xe: dpct's cudaHostAllocPortable came out as plain
+#     sycl::malloc_host (DPCT1048), and the card caches that page, so the doorbell never sees the host's write.
+#     strata::host_malloc_polled() is zeMemAllocHost with ZE_HOST_MEM_ALLOC_FLAG_BIAS_UNCACHED
+#     (include/strata/sycl_queue.hpp); it falls back to malloc_host where STRATA_HAVE_ZE is not defined.
+#     Its pair host_free_polled() is the only free that accepts such a pointer: sycl::free on a zeMemAllocHost
+#     pointer is INVALID_MEM_OBJECT, which is what the engine aborted with after a finished prompt (run 11).
+#     Only the ring the kernels poll is polled-allocated: a buffer a memcpy touches must stay USM, so
+#     zeMemAllocHost there is INVALID_MEM_OBJECT for queue::memcpy (measured by the barrier lane).
+def host_polled_dsv41(s):
+    if "strata/sycl_queue.hpp" not in s:
+        s = s.replace('#include <dpct/dpct.hpp>\n', '#include <dpct/dpct.hpp>\n#include "strata/sycl_queue.hpp"\n', 1)
+    s = s.replace("            if (DPCT_CHECK_ERROR(m = (void *)sycl::malloc_host(\n                                     sizeof(Req) * kRing,\n                                     dpct::get_in_order_queue())) != 0) {",
+                  "            if (DPCT_CHECK_ERROR(m = (void *)strata::host_malloc_polled(\n                                     sizeof(Req) * kRing,\n                                     dpct::get_in_order_queue())) != 0) {")
+    # the host_allocs frees hold both kinds, and host_free_polled falls back to sycl::free for a USM pointer
+    s = s.replace("            DPCT_CHECK_ERROR(sycl::free(p, dpct::get_in_order_queue()));",
+                  "            DPCT_CHECK_ERROR(strata::host_free_polled(p, dpct::get_in_order_queue()));")
+    return s.replace("                    sycl::free(host_allocs.back(), dpct::get_in_order_queue());",
+                     "                    strata::host_free_polled(host_allocs.back(), dpct::get_in_order_queue());")
+
+edit("src/dsv41/ds4_model.dp.cpp", host_polled_dsv41)
+
 # A770: only subgroup row zero reaches the native router's synchronization.
 # CUDA's early-exit block pattern must not become a divergent SYCL work-group barrier.
 edit("src/kernels/cuda/native_router.dp.cpp", lambda s: s.replace(
