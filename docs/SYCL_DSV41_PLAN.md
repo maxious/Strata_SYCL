@@ -214,7 +214,11 @@ The kernel library builds, but the engine does not call it yet. Measured on 2026
 (`icpx -fsycl -fsyntax-only`):
 
 - `src/dsv41/ds4_main.cpp` compiles under SYCL with two errors, both `STRATA_VERSION`, a compile definition the
-  root CMake adds (`CMakeLists.txt:23`). The front-end is not CUDA-specific.
+  root CMake adds (`CMakeLists.txt:23`). The front-end is not CUDA-specific. With that define given
+  (`icpx -fsycl -c`, `OBJ_RC=0`) it compiles with 0 errors, and it asks the kernel library for 37 symbols.
+- The SYCL tree builds the front-end behind `STRATA_SYCL_DSV41_EXE` (OFF by default, so the default build and
+  `ctest -R ds4` are unchanged; with it ON the parity targets still build, `PARITY_BUILD_RC=0`). All six of its
+  sources compile; the link fails with 93 undefined references (`EXE_RC=1`).
 - `src/dsv41/ds4_model.cu` holds the device calls: 505 lines mention `cuda`, `__global` or `exl3`. That file is
   the port that remains, and `strata-dsv41` needs it.
 - A CPU-only build with `STRATA_BUILD_DSV41=ON` builds `ds4_gg_bench` but no `strata-dsv41`: the target needs a
