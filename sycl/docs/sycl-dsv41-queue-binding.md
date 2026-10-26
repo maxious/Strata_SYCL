@@ -173,3 +173,30 @@ So the DPCT1093 verdict stands for the pairs as written (select, then create on 
 device), but the dynamic control fails: the `--gpus` ordinal to device mapping does not bind
 the card the user names. Mapping the ordinals onto real GPU devices is the fix; it touches the
 device-index layer, which this audit records rather than changes.
+
+## The ordinal mapping fixed (2026-10-26)
+
+The gap above is closed. `dpct::dev_mgr` (`sycl/include/dpct/device.hpp`) numbered index 0 as
+the SYCL default device and then the rest of `get_devices(all)` in runtime order. On this PC
+that runtime order starts with `[opencl:cpu]`, so `--gpus 1` bound the host CPU and `--gpus 0,1`
+put the CPU in slot 1 (the abort rows above).
+
+Now a device ordinal names a real GPU in Level Zero discovery order. `ordered_gpu_devices()`
+(`sycl/include/dpct/device.hpp`) numbers the Level Zero GPU devices by their `zeDeviceGet` index
+and gives no ordinal to a CPU device or to the OpenCL copy of a card that already has a Level
+Zero interface. A machine with no Level Zero GPU keeps the SYCL GPU devices in runtime order.
+
+Measured on this PC (2026-10-26, oneAPI 2026.2, NEO 26.35.39758.10, two Arc Pro B60 cards,
+24480 MiB each; probe `/tmp/dpct_run/w4ord_devprobe.cpp`, `xpu-smi discovery`):
+
+- `zeDeviceGet` index 0 is uuid `868011e2-0000-0000-0d00-000000000000`, PCI `0000:0d:00.0`
+  (`xpu-smi` device 0, `/dev/dri/card0`); index 1 is `868011e2-0000-0000-1100-000000000000`,
+  PCI `0000:11:00.0` (device 1, `/dev/dri/card1`). The ordinals name the cards in the order
+  xpu-smi numbers them.
+- `sycl::default_selector_v` picks uuid `868011e2-0000-0000-0d00-000000000000`, the same device
+  the old code gave ordinal 0. So `--gpus 0` keeps its exact device and the default path is
+  unchanged.
+
+The queue-binding verdict above is unchanged: every queue is still created on the thread that
+owns its device. The acceptance runs that failed above were re-run on the fixed mapping; their
+rows and gate codes are in the evidence log.
