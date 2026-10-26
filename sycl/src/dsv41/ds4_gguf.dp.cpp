@@ -3,6 +3,7 @@
 // src/ds4/ds4_gguf.cu - a GGUF's BF16 matrices and MXFP4 experts on the device (see ds4_gguf.cuh).
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include <cuda_runtime.h>   // compat shim (sycl/include/compat): CUDA qualifiers the unconverted headers use
 #include <cuda_fp16.h>      // compat shim: __half2float for the f16 activation load below
 #include "ds4_gguf.dp.hpp"
@@ -338,17 +339,17 @@ __dpct_inline__ int mx_dot(const sycl::uint4 &q, const sycl::int4 &xa,
                            const sycl::int4 &xb) {
     int sum = 0;
     sycl::int2 v = e2m1_x8(q.x());
-    sum = dpct::dp4a(v.x(), xa.x(), sum);
-    sum = dpct::dp4a(v.y(), xb.x(), sum);
+    sum = strata::dp4a(v.x(), xa.x(), sum);
+    sum = strata::dp4a(v.y(), xb.x(), sum);
     v = e2m1_x8(q.y());
-    sum = dpct::dp4a(v.x(), xa.y(), sum);
-    sum = dpct::dp4a(v.y(), xb.y(), sum);
+    sum = strata::dp4a(v.x(), xa.y(), sum);
+    sum = strata::dp4a(v.y(), xb.y(), sum);
     v = e2m1_x8(q.z());
-    sum = dpct::dp4a(v.x(), xa.z(), sum);
-    sum = dpct::dp4a(v.y(), xb.z(), sum);
+    sum = strata::dp4a(v.x(), xa.z(), sum);
+    sum = strata::dp4a(v.y(), xb.z(), sum);
     v = e2m1_x8(q.w());
-    sum = dpct::dp4a(v.x(), xa.w(), sum);
-    sum = dpct::dp4a(v.y(), xb.w(), sum);
+    sum = strata::dp4a(v.x(), xa.w(), sum);
+    sum = strata::dp4a(v.y(), xb.w(), sum);
     return sum;
 }
 // the warp copies the blocks [b0, b0 + nbk) of a row (BB bytes each; the row 4-byte aligned, nbk BB % 4 == 0) into its
@@ -546,14 +547,14 @@ void q8_mv_kernel(const BfJobs J,
                     (const sycl::int4 *)(b.xq + (size_t)c * b.k +
                                          (size_t)kb * 32);
                 const sycl::int4 xa = xp[0], xb = xp[1];
-                int sum = dpct::dp4a(v[0], xa.x(), 0);
-                sum = dpct::dp4a(v[1], xa.y(), sum);
-                sum = dpct::dp4a(v[2], xa.z(), sum);
-                sum = dpct::dp4a(v[3], xa.w(), sum);
-                sum = dpct::dp4a(v[4], xb.x(), sum);
-                sum = dpct::dp4a(v[5], xb.y(), sum);
-                sum = dpct::dp4a(v[6], xb.z(), sum);
-                sum = dpct::dp4a(v[7], xb.w(), sum);
+                int sum = strata::dp4a(v[0], xa.x(), 0);
+                sum = strata::dp4a(v[1], xa.y(), sum);
+                sum = strata::dp4a(v[2], xa.z(), sum);
+                sum = strata::dp4a(v[3], xa.w(), sum);
+                sum = strata::dp4a(v[4], xb.x(), sum);
+                sum = strata::dp4a(v[5], xb.y(), sum);
+                sum = strata::dp4a(v[6], xb.z(), sum);
+                sum = strata::dp4a(v[7], xb.w(), sum);
                 acc[c] = fmaf(dw * b.xd[(size_t) c * nb + kb], (float) sum, acc[c]);
             }
     }

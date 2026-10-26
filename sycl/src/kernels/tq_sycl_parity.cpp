@@ -117,8 +117,8 @@ float emu_dot(int t, const uint8_t* row, const uint8_t* q8, int64_t n) {
 }
 
 template <class T> T* dmalloc(size_t n) { return (T*) sycl::malloc_device((n ? n : 1) * sizeof(T), dpct::get_in_order_queue()); }
-template <class T> void to_dev(T* d, const void* h, size_t n) { dpct::get_in_order_queue().memcpy(d, h, n).wait(); }
-template <class T> void from_dev(void* h, const T* d, size_t n) { dpct::get_in_order_queue().memcpy(h, d, n).wait(); }
+template <class T> void to_dev(T* d, const void* h, size_t n) { (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d, h, n).wait(); }
+template <class T> void from_dev(void* h, const T* d, size_t n) { (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(h, d, n).wait(); }
 
 int check_layer(const cpu::NativeFmt& f, const std::vector<uint8_t>& blob, int seed, const std::string& label) {
     int failures = 0;

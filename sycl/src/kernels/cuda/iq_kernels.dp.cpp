@@ -3556,7 +3556,7 @@ template<bool NT> struct S26Split<20, NT> {   // IQ4_NL
         const block_iq4_nl* bq4 = (const block_iq4_nl*) vbq + kbx;
         W r;
 #pragma unroll
-        for (int l = 0; l < 2; ++l) r.v[l] = get_int_from_table_16(ldb2<NT>(bq4->qs, iqs + l), kvalues_iq4nl);
+        for (int l = 0; l < 2; ++l) r.v[l] = get_int_from_table_16(ldb2<NT>(bq4->qs, iqs + l));
         r.dw = ldhalf<NT>(&bq4->d);
         return r;
     }
@@ -3652,7 +3652,7 @@ auto &s_grid = *sycl::ext::oneapi::group_local_memory_for_overwrite<
         rr[q] = upq[q] ? row - (int) L.n_ff : row;
         wr[q] = blob + (upq[q] ? L.up_off : 0) + (size_t) rr[q] * L.gu_row;
     }
-    const uint32_t* grid = LT ? s_grid : reinterpret_cast<const uint32_t*>(iq3s_grid);
+    const uint32_t* grid = LT ? s_grid : reinterpret_cast<const uint32_t*>();
     const int nb = (int) (L.n_embd / 256), xb = (int) (L.n_embd / 32);
     const int e0 = grp_start[g], e1 = grp_start[g + 1];
     for (int e = e0; e < e1; e += GRP_NC) {

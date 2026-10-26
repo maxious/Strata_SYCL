@@ -643,11 +643,11 @@ void kq_bench(dpct::queue_ptr s, std::mt19937& rng, int nl, bool host) {
                 std::vector<unsigned long long> p;
                 for (int j = 0; j < ng; ++j) {
                     uint8_t* d = arena + S.slot * (size_t) (l * ng + j);
-                    dpct::get_in_order_queue().memcpy(d, S.blobs + S.slot * (size_t) (j % S.n_blobs), S.L.bytes).wait();
+                    (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(d, S.blobs + S.slot * (size_t) (j % S.n_blobs), S.L.bytes).wait();
                     p.push_back((unsigned long long) d);
                 }
                 unsigned long long* dp = dalloc<unsigned long long>(p.size());
-                dpct::get_in_order_queue().memcpy(dp, p.data(), p.size() * 8).wait();
+                (dpct::get_current_device().queues_wait_and_throw(), dpct::get_in_order_queue()).memcpy(dp, p.data(), p.size() * 8).wait();
                 lp.push_back(dp);
             }
             dpct::experimental::command_graph_ptr g;

@@ -4,6 +4,7 @@
 // ggml's (ggml-common.h, MIT, third_party/ggml/LICENSE); the sign and grid tricks are llama.cpp's vecdotq.cuh.
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_math.hpp"
 #include <cuda_runtime.h>   // compat shim (sycl/include/compat): __device__ for ggml-common.h
 #include "ds4_iq.dp.hpp"
 #include "ds4_numerics.dp.hpp"
@@ -389,14 +390,14 @@ __dpct_inline__ void decode(const uint8_t *__restrict__ row, int kb,
 template <int T>
 __dpct_inline__ float sub_dot(const Sub &s, const sycl::int4 &xa,
                               const sycl::int4 &xb) {
-    int lo = dpct::dp4a(s.q[0], xa.x(), 0);
-    lo = dpct::dp4a(s.q[1], xa.y(), lo);
-    lo = dpct::dp4a(s.q[2], xa.z(), lo);
-    lo = dpct::dp4a(s.q[3], xa.w(), lo);
-    int hi = dpct::dp4a(s.q[4], xb.x(), 0);
-    hi = dpct::dp4a(s.q[5], xb.y(), hi);
-    hi = dpct::dp4a(s.q[6], xb.z(), hi);
-    hi = dpct::dp4a(s.q[7], xb.w(), hi);
+    int lo = strata::dp4a(s.q[0], xa.x(), 0);
+    lo = strata::dp4a(s.q[1], xa.y(), lo);
+    lo = strata::dp4a(s.q[2], xa.z(), lo);
+    lo = strata::dp4a(s.q[3], xa.w(), lo);
+    int hi = strata::dp4a(s.q[4], xb.x(), 0);
+    hi = strata::dp4a(s.q[5], xb.y(), hi);
+    hi = strata::dp4a(s.q[6], xb.z(), hi);
+    hi = strata::dp4a(s.q[7], xb.w(), hi);
     /*
     DPCT1013:32: The rounding mode could not be specified and the generated code
     may have different accuracy than the original code. Verify the correctness.
@@ -405,14 +406,14 @@ __dpct_inline__ float sub_dot(const Sub &s, const sycl::int4 &xa,
     */
     float v = s.d * (float)(s.s0 * lo + s.s1 * hi);
     if constexpr (Ty<T>::MIN) {
-        int sl = dpct::dp4a(0x01010101, xa.x(), 0);
-        sl = dpct::dp4a(0x01010101, xa.y(), sl);
-        sl = dpct::dp4a(0x01010101, xa.z(), sl);
-        sl = dpct::dp4a(0x01010101, xa.w(), sl);
-        int sh = dpct::dp4a(0x01010101, xb.x(), 0);
-        sh = dpct::dp4a(0x01010101, xb.y(), sh);
-        sh = dpct::dp4a(0x01010101, xb.z(), sh);
-        sh = dpct::dp4a(0x01010101, xb.w(), sh);
+        int sl = strata::dp4a(0x01010101, xa.x(), 0);
+        sl = strata::dp4a(0x01010101, xa.y(), sl);
+        sl = strata::dp4a(0x01010101, xa.z(), sl);
+        sl = strata::dp4a(0x01010101, xa.w(), sl);
+        int sh = strata::dp4a(0x01010101, xb.x(), 0);
+        sh = strata::dp4a(0x01010101, xb.y(), sh);
+        sh = strata::dp4a(0x01010101, xb.z(), sh);
+        sh = strata::dp4a(0x01010101, xb.w(), sh);
         /*
         DPCT1013:33: The rounding mode could not be specified and the generated
         code may have different accuracy than the original code. Verify the
