@@ -574,8 +574,10 @@ __dpct_inline__ void deq8(const uint8_t *__restrict__ row, int kb, int p,
 template <int T> struct Fast { static constexpr int WORDS = 0; };   // 0: this type decodes as decode<T>
 // IQ1_M: the 12-bit (neg, 11-bit grid index) -> its 8 int8 codes (iq1_codes with the sub-block delta's sign), 2 words
 template <> struct Fast<kIQ1_M> { static constexpr int WORDS = 8192; };
-inline dpct::global_memory<const sycl::uint2, 1>
-    kIq1mCodes(sycl::range<1>(4096), {
+// never freed: exit-order safe (its queue is gone by the time a static destructor runs: the free would call
+// through it - "Pure virtual function called!", RC 134 at exit)
+inline dpct::global_memory<const sycl::uint2, 1>& kIq1mCodes =
+    *new dpct::global_memory<const sycl::uint2, 1>(sycl::range<1>(4096), {
 #include "ds4_iq1m_codes.inc"
                                      });
 #else
