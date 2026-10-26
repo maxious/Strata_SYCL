@@ -56,6 +56,7 @@ void moe_win_group(const MoeWin &w, dpct::queue_ptr s) {
                 Modify the code to use the original expression, provided in
                 comments, if it is correct.
                 */
+                // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                 sycl::local_accessor<unsigned long long, 1> gp_acc_ct1(
                     sycl::range<1>(128 /*kWinEnt*/), cgh);
                 /*
@@ -63,6 +64,7 @@ void moe_win_group(const MoeWin &w, dpct::queue_ptr s) {
                 Modify the code to use the original expression, provided in
                 comments, if it is correct.
                 */
+                // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                 sycl::local_accessor<int, 1> cnt_acc_ct1(
                     sycl::range<1>(128 /*kWinEnt*/), cgh);
                 /*
@@ -70,6 +72,7 @@ void moe_win_group(const MoeWin &w, dpct::queue_ptr s) {
                 Modify the code to use the original expression, provided in
                 comments, if it is correct.
                 */
+                // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                 sycl::local_accessor<int, 1> gof_acc_ct1(
                     sycl::range<1>(128 /*kWinEnt*/), cgh);
                 /*
@@ -77,6 +80,7 @@ void moe_win_group(const MoeWin &w, dpct::queue_ptr s) {
                 value. Modify the code to use the original expression, provided
                 in comments, if it is correct.
                 */
+                // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                 sycl::local_accessor<int, 1> fill_acc_ct1(
                     sycl::range<1>(129 /*kWinEnt + 1*/), cgh);
 
@@ -109,22 +113,26 @@ void moe_win_group(const MoeWin &w, dpct::queue_ptr s) {
     error codes. The cudaGetLastError function call was replaced with 0. You
     need to rewrite this code.
     */
+    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
     const dpct::err0 e = 0;
     /*
     DPCT1000:139: Error handling if-stmt was detected but could not be
     rewritten.
     */
+    // audit note: DPCT1000 accepted — error-handling boilerplate on the launch-check pattern the port keeps on purpose; the exception rewrite does not apply
     if (e != 0) {
         /*
         DPCT1009:141: SYCL reports errors using exceptions and does not use
         error codes. Please replace the "get_error_string_dummy(...)" with a
         real error-handling function.
         */
+        // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
         std::fprintf(stderr, "dsv41: moe_win_group: %s\n",
                      dpct::get_error_string_dummy(e));
         /*
         DPCT1001:138: The statement could not be removed.
         */
+        // audit note: DPCT1001 accepted — the statement dpct could not remove is the port's own launch-error counter, and the port wants that counter
         std::abort();
     }
 }

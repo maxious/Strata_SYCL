@@ -78,21 +78,25 @@ void launch_check(const char* what) {
     error codes. The cudaGetLastError function call was replaced with 0. You
     need to rewrite this code.
     */
+    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
     const dpct::err0 e = 0;
     /*
     DPCT1000:59: Error handling if-stmt was detected but could not be rewritten.
     */
+    // audit note: DPCT1000 accepted — error-handling boilerplate on the launch-check pattern the port keeps on purpose; the exception rewrite does not apply
     if (e != 0) {
         /*
         DPCT1009:61: SYCL reports errors using exceptions and does not use error
         codes. Please replace the "get_error_string_dummy(...)" with a real
         error-handling function.
         */
+        // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
         std::fprintf(stderr, "exl3 %s: %s\n", what,
                      dpct::get_error_string_dummy(e));
         /*
         DPCT1001:58: The statement could not be removed.
         */
+        // audit note: DPCT1001 accepted — the statement dpct could not remove is the port's own launch-error counter, and the port wants that counter
         g_launch_errors.fetch_add(1, std::memory_order_relaxed);
     }
 }
@@ -428,6 +432,7 @@ exceeds 128 bytes and may cause high register pressure. Consult with your
 hardware vendor to find the total register size available and adjust the code,
 or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void block_gemv(const uint32_t *__restrict__ tr, int ld, int tc0, int k0,
                 int k1, const Xin &x, const uint16_t *__restrict__ suh, int nc,
                 BlockSmem<K> &sm) {
@@ -458,11 +463,13 @@ void block_gemv(const uint32_t *__restrict__ tr, int ld, int tc0, int k0,
         DPCT1118:1: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:64: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if (q + 1 < nq) {
             load_tiles<K>(tile + (size_t) (q + 1) * 8 * sstride, sstride, lane, wn);
@@ -537,6 +544,7 @@ void block_gemv(const uint32_t *__restrict__ tr, int ld, int tc0, int k0,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
 }
 
@@ -559,6 +567,7 @@ __dpct_inline__ void epilogue(const float *red, const uint16_t *svh,
         correctness. SYCL math built-in function rounding mode is aligned with
         OpenCL C 1.2 standard.
         */
+        // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
         y[c] = sycl::fma(alpha * v[i], h2f(svh[c]),
                          bias != nullptr ? bias[c] : 0.0f);
     }
@@ -628,12 +637,14 @@ void EXL3_BOUNDS(kMinBlocksMv<K>) mv_kernel(const KBatch b, BlockSmem<K> &sm,
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
+    // audit note: DPCT1078 accepted — acq_rel matches the __threadfence() and __threadfence_system() intent of the original code, and the handshake flags already take the uncached strata::sys_store and strata::sys_load path
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::device);
     /*
     DPCT1065:66: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (item_ct1.get_local_id(2) == 0) last =
         dpct::atomic_fetch_add<sycl::access::address_space::generic_space>(
@@ -643,6 +654,7 @@ void EXL3_BOUNDS(kMinBlocksMv<K>) mv_kernel(const KBatch b, BlockSmem<K> &sm,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (!last) return;
     /*
@@ -650,6 +662,7 @@ void EXL3_BOUNDS(kMinBlocksMv<K>) mv_kernel(const KBatch b, BlockSmem<K> &sm,
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
+    // audit note: DPCT1078 accepted — acq_rel matches the __threadfence() and __threadfence_system() intent of the original code, and the handshake flags already take the uncached strata::sys_store and strata::sys_load path
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::device);
     if (item_ct1.get_local_id(2) < kCols)
         for (int c = 0; c < J.nc; ++c) {
@@ -665,6 +678,7 @@ void EXL3_BOUNDS(kMinBlocksMv<K>) mv_kernel(const KBatch b, BlockSmem<K> &sm,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (warp < J.nc)
         epilogue(sm.out + warp * kCols, J.svh + g * kCols, J.alpha, bias, J.y + warp * J.y_cs + g * kCols);
@@ -709,6 +723,7 @@ __dpct_inline__ void block_out(const float *red, const uint16_t *svh,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     for (int i = 0; i < 4; ++i)
         dst[lane * 4 + i] = v[i] * h2f(svh[lane * 4 + i]);
 }
@@ -724,6 +739,7 @@ __dpct_inline__ float swiglu(float gv, float uv, float limit) {
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     return gv / (1.0f + sycl::native::exp(-gv)) * uv;
 }
 // ... the second block of a (gate, up) pair to finish (its counter back at zero for the next launch) ...
@@ -733,6 +749,7 @@ __dpct_inline__ bool pair_last(unsigned *cnt, int &last) {
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
+    // audit note: DPCT1078 accepted — acq_rel matches the __threadfence() and __threadfence_system() intent of the original code, and the handshake flags already take the uncached strata::sys_store and strata::sys_load path
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::device);
     /*
@@ -740,6 +757,7 @@ __dpct_inline__ bool pair_last(unsigned *cnt, int &last) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (item_ct1.get_local_id(2) == 0) last =
         dpct::atomic_fetch_add<sycl::access::address_space::generic_space>(
@@ -749,6 +767,7 @@ __dpct_inline__ bool pair_last(unsigned *cnt, int &last) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (!last) return false;
     /*
@@ -756,6 +775,7 @@ __dpct_inline__ bool pair_last(unsigned *cnt, int &last) {
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
+    // audit note: DPCT1078 accepted — acq_rel matches the __threadfence() and __threadfence_system() intent of the original code, and the handshake flags already take the uncached strata::sys_store and strata::sys_load path
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::device);
     if (item_ct1.get_local_id(2) == 0) *cnt = 0u;
     return true;
@@ -771,7 +791,9 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     for (int i = 0; i < k; ++i) m = sycl::fma(plan_w[i], p[i], m);
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     /*
     DPCT1013:74: The rounding mode could not be specified and the generated code
     may have different accuracy than the original code. Verify the correctness.
@@ -786,6 +808,7 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     return m + sh;
 }
 
@@ -844,12 +867,14 @@ void EXL3_BOUNDS(kMinBlocksX<K>) moe_down_kernel(const KMoe a, BlockSmem<K> &sm,
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
+    // audit note: DPCT1078 accepted — acq_rel matches the __threadfence() and __threadfence_system() intent of the original code, and the handshake flags already take the uncached strata::sys_store and strata::sys_load path
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::device);
     /*
     DPCT1065:76: Consider replacing sycl::nd_item::barrier() with
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (item_ct1.get_local_id(2) == 0) last =
         dpct::atomic_fetch_add<sycl::access::address_space::generic_space>(
@@ -859,6 +884,7 @@ void EXL3_BOUNDS(kMinBlocksX<K>) moe_down_kernel(const KMoe a, BlockSmem<K> &sm,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     if (!last) return;
     /*
@@ -866,6 +892,7 @@ void EXL3_BOUNDS(kMinBlocksX<K>) moe_down_kernel(const KMoe a, BlockSmem<K> &sm,
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
+    // audit note: DPCT1078 accepted — acq_rel matches the __threadfence() and __threadfence_system() intent of the original code, and the handshake flags already take the uncached strata::sys_store and strata::sys_load path
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::device);
     if (item_ct1.get_local_id(2) < kCols) {
         const int r = g * kCols + item_ct1.get_local_id(2);
@@ -933,11 +960,13 @@ void EXL3_BOUNDS(kMinBlocksX<K>) win_gu_kernel(const KWin a, BlockSmem<K> &sm,
         DPCT1118:8: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:78: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
     if (!pair_last(a.cnt_gu + grp * (a.n_ff / kCols) + g, last)) return;
@@ -972,11 +1001,13 @@ void EXL3_BOUNDS(kMinBlocksX<K>) win_down_kernel(const KWin a, BlockSmem<K> &sm)
         DPCT1118:9: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:79: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
 }
@@ -1016,6 +1047,7 @@ void win_wait_kernel(const unsigned* p, unsigned v, uint32_t spin_max) {
     // the window path's wait writes no record: the flag it spins on may be in host memory (the host's store) or
     // in the card's memory (the host's copy engine wrote it there), and the two have different layouts.  Its bound is
     // the same, and the engine's report names the site.
+    // audit note: DPCT1008 accepted — __nanosleep was a spin hint only; the sync it sat beside is already carried
     /*
     DPCT1008:80: __nanosleep function is not defined in SYCL. This is a
     hardware-specific feature. Consult with your hardware vendor to find a
@@ -1027,6 +1059,7 @@ void win_wait_kernel(const unsigned* p, unsigned v, uint32_t spin_max) {
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
+    // audit note: DPCT1078 accepted — acq_rel matches the __threadfence() and __threadfence_system() intent of the original code, and the handshake flags already take the uncached strata::sys_store and strata::sys_load path
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
 }
 
@@ -1039,6 +1072,7 @@ recon_rows_kernel exceeds 128 bytes and may cause high register pressure.
 Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void recon_rows_kernel(const uint32_t *__restrict__ tr, int ld,
                        const uint16_t *__restrict__ suh,
                        const uint16_t *__restrict__ svh, int k, uint16_t *dst,
@@ -1200,6 +1234,7 @@ void rows_rot_out_kernel(float* y, int ldy, int nrows, int ncols,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     for (int i = 0; i < 4; ++i)
         p[lane * 4 + i] = v[i] * h2f(svh[b * kCols + lane * 4 + i]);
 }
@@ -1346,6 +1381,7 @@ gemm_kernel exceeds 128 bytes and may cause high register pressure. Consult with
 your hardware vendor to find the total register size available and adjust the
 code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void gemm_kernel(const GArgs a, unsigned char *sm,
                  uint32_t stage[8 /*kWarps*/][64]) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -1372,22 +1408,26 @@ void gemm_kernel(const GArgs a, unsigned char *sm,
         DPCT1118:13: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:84: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         load_a(a.xf, a.idx, a.xh, a.ldx, r0, nrows, k0, suh, A);
         /*
         DPCT1118:14: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:85: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
 #pragma unroll 1
         for (int s = 0; s < 8; ++s) {
@@ -1412,6 +1452,7 @@ void gemm_kernel(const GArgs a, unsigned char *sm,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     store_acc(acc, T);
     /*
@@ -1419,6 +1460,7 @@ void gemm_kernel(const GArgs a, unsigned char *sm,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     for (int rr = warp; rr < nrows; rr += kWarps) {
         float v[4];
@@ -1442,6 +1484,7 @@ gate_up_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void gate_up_kernel(const GArgs a, unsigned char *sm,
                     uint32_t stage[8 /*kWarps*/][64]) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -1465,11 +1508,13 @@ void gate_up_kernel(const GArgs a, unsigned char *sm,
         DPCT1118:16: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:88: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         for (int m = 0; m < 2; ++m)
             load_a(a.xf, a.idx, a.xh, a.ldx, r0, nrows, k0, (const uint16_t*) (blob + a.suh[m]), A[m]);
@@ -1477,11 +1522,13 @@ void gate_up_kernel(const GArgs a, unsigned char *sm,
         DPCT1118:17: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:89: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
 #pragma unroll 1
         for (int s = 0; s < 8; ++s) {
@@ -1509,6 +1556,7 @@ void gate_up_kernel(const GArgs a, unsigned char *sm,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     store_acc(acc[0], T[0]);
     store_acc(acc[1], T[1]);
@@ -1517,6 +1565,7 @@ void gate_up_kernel(const GArgs a, unsigned char *sm,
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     const uint16_t* svg = (const uint16_t*) (a.wbase + (size_t) e * a.stride + a.svh[0]) + g * 128;
     const uint16_t* svu = (const uint16_t*) (a.wbase + (size_t) e * a.stride + a.svh[1]) + g * 128;
@@ -1687,6 +1736,7 @@ template <int K, int cb> struct RunRows {
                         value. Modify the code to use the original expression,
                         provided in comments, if it is correct.
                         */
+                        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                         sycl::local_accessor<sycl::half, 1> tile_acc_ct1(
                             sycl::range<1>(16640 /*kCols * P*/), cgh);
 
@@ -1725,6 +1775,7 @@ template <int K, int cb> struct RunGemm {
                         with a value. Modify the code to use the original
                         expression, provided in comments, if it is correct.
                         */
+                        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                         sycl::local_accessor<unsigned char, 1> sm_acc_ct1(
                             sycl::range<1>(16384 /*BM * 128 * 4*/), cgh);
                         /*
@@ -1732,6 +1783,7 @@ template <int K, int cb> struct RunGemm {
                         value. Modify the code to use the original expression,
                         provided in comments, if it is correct.
                         */
+                        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                         sycl::local_accessor<uint32_t[8 /*kWarps*/][64], 0>
                             stage_acc_ct1(cgh);
 
@@ -1763,6 +1815,7 @@ template <int K, int cb> struct RunGateUp {
                         with a value. Modify the code to use the original
                         expression, provided in comments, if it is correct.
                         */
+                        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                         sycl::local_accessor<unsigned char, 1> sm_acc_ct1(
                             sycl::range<1>(32768 /*2 * BM * 128 * 4*/), cgh);
                         /*
@@ -1770,6 +1823,7 @@ template <int K, int cb> struct RunGateUp {
                         value. Modify the code to use the original expression,
                         provided in comments, if it is correct.
                         */
+                        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                         sycl::local_accessor<uint32_t[8 /*kWarps*/][64], 0>
                             stage_acc_ct1(cgh);
 
@@ -1803,6 +1857,7 @@ template <int K, int cb> struct RunInnerRows {
                         value. Modify the code to use the original expression,
                         provided in comments, if it is correct.
                         */
+                        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
                         sycl::local_accessor<sycl::half, 1> tile_acc_ct1(
                             sycl::range<1>(17408 /*kCols * P*/), cgh);
 
@@ -1882,6 +1937,8 @@ Scratch *scratch(dpct::queue_ptr s) try {
     DPCT1119:90: Migration of cudaStreamCaptureStatus is not supported, please
     try to remigrate with option: --use-experimental-features=graph.
     */
+    // audit note: DPCT1119 accepted — SYCL has no stream capture, the guard these notes sit on can never fire, and the CUDA graph APIs do not apply to this code path
+    // audit note: DPCT1119 accepted — SYCL has no stream capture, the guard these notes sit on can never fire, and the CUDA graph APIs do not apply to this code path
     /*
     DPCT1119:91: Migration of cudaStreamCaptureStatusNone is not supported,
     please try to remigrate with option: --use-experimental-features=graph.
@@ -1892,10 +1949,12 @@ Scratch *scratch(dpct::queue_ptr s) try {
     DPCT1119:92: Migration of cudaStreamIsCapturing is not supported, please try
     to remigrate with option: --use-experimental-features=graph.
     */
+    // audit note: DPCT1119 accepted — SYCL has no stream capture, the guard these notes sit on can never fire, and the CUDA graph APIs do not apply to this code path
     /*
     DPCT1119:93: Migration of cudaStreamCaptureStatusNone is not supported,
     please try to remigrate with option: --use-experimental-features=graph.
     */
+    // audit note: DPCT1119 accepted — SYCL has no stream capture, the guard these notes sit on can never fire, and the CUDA graph APIs do not apply to this code path
     if (cs != 0) {
         std::fprintf(stderr, "exl3: scratch for a stream first seen inside a graph capture (call exl3::prepare)\n");
         return nullptr;
@@ -1961,6 +2020,7 @@ bool use_legacy() {
 // per device and K
 template <int K, int cb> struct OccMv {
     static void run(int &n) try {
+        // audit note: DPCT1007 accepted — cudaOccupancyMaxActiveBlocksPerMultiprocessor has no SYCL equivalent, and n = 2 is the fallback the CUDA path itself used; a change needs a measurement through STRATA_GLM_EXL3_DECODE
         /*
         DPCT1007:95: Migration of cudaOccupancyMaxActiveBlocksPerMultiprocessor
         is not supported.

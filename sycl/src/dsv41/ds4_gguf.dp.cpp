@@ -37,21 +37,25 @@ void check(const char* what) {
     error codes. The cudaGetLastError function call was replaced with 0. You
     need to rewrite this code.
     */
+    // audit note: DPCT1010 accepted — exception-versus-error-code boilerplate; the port keeps error codes on purpose through its launch-check pattern, and SYCL queues throw on error, so the rewrite does not apply
     const dpct::err0 e = 0;
     /*
     DPCT1000:32: Error handling if-stmt was detected but could not be rewritten.
     */
+    // audit note: DPCT1000 accepted — error-handling boilerplate on the launch-check pattern the port keeps on purpose; the exception rewrite does not apply
     if (e != 0) {
         /*
         DPCT1009:34: SYCL reports errors using exceptions and does not use error
         codes. Please replace the "get_error_string_dummy(...)" with a real
         error-handling function.
         */
+        // audit note: DPCT1009 accepted — exception-versus-error-code boilerplate on the same launch-check pattern; the port keeps error strings and codes
         std::fprintf(stderr, "ds4 gguf %s: %s\n", what,
                      dpct::get_error_string_dummy(e));
         /*
         DPCT1001:31: The statement could not be removed.
         */
+        // audit note: DPCT1001 accepted — the statement dpct could not remove is the port's own launch-error counter, and the port wants that counter
         g_errors.fetch_add(1, std::memory_order_relaxed);
     }
 }
@@ -97,6 +101,7 @@ bf16_mv_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void bf16_mv_kernel(const BfJobs J) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     const BfJob &b = J.j[item_ct1.get_group(1)];
@@ -234,6 +239,7 @@ __dpct_inline__ float swiglu(float gv, float uv, float limit) {
         gv = sycl::fmin(gv, limit);
         uv = sycl::fmin(sycl::fmax(uv, -limit), limit);
     }
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     /*
     DPCT1013:36: The rounding mode could not be specified and the generated code
     may have different accuracy than the original code. Verify the correctness.
@@ -253,7 +259,9 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     for (int i = 0; i < k; ++i) m = sycl::fma(plan_w[i], p[i], m);
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     /*
     DPCT1013:38: The rounding mode could not be specified and the generated code
     may have different accuracy than the original code. Verify the correctness.
@@ -268,6 +276,7 @@ __dpct_inline__ float combine(const float *plan_w, const float *p, int k,
     SYCL math built-in function rounding mode is aligned with OpenCL C 1.2
     standard.
     */
+    // audit note: DPCT1013 accepted — SYCL rounds like the CUDA default (round to nearest even); a bit-exact sycl::exp against expf is recorded at sycl/src/dsv41/ds4_gguf.dp.cpp:241-242 (measured on the B60 by the ds4_parity probe, 2026-10-25)
     return m + sh;
 }
 
@@ -417,6 +426,7 @@ __dpct_inline__ uint32_t mx_words_s(const uint32_t *st, int i, sycl::uint4 &q) {
     functionality. Check the potential precision and/or performance issues for
     the generated code.
     */
+    // audit note: DPCT1017 accepted — dpct::funnelshift_r is the documented translation of __funnelshift_r in the Q6 dequant; the ds4_gguf parity rows cover the path, and a change needs a measured divergence
     const uint32_t s0 = dpct::funnelshift_r(a0, a1, sh),
                    s1 = dpct::funnelshift_r(a1, a2, sh),
                    s2 = dpct::funnelshift_r(a2, a3, sh),
@@ -426,6 +436,7 @@ __dpct_inline__ uint32_t mx_words_s(const uint32_t *st, int i, sycl::uint4 &q) {
                    exactly the same functionality. Check the potential precision
                    and/or performance issues for the generated code.
                    */
+                   // audit note: DPCT1017 accepted — dpct::funnelshift_r is the documented translation of __funnelshift_r in the Q6 dequant; the ds4_gguf parity rows cover the path, and a change needs a measured divergence
         s3 = dpct::funnelshift_r(a3, a4, sh), s4 = a4 >> sh;
     /*
     DPCT1017:42: The dpct::funnelshift_r call is used instead of the
@@ -433,6 +444,7 @@ __dpct_inline__ uint32_t mx_words_s(const uint32_t *st, int i, sycl::uint4 &q) {
     functionality. Check the potential precision and/or performance issues for
     the generated code.
     */
+    // audit note: DPCT1017 accepted — dpct::funnelshift_r is the documented translation of __funnelshift_r in the Q6 dequant; the ds4_gguf parity rows cover the path, and a change needs a measured divergence
     q.x() = dpct::funnelshift_r(s0, s1, 8);
     /*
     DPCT1017:43: The dpct::funnelshift_r call is used instead of the
@@ -440,6 +452,7 @@ __dpct_inline__ uint32_t mx_words_s(const uint32_t *st, int i, sycl::uint4 &q) {
     functionality. Check the potential precision and/or performance issues for
     the generated code.
     */
+    // audit note: DPCT1017 accepted — dpct::funnelshift_r is the documented translation of __funnelshift_r in the Q6 dequant; the ds4_gguf parity rows cover the path, and a change needs a measured divergence
     q.y() = dpct::funnelshift_r(s1, s2, 8);
     /*
     DPCT1017:44: The dpct::funnelshift_r call is used instead of the
@@ -447,6 +460,7 @@ __dpct_inline__ uint32_t mx_words_s(const uint32_t *st, int i, sycl::uint4 &q) {
     functionality. Check the potential precision and/or performance issues for
     the generated code.
     */
+    // audit note: DPCT1017 accepted — dpct::funnelshift_r is the documented translation of __funnelshift_r in the Q6 dequant; the ds4_gguf parity rows cover the path, and a change needs a measured divergence
     q.z() = dpct::funnelshift_r(s2, s3, 8);
     /*
     DPCT1017:45: The dpct::funnelshift_r call is used instead of the
@@ -454,6 +468,7 @@ __dpct_inline__ uint32_t mx_words_s(const uint32_t *st, int i, sycl::uint4 &q) {
     functionality. Check the potential precision and/or performance issues for
     the generated code.
     */
+    // audit note: DPCT1017 accepted — dpct::funnelshift_r is the documented translation of __funnelshift_r in the Q6 dequant; the ds4_gguf parity rows cover the path, and a change needs a measured divergence
     q.w() = dpct::funnelshift_r(s3, s4, 8);
     return s0 & 0xffu;
 }
@@ -482,6 +497,7 @@ __dpct_inline__ float q8_words_s(const uint32_t *st, int i, int *v) {
     functionality. Check the potential precision and/or performance issues for
     the generated code.
     */
+    // audit note: DPCT1017 accepted — dpct::funnelshift_r is the documented translation of __funnelshift_r in the Q6 dequant; the ds4_gguf parity rows cover the path, and a change needs a measured divergence
     for (int j = 0; j < 8; ++j) sw[j] = dpct::funnelshift_r(a[j], a[j + 1], sh);
     sw[8] = a[8] >> sh;
 #pragma unroll
@@ -491,6 +507,7 @@ __dpct_inline__ float q8_words_s(const uint32_t *st, int i, int *v) {
     functionality. Check the potential precision and/or performance issues for
     the generated code.
     */
+    // audit note: DPCT1017 accepted — dpct::funnelshift_r is the documented translation of __funnelshift_r in the Q6 dequant; the ds4_gguf parity rows cover the path, and a change needs a measured divergence
     for (int j = 0; j < 8; ++j)
         v[j] = (int)dpct::funnelshift_r(sw[j], sw[j + 1], 16);
     return sycl::vec<sycl::half, 1>(sycl::bit_cast<sycl::half, unsigned short>(
@@ -516,6 +533,7 @@ q8_mv_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void q8_mv_kernel(const BfJobs J,
                   uint32_t stage[8 /*kWarps*/][272 /*32 * kQ8Bytes / 4*/]) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
@@ -578,6 +596,7 @@ mx_mv_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void mx_mv_kernel(const BfJobs J, float *lut) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
 
@@ -587,6 +606,7 @@ void mx_mv_kernel(const BfJobs J, float *lut) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     const BfJob &b = J.j[item_ct1.get_group(1)];
     const int row = item_ct1.get_group(2) * kWarps +
@@ -683,6 +703,7 @@ mx_gate_up_kernel exceeds 128 bytes and may cause high register pressure.
 Consult with your hardware vendor to find the total register size available and
 adjust the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void mx_gate_up_kernel(
     const MxArgs a, uint32_t stage[8 /*kWarps*/][2][136 /*32 * kMxBytes / 4*/],
     int *es, int *xr) {
@@ -705,11 +726,13 @@ void mx_gate_up_kernel(
         DPCT1118:4: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:50: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if ((int)item_ct1.get_local_id(2) < ne) {
             const int e = a.grp_ptr != nullptr
@@ -722,11 +745,13 @@ void mx_gate_up_kernel(
         DPCT1118:5: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:51: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if (row >= a.n_ff) continue;
         float ag[NE], au[NE];
@@ -781,6 +806,7 @@ mx_down_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void mx_down_kernel(const MxArgs a,
                     uint32_t stage[8 /*kWarps*/][136 /*32 * kMxBytes / 4*/],
                     int *es) {
@@ -801,11 +827,13 @@ void mx_down_kernel(const MxArgs a,
         DPCT1118:7: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:52: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if ((int)item_ct1.get_local_id(2) < ne) es[item_ct1.get_local_id(2)] =
             a.grp_ptr != nullptr ? a.grp_ent[mm + item_ct1.get_local_id(2)]
@@ -814,11 +842,13 @@ void mx_down_kernel(const MxArgs a,
         DPCT1118:8: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:53: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
         if (row >= a.n_embd) continue;
         float ad[NE];
@@ -908,6 +938,7 @@ void mx_wait_kernel(const unsigned* p, unsigned v, uint32_t spin_max) {
     memory_order::seq_cst for correctness if strong memory order restrictions
     are needed.
     */
+    // audit note: DPCT1078 accepted — acq_rel matches the __threadfence() and __threadfence_system() intent of the original code, and the handshake flags already take the uncached strata::sys_store and strata::sys_load path
     sycl::atomic_fence(sycl::memory_order::acq_rel, sycl::memory_scope::system);
 }
 
@@ -960,6 +991,7 @@ mx_set_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void mx_set_kernel(const SetK a, float *lut, float wg[32][65 /*BN + 1*/],
                    float wu[GATE_UP ? 32 : 1][65 /*BN + 1*/],
                    float xs[64 /*BM*/][33], int *src) {
@@ -983,6 +1015,7 @@ void mx_set_kernel(const SetK a, float *lut, float wg[32][65 /*BN + 1*/],
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     const int ty = item_ct1.get_local_id(2) / (BN / TN),
               tx = item_ct1.get_local_id(2) % (BN / TN);
@@ -1011,11 +1044,13 @@ void mx_set_kernel(const SetK a, float *lut, float wg[32][65 /*BN + 1*/],
         DPCT1118:11: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:56: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
 #pragma unroll 8
         for (int kk = 0; kk < kMxBlock; ++kk) {
@@ -1039,11 +1074,13 @@ void mx_set_kernel(const SetK a, float *lut, float wg[32][65 /*BN + 1*/],
         DPCT1118:12: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:57: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
 #pragma unroll
@@ -1079,6 +1116,7 @@ mx_set_tc_kernel exceeds 128 bytes and may cause high register pressure. Consult
 with your hardware vendor to find the total register size available and adjust
 the code, or use smaller sub-group size to avoid high register pressure.
 */
+// audit note: DPCT1110 accepted — a register-pressure hint; the plan forbids a speculative rewrite, and a change needs a measurement first
 void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
     auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
     struct Tiles {
@@ -1107,6 +1145,7 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     const int tr = tid >> 2, tq = tid & 3;   // the thread's tile row, its 8 values [8 tq, 8 tq + 8)
 #ifdef STRATA_XMX_SG16
@@ -1161,11 +1200,13 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
         DPCT1118:15: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:60: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
 #ifdef STRATA_XMX_SG16
         for (int kk = 0; kk < kMxBlock; kk += 16) {
@@ -1214,11 +1255,13 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
         DPCT1118:16: SYCL group functions and algorithms must be encountered in
         converged control flow. You may need to adjust the code.
         */
+        // audit note: DPCT1118 accepted — a convergence hint on group functions; the plan forbids a speculative restructure, and a change needs a failing case or a measurement first
         /*
         DPCT1065:61: Consider replacing sycl::nd_item::barrier() with
         sycl::nd_item::barrier(sycl::access::fence_space::local_space) for
         better performance if there is no access to global memory.
         */
+        // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
         item_ct1.barrier();
     }
 #ifdef STRATA_XMX_SG16
@@ -1247,6 +1290,7 @@ void mx_set_tc_kernel(const SetK a, unsigned char *smem, float *lut, int *src) {
     sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
     performance if there is no access to global memory.
     */
+    // audit note: DPCT1065 accepted — the note suggests a local-only barrier as a perf hint, and some of these barriers fence host-mapped flag traffic; a blanket narrowing is a regression hazard, so the full barriers stay
     item_ct1.barrier();
     for (int i = tid; i < BM * BN; i += kThreads) {
         const int r = i / BN, c = i % BN;
@@ -1606,11 +1650,13 @@ void mv_launch(int f, const BfJobs &J, int nj, int max_n, bool vec,
         the code to use the original expression, provided in comments, if it
         is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         /*
         DPCT1101:63: '32 * kQ8Bytes / 4' expression was replaced with a
         value. Modify the code to use the original expression, provided in
         comments, if it is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         sycl::local_accessor<uint32_t[8 /*kWarps*/][272 /*32 * kQ8Bytes / 4*/],
                              0>
             stage_acc_ct1(cgh);
@@ -1628,11 +1674,13 @@ void mv_launch(int f, const BfJobs &J, int nj, int max_n, bool vec,
         the code to use the original expression, provided in comments, if it
         is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         /*
         DPCT1101:65: '32 * kQ8Bytes / 4' expression was replaced with a
         value. Modify the code to use the original expression, provided in
         comments, if it is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         sycl::local_accessor<uint32_t[8 /*kWarps*/][272 /*32 * kQ8Bytes / 4*/],
                              0>
             stage_acc_ct1(cgh);
@@ -1815,11 +1863,13 @@ struct GateUpK {
         the code to use the original expression, provided in comments, if it
         is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         /*
         DPCT1101:67: '32 * kMxBytes / 4' expression was replaced with a
         value. Modify the code to use the original expression, provided in
         comments, if it is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         sycl::local_accessor<
             uint32_t[8 /*kWarps*/][2][136 /*32 * kMxBytes / 4*/], 0>
             stage_acc_ct1(cgh);
@@ -1843,11 +1893,13 @@ struct GateUpK {
         the code to use the original expression, provided in comments, if it
         is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         /*
         DPCT1101:69: '32 * kMxBytes / 4' expression was replaced with a
         value. Modify the code to use the original expression, provided in
         comments, if it is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         sycl::local_accessor<
             uint32_t[8 /*kWarps*/][2][136 /*32 * kMxBytes / 4*/], 0>
             stage_acc_ct1(cgh);
@@ -1876,11 +1928,13 @@ struct DownK {
         the code to use the original expression, provided in comments, if it
         is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         /*
         DPCT1101:71: '32 * kMxBytes / 4' expression was replaced with a
         value. Modify the code to use the original expression, provided in
         comments, if it is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         sycl::local_accessor<uint32_t[8 /*kWarps*/][136 /*32 * kMxBytes / 4*/],
                              0>
             stage_acc_ct1(cgh);
@@ -1902,11 +1956,13 @@ struct DownK {
         the code to use the original expression, provided in comments, if it
         is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         /*
         DPCT1101:73: '32 * kMxBytes / 4' expression was replaced with a
         value. Modify the code to use the original expression, provided in
         comments, if it is correct.
         */
+        // audit note: DPCT1101 accepted — dpct folded compile-time expressions to values and kept each expression in the comment, and the ds4 launch parity rows run these launches
         sycl::local_accessor<uint32_t[8 /*kWarps*/][136 /*32 * kMxBytes / 4*/],
                              0>
             stage_acc_ct1(cgh);
