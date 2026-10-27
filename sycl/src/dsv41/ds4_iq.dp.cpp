@@ -1360,17 +1360,21 @@ void set_tc_stageA_kernel(const StageAArgs a, unsigned char *smem, uint32_t *tab
     // tail step only skips work that sub-group never had.
     const int niter = (nblk + kStageASplit - 1) / kStageASplit;
     for (int it = 0; it < niter; ++it) {
+#ifdef STRATA_XMX_SG16
         const int kb = kb0 + it;
         if (kb >= kb1) {   // the uneven split's tail: the same two barrier points, no work
-#ifdef STRATA_XMX_SG16
             sycl::group_barrier(sg);
             sycl::group_barrier(sg);
-#else
-            item_ct1.barrier();
-            item_ct1.barrier();
-#endif
             continue;
         }
+#else
+        // the uneven split's tail keeps this thread on the same single path as a working step: it re-stages
+        // a block its range already covered and adds nothing (sel), so the barriers, the staging and the
+        // partial store below stay uniform across the work-group's threads
+        const int raw = kb0 + it;
+        const int kb = raw < kb1 ? raw : kb1 - 1;
+        const float sel = raw < kb1 ? 1.0f : 0.0f;
+#endif
         // stage this block's weights into the A fragments' rows: the lane's row (the tile's weight row), the
         // block's four quarters - the same decode as set_tc_kernel stages its weights (deq8 verbatim)
 #pragma unroll
@@ -1424,8 +1428,8 @@ void set_tc_stageA_kernel(const StageAArgs a, unsigned char *smem, uint32_t *tab
             if constexpr (GATE_UP) au = (float) Tl.a[1][s][lane][k];
             for (int m = 0; m < kStageAM; ++m) {
                 const float bv = (float) bpack[at + 2 * (m0 + m)];   // the plane's column: the tile's M row
-                acc[0][m] += ag * bv;
-                if constexpr (GATE_UP) acc[1][m] += au * bv;
+                acc[0][m] += ag * bv * sel;
+                if constexpr (GATE_UP) acc[1][m] += au * bv * sel;
             }
         }
 #endif
