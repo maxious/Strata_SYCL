@@ -1309,6 +1309,10 @@ void set_tc_stageA_kernel(const StageAArgs a, unsigned char *smem, uint32_t *tab
     const int m0 = item_ct1.get_group(2) * kStageAM;   // the tile's activation rows
     if (nr <= 0 || m0 >= nr || n0 >= a.n_out) return;   // (uniform in the work-group: the barriers below)
     load_tab<T>(tab);
+    // the codebook is in shared memory now (load_tab: tid < 4 writes it).  set_tc_kernel carries exactly this
+    // barrier between its load_tab and the first deq8 read; it was missing here, and a deq8 that ran before the
+    // codebook landed took a stale table - the down output moved between runs on both flavors.
+    item_ct1.barrier();
     const int K = a.k;
     const size_t rb = row_bytes_t<T>(K);
     const uint8_t* blob = a.wbase + (size_t) e * a.stride;
@@ -1348,7 +1352,25 @@ void set_tc_stageA_kernel(const StageAArgs a, unsigned char *smem, uint32_t *tab
         for (int m = 0; m < kStageAM; ++m) acc[1][m] = 0.0f;
     }
 #endif
-    for (int kb = kb0; kb < kb1; ++kb) {
+    // every sub-group must reach the same barrier points: the K split's ranges have different lengths when
+    // nblk % kStageASplit != 0 (kb0 = (s * nblk) / 4), and the stand-in's work-group barriers used to see
+    // differing trip counts - the four-partial reduction then raced sub-group 3's partial store on the uneven
+    // splits.  The loop therefore runs the longest range uniformly and the tail steps hold the barriers without
+    // work.  The XMX path's semantics are unchanged: its sub-group barriers are per sub-group either way and a
+    // tail step only skips work that sub-group never had.
+    const int niter = (nblk + kStageASplit - 1) / kStageASplit;
+    for (int it = 0; it < niter; ++it) {
+        const int kb = kb0 + it;
+        if (kb >= kb1) {   // the uneven split's tail: the same two barrier points, no work
+#ifdef STRATA_XMX_SG16
+            sycl::group_barrier(sg);
+            sycl::group_barrier(sg);
+#else
+            item_ct1.barrier();
+            item_ct1.barrier();
+#endif
+            continue;
+        }
         // stage this block's weights into the A fragments' rows: the lane's row (the tile's weight row), the
         // block's four quarters - the same decode as set_tc_kernel stages its weights (deq8 verbatim)
 #pragma unroll
