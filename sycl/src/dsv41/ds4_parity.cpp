@@ -12,6 +12,12 @@
 // reference is computed (down / gate row 0's scales_l[0]): the affected row must then report values outside one BF16
 // ulp and the process must exit non-zero - a row that cannot fail is not evidence.
 //
+// The decode_q8_0 / decode_iq4_nl / decode_mxfp4 rows are the canonical block-decode oracle (plan todo 2): 32 F16
+// (rte) values per canonical row-major block (bid = n * bpr + kb) bit-exact against the shipped CPU scalar
+// dequantizer (include/strata/artifact/dequant.hpp; MXFP4 from ggml-common.h's tables) - no ulp tolerance there.
+// --neg <decode row> flips one payload or scale byte of its input after the reference is computed and must exit 1;
+// --weird-scale feeds NaN / denormal scale blocks (deterministic output, run twice to see it).
+//
 // Build (this PC, 2026-10-25, verified green): icpx -fsycl -std=c++20 -O2 -fsycl-default-sub-group-size=32
 //   -fsycl-device-code-split=per_kernel -fp-model=precise -I sycl/include -I include -I third_party/ggml
 //   -I sycl/include/compat -I include/strata/artifact -I sycl/src/dsv41 ds4_parity.cpp ds4_iq.dp.cpp
@@ -24,12 +30,19 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <vector>
+
+#include <cuda_runtime.h>   // compat shim (sycl/include/compat): __device__ for ggml-common.h
+#define GGML_COMMON_DECL_CUDA
+#define GGML_COMMON_IMPL_CUDA
+#include "ggml-common.h"   // the shipped codebook tables (kvalues_iq4nl / kvalues_mxfp4), never re-transcribed
+#include "strata/artifact/dequant.hpp"   // the shipped CPU scalar dequantizer (dequantize_q8_0 / dequantize_iq4_nl)
 
 #include "ds4_iq.dp.hpp"
 #include "ds4_gguf.dp.hpp"
@@ -119,9 +132,10 @@ void ref_q6_K(const uint8_t* row, float* y) {
     }
 }
 
-// ggml's kvalues_iq4nl codebook, verbatim (include/strata/artifact/dequant.hpp, ggml-common.h at 3cf03257).
-const int8_t kvalues_iq4nl[16] = {-127, -104, -83, -65, -49, -35, -22, -10,
-                                  1,    13,   25,  38,  53,  69,  89,  113};
+// ggml's kvalues_iq4nl codebook now comes from third_party/ggml/ggml-common.h (included above with
+// GGML_COMMON_IMPL_CUDA, the way ds4_iq.dp.cpp takes it): the same table include/strata/artifact/dequant.hpp and
+// the device kernels carry.  The rows below use that shipped table - never a hand-transcribed copy; its values are
+// checked against dequant.hpp's own copy by the decode rows themselves.
 
 // The IQ4_NL rows (8 blocks of 18 bytes) and the IQ4_XS superblock, transcribed from the same header.
 void ref_iq4_nl(const uint8_t* row, float* y) {
@@ -931,8 +945,166 @@ void run_iq_mv_row(sycl::queue& q, int type, Tally& t) {
     row_print(nm, t);
 }
 
+// ---- the canonical block-decode oracle (plan todo 2: the tile A-stage's decode contract) ----
+//
+// One row per canonical block format (Q8_0, IQ4_NL, MXFP4).  A matrix of kDecRows rows of kDecBpr blocks of 32
+// values, the canonical row-major block index bid = n * bpr + kb (ds4_iq.dp.cpp:67-70, 442-445: block kb of row n
+// starts at bid * block_bytes).  The device kernel decodes each block's 32 values to F16 with round-to-nearest-even
+// exactly as the tile A-stage stages its F16 fragments, from the shipped decode sites' layouts (q8_block
+// ds4_gguf.dp.cpp:283-295, IQ4_NL ds4_iq.dp.cpp:314-323, MXFP4 ds4_gguf.dp.cpp:227-235) with ggml-common.h's
+// shipped codebook tables.  The reference is the shipped CPU scalar dequantizer,
+// include/strata/artifact/dequant.hpp's dequantize_q8_0 / dequantize_iq4_nl; dequant.hpp ships no MXFP4 function
+// (the documented gap), so that reference is assembled from ggml-common.h's block_mxfp4 layout and kvalues_mxfp4
+// table, its E8M0 scale 2^(e - 128).
+// The comparison is bit-exact F16 only - no BF16-ulp rule, no absolute floor: decoded operands are exact contract
+// values, not accumulated sums (IS-2: decoded operands are bit-exact).  A row that cannot fail is not evidence:
+// --neg flips one byte of the device input after the reference is computed (per format: one payload or one scale
+// byte) and the row must report NO MATCH; the non-vacuity guard rejects a row whose reference values are not
+// diverse, so an all-zero input cannot pass.
+
+constexpr int kDecRows = 4, kDecBpr = 4;   // 16 canonical blocks of 32 values: 512 F16 bits a row
+constexpr int kDecFmtQ8_0 = 0, kDecFmtIQ4_NL = 1, kDecFmtMXFP4 = 2;
+bool g_weird_scale = false;   // --weird-scale: NaN / denormal scale blocks (adversarial class malformed_input)
+
+int dec_block_bytes(int fmt) { return fmt == kDecFmtQ8_0 ? 34 : fmt == kDecFmtIQ4_NL ? 18 : 17; }
+
+// the CPU reference, one canonical block's 32 F32 values, from the shipped scalar dequantizers
+void dec_ref_block(int fmt, const uint8_t* b, float* out) {
+    if (fmt == kDecFmtQ8_0) {
+        strata::dequantize_q8_0(b, out);
+    } else if (fmt == kDecFmtIQ4_NL) {
+        strata::dequantize_iq4_nl(b, out);
+    } else {   // MXFP4: block_mxfp4 {uint8 e; uint8 qs[16]} (ggml-common.h): value j in byte j's low nibble
+        // (j < 16) or byte j - 16's high one, worth kvalues_mxfp4 * 2^(e - 128)
+        const float d = std::ldexp(1.0f, (int) b[0] - 128);
+        for (int j = 0; j < 32; ++j) {
+            const uint8_t c = j < 16 ? b[1 + j] & 15u : b[1 + j - 16] >> 4;
+            out[j] = (float) kvalues_mxfp4[c] * d;
+        }
+    }
+}
+
+// the device side: one work-item a canonical block (bid = n * bpr + kb), 32 F16 (rte) values a block - the decode
+// the tile A-stage reuses, per the shipped decode sites
+void dec_rows_kernel(sycl::queue& q, const uint8_t* raw, int fmt, int nb, uint16_t* dst) {
+    q.parallel_for(sycl::range<1>(nb), [=](sycl::id<1> it) {
+        const int bid = (int) it[0];
+        const uint8_t* b = raw + (size_t) bid * dec_block_bytes(fmt);
+        float v[32];
+        if (fmt == kDecFmtQ8_0) {   // {fp16 d; int8 qs[32]}: v = d q (q8_block, ds4_gguf.dp.cpp:283-295)
+            const float d = fp16_to_f32(b);
+            for (int j = 0; j < 32; ++j) v[j] = d * (float) (int8_t) b[2 + j];
+        } else if (fmt == kDecFmtIQ4_NL) {   // {fp16 d; u8 qs[16]}: value j in byte j's low nibble (j < 16) or
+            // byte j - 16's high one (ds4_iq.dp.cpp:314-323)
+            const float d = fp16_to_f32(b);
+            for (int j = 0; j < 32; ++j) {
+                const uint8_t s = b[2 + (j & 15)];
+                v[j] = d * (float) kvalues_iq4nl[j < 16 ? s & 15u : s >> 4];
+            }
+        } else {   // MXFP4: {u8 e; u8 qs[16]}, E8M0 2^(e - 128) (mx_block, ds4_gguf.dp.cpp:227-235)
+            const uint32_t e = b[0];
+            const float d = sycl::bit_cast<float>(e < 2 ? 0x00200000u << e : (e - 1) << 23);
+            for (int j = 0; j < 32; ++j) {
+                const uint8_t s = b[1 + (j & 15)];
+                v[j] = (float) kvalues_mxfp4[j < 16 ? s & 15u : s >> 4] * d;
+            }
+        }
+        for (int j = 0; j < 32; ++j)
+            dst[(size_t) bid * 32 + j] = sycl::bit_cast<unsigned short, sycl::half>(
+                sycl::vec<float, 1>(v[j]).convert<sycl::half, sycl::rounding_mode::rte>()[0]);
+    });
+}
+
+// seeded fill: random payload bytes, small finite scales (a random fp16 could land on NaN or a huge scale, where
+// one F16 step is not a normal rounding) unless --weird-scale asks for the malformed blocks
+void dec_fill(int fmt, uint8_t* raw, Rng& rng, bool weird) {
+    const int B = dec_block_bytes(fmt);
+    for (int bid = 0; bid < kDecRows * kDecBpr; ++bid) {
+        uint8_t* b = raw + (size_t) bid * B;
+        for (int i = 0; i < B; ++i) b[i] = rng.next();
+        if (fmt == kDecFmtMXFP4)
+            b[0] = (uint8_t) (128 + (rng.next() & 3));   // E8M0: 2^0..2^3, exact in F16
+        else {
+            const float v = 0.01f + 0.25f * (float) (rng.next() & 31);
+            const uint16_t u = sycl::bit_cast<uint16_t>(sycl::half(v));
+            b[0] = (uint8_t) (u & 0xFF);
+            b[1] = (uint8_t) (u >> 8);
+        }
+    }
+    if (!weird) return;
+    // malformed scales (adversarial class malformed_input): block 1's scale a quiet NaN, block 3's a denormal;
+    // MXFP4's E8M0 byte has no NaN, so 0xFF (2^127: the values overflow F16 to infinity) and 0x00 (2^-128, an F32
+    // subnormal product) take those roles.  The row must stay deterministic under them.
+    uint8_t* b1 = raw + (size_t) 1 * B, *b3 = raw + (size_t) 3 * B;
+    if (fmt == kDecFmtMXFP4) {
+        b1[0] = 0xFF;
+        b3[0] = 0x00;
+    } else {
+        b1[0] = 0xE0;
+        b1[1] = 0x7E;   // fp16 +qNaN (0x7E00)
+        b3[0] = 0x01;
+        b3[1] = 0x00;   // fp16 +2^-24 (denormal)
+    }
+}
+
+// One row: nb canonical blocks of 32 values decoded on the device to F16 (rte) against the shipped CPU scalar
+// dequantizer's values rounded to F16 (rte) - bit-exact only.  neg: one corrupted input byte after the reference.
+void run_decode_row(sycl::queue& q, int fmt, const char* name, bool neg, Tally& t) {
+    const int B = dec_block_bytes(fmt), nb = kDecRows * kDecBpr;
+    Rng rng(0x444551310010ull + (unsigned) fmt);   // fixed seeds: a pass never depends on luck
+    std::vector<uint8_t> raw((size_t) nb * B);
+    dec_fill(fmt, raw.data(), rng, g_weird_scale);
+    std::vector<uint16_t> want((size_t) nb * 32);
+    for (int bid = 0; bid < nb; ++bid) {
+        float f[32];
+        dec_ref_block(fmt, raw.data() + (size_t) bid * B, f);
+        for (int j = 0; j < 32; ++j) want[(size_t) bid * 32 + j] = f16_rn(f[j]);
+    }
+    if (neg) {
+        // the negative control, one byte per format: Q8_0 a payload (code) byte, IQ4_NL its scale byte, MXFP4 its
+        // E8M0 scale byte - each changes at least one decoded value, so the row must report NO MATCH
+        const size_t at = fmt == kDecFmtQ8_0 ? 2 + 5 : 0;
+        const uint8_t by = fmt == kDecFmtQ8_0 ? 0x11 : fmt == kDecFmtIQ4_NL ? 0x40 : 0x04;
+        raw[at] ^= by;
+        printf("%s negative control: one wrong %s byte, raw[%zu] ^= 0x%02X; the reference is from the clean blocks\n",
+               name, fmt == kDecFmtQ8_0 ? "payload" : "scale", at, by);
+    }
+    uint8_t* dw = (uint8_t*) sycl::malloc_device(raw.size(), q);
+    uint16_t* dd = (uint16_t*) sycl::malloc_device(want.size() * sizeof(uint16_t), q);
+    q.memcpy(dw, raw.data(), raw.size());
+    q.wait();
+    dec_rows_kernel(q, dw, fmt, nb, dd);
+    q.wait();
+    std::vector<uint16_t> got(want.size());
+    q.memcpy(got.data(), dd, got.size() * sizeof(uint16_t));
+    q.wait();
+    sycl::free(dw, q);
+    sycl::free(dd, q);
+    int same = 0, diff = 0;
+    for (size_t i = 0; i < got.size(); ++i) (got[i] == want[i] ? ++same : ++diff);
+    std::vector<uint16_t> u = want;
+    std::sort(u.begin(), u.end());
+    u.erase(std::unique(u.begin(), u.end()), u.end());
+    if (u.size() < 8) {   // non-vacuity: an all-zero input decodes to one value on both sides and cannot pass
+        printf("%s: VACUOUS (%zu distinct reference values): the comparison could not distinguish a wrong decode\n",
+               name, u.size());
+        t.bad += diff + 1;
+        return;
+    }
+    if (diff == 0)
+        printf("%s: MATCH %d/%d F16 bits exact (bit-exact decode of %d canonical blocks x 32 values, "
+               "bid = n*bpr + kb)\n",
+               name, same, (int) got.size(), nb);
+    else
+        printf("%s: NO MATCH: %d/%d F16 bits differ from the CPU scalar dequantizer (bit-exact required)\n",
+               name, diff, (int) got.size());
+    t.exact += same;
+    t.bad += diff;
+}
+
 const char* kFamilies[] = {"sparse_attn", "gemv_f32", "gemv_f16", "gemv_f16_rows",
-                           "hc_pre_norm", "hc_mix_scale", "pred_proj_k", "softmax"};
+                           "hc_pre_norm", "hc_mix_scale", "pred_proj_k", "softmax",
+                           "decode_q8_0", "decode_iq4_nl", "decode_mxfp4"};
 
 bool run_family(const char* name, sycl::queue& q, bool neg, Tally& t) {
     if (!std::strcmp(name, "sparse_attn")) run_sparse_attn_row(q, neg, t);
@@ -943,6 +1115,9 @@ bool run_family(const char* name, sycl::queue& q, bool neg, Tally& t) {
     else if (!std::strcmp(name, "hc_mix_scale")) run_hc_mix_scale_row(q, neg, t);
     else if (!std::strcmp(name, "pred_proj_k")) run_pred_proj_k_row(q, neg, t);
     else if (!std::strcmp(name, "softmax")) run_softmax_row(q, neg, t);
+    else if (!std::strcmp(name, "decode_q8_0")) run_decode_row(q, kDecFmtQ8_0, "decode_q8_0", neg, t);
+    else if (!std::strcmp(name, "decode_iq4_nl")) run_decode_row(q, kDecFmtIQ4_NL, "decode_iq4_nl", neg, t);
+    else if (!std::strcmp(name, "decode_mxfp4")) run_decode_row(q, kDecFmtMXFP4, "decode_mxfp4", neg, t);
     else return false;
     return true;
 }
@@ -960,6 +1135,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) dump = argv[++i];
         else if (!std::strcmp(argv[i], "--only") && i + 1 < argc) only = argv[++i];
         else if (!std::strcmp(argv[i], "--neg") && i + 1 < argc) only = argv[++i], neg = true;
+        else if (!std::strcmp(argv[i], "--weird-scale")) g_weird_scale = true;
     }
     try {
         sycl::device dev(sycl::gpu_selector_v);
