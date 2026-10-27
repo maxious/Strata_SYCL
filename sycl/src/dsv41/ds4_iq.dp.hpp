@@ -102,6 +102,32 @@ bool set_down(const SetArgs &a, dpct::queue_ptr s);
 bool light_gate_up(const SetArgs &a, dpct::queue_ptr s);
 bool light_down(const SetArgs &a, dpct::queue_ptr s);
 
+/// The i8 A-stage tile's arguments (todo 3): the weights' blocks as in SetArgs, the packed F16 B plane and the
+/// output.  The plane's element (k, m) is at [(k / 2) * mpad * 2 + 2 m + (k & 1)] and the plane's row stride is
+/// mpad * 2 halfs (the todo-1 probe's bijection): the caller packs the rows the tile reads in that order, an
+/// expert's plane bstride apart.  The tile's output is Y[M, N] (the activation rows x the weight rows), the
+/// transpose of C[N, M].
+struct StageAArgs {
+    const uint8_t* wbase = nullptr;    // the experts' blobs
+    size_t stride = 0;                  // bytes an expert's blob
+    size_t tr[3] = {0, 0, 0};           // the gate / up / down slabs' offsets in a blob
+    const int* bounds = nullptr;        // the experts' row ranges
+    int row0 = 0, max_rows = 0, n_exp = 0;
+    int n_out = 0, k = 0;               // the weight rows (N) and the reduction's length (K)
+    const sycl::half* bpack = nullptr;  // the packed F16 B plane
+    size_t bstride = 0;                 // bytes an expert's plane
+    int mpad = 0;                       // the plane's rows (round_up(rows, 16))
+    float limit = 0.0f;
+    uint16_t* h = nullptr;              // [entries][ldo]: the clamped swiglu (gate / up)
+    float* y = nullptr;                 // [entries][ldo]: the down output
+    int ldo = 0;
+    int tg = 0;                         // the weights' type
+    bool gate_up = false;               // the gate / up pair (the swiglu) vs the down matrix
+};
+/// The i8 A-stage tile: the weights' blocks decoded straight into the XMX A fragments, the activations read from
+/// global memory in the ext_intel_packed layout.  false: a shape the tile does not take (the caller falls back).
+bool stageA_set(const StageAArgs &a, dpct::queue_ptr s);
+
 /// GEMV jobs on such matrices (an expert's views on the host-routed path): y[c][r] = alpha (row r . x_c) + bias[r] for
 /// ncol activations, x as int8 rows (xq + c k, scales xd + c k / 32).
 struct MvJob {
