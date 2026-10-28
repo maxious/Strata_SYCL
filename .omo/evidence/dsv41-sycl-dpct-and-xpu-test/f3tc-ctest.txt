@@ -1,0 +1,132 @@
+Test project /tmp/f3tc_bld_def/build
+      Start  1: batch_telemetry_test
+ 1/57 Test  #1: batch_telemetry_test .............   Passed    0.01 sec
+      Start  2: logit_bias_test
+ 2/57 Test  #2: logit_bias_test ..................   Passed    0.03 sec
+      Start  3: gguf_reader_test
+ 3/57 Test  #3: gguf_reader_test .................   Passed    0.01 sec
+      Start  4: gguf_split_test
+ 4/57 Test  #4: gguf_split_test ..................   Passed    0.01 sec
+      Start  5: model_family_test
+ 5/57 Test  #5: model_family_test ................   Passed    0.16 sec
+      Start  6: batch_read_test
+ 6/57 Test  #6: batch_read_test ..................   Passed    0.00 sec
+      Start  7: gguf_geometry_test
+ 7/57 Test  #7: gguf_geometry_test ...............   Passed    0.07 sec
+      Start  8: tuning_header_arch_family_test
+ 8/57 Test  #8: tuning_header_arch_family_test ...   Passed    0.01 sec
+      Start  9: split_rules_test
+ 9/57 Test  #9: split_rules_test .................   Passed    0.01 sec
+      Start 10: prefill_plan_test
+10/57 Test #10: prefill_plan_test ................   Passed    0.00 sec
+      Start 11: share_rules_test
+11/57 Test #11: share_rules_test .................   Passed    0.01 sec
+      Start 12: host_limits_test
+12/57 Test #12: host_limits_test .................   Passed    0.01 sec
+      Start 13: arch_defaults_test
+13/57 Test #13: arch_defaults_test ...............   Passed    0.00 sec
+      Start 14: adapt_async_default_test
+14/57 Test #14: adapt_async_default_test .........   Passed    0.00 sec
+      Start 15: uma_cache_test
+15/57 Test #15: uma_cache_test ...................   Passed    0.00 sec
+      Start 16: suffix_drafter_test
+16/57 Test #16: suffix_drafter_test ..............   Passed    0.24 sec
+      Start 17: controller_test
+17/57 Test #17: controller_test ..................   Passed    0.01 sec
+      Start 18: draft_policy_test
+18/57 Test #18: draft_policy_test ................   Passed    0.01 sec
+      Start 19: spec_start_test
+19/57 Test #19: spec_start_test ..................   Passed    0.00 sec
+      Start 20: message_boundary_test
+20/57 Test #20: message_boundary_test ............   Passed    0.01 sec
+      Start 21: split_ring_test
+21/57 Test #21: split_ring_test ..................   Passed    0.00 sec
+      Start 22: conv_cache_test
+22/57 Test #22: conv_cache_test ..................   Passed    0.00 sec
+      Start 23: draft_kv_plan_test
+23/57 Test #23: draft_kv_plan_test ...............   Passed    0.00 sec
+      Start 24: coupled_draft_test
+24/57 Test #24: coupled_draft_test ...............   Passed    0.01 sec
+      Start 25: spec_prob_test
+25/57 Test #25: spec_prob_test ...................   Passed    8.60 sec
+      Start 26: draft_cap_test
+26/57 Test #26: draft_cap_test ...................   Passed    0.00 sec
+      Start 27: bf16_bits_test
+27/57 Test #27: bf16_bits_test ...................   Passed    3.12 sec
+      Start 28: batch_rows_test
+28/57 Test #28: batch_rows_test ..................   Passed    0.00 sec
+      Start 29: batch_groups_test
+29/57 Test #29: batch_groups_test ................   Passed    0.00 sec
+      Start 30: dequant_q5_1_test
+30/57 Test #30: dequant_q5_1_test ................   Passed    0.00 sec
+      Start 31: pool_tasks_test
+31/57 Test #31: pool_tasks_test ..................   Passed   21.53 sec
+      Start 32: router_dot_parity
+32/57 Test #32: router_dot_parity ................   Passed    0.11 sec
+      Start 33: router_dot_parity_avx
+33/57 Test #33: router_dot_parity_avx ............   Passed    0.11 sec
+      Start 34: iq512_gather_parity_scalar
+34/57 Test #34: iq512_gather_parity_scalar .......   Passed    0.03 sec
+      Start 35: iq512_gather_parity_gather
+35/57 Test #35: iq512_gather_parity_gather .......   Passed    0.02 sec
+      Start 36: iq_avx2_parity
+36/57 Test #36: iq_avx2_parity ...................   Passed    0.35 sec
+      Start 37: iq_avx2_parity_iq3s_mt1
+37/57 Test #37: iq_avx2_parity_iq3s_mt1 ..........   Passed    0.26 sec
+      Start 38: iq_avx1_parity
+38/57 Test #38: iq_avx1_parity ...................   Passed    0.22 sec
+      Start 39: q8k_quant_parity
+39/57 Test #39: q8k_quant_parity .................   Passed    0.01 sec
+      Start 40: q8k_quant_parity_avx
+40/57 Test #40: q8k_quant_parity_avx .............   Passed    0.02 sec
+      Start 41: nvfp4_cpu_parity
+41/57 Test #41: nvfp4_cpu_parity .................   Passed    0.35 sec
+      Start 42: pool_affinity_test
+42/57 Test #42: pool_affinity_test ...............   Passed    0.01 sec
+      Start 43: expert_multi_test
+43/57 Test #43: expert_multi_test ................***Skipped   0.00 sec
+      Start 44: q2_bitplane_parity
+44/57 Test #44: q2_bitplane_parity ...............   Passed    0.01 sec
+      Start 45: native_hadamard_test
+45/57 Test #45: native_hadamard_test .............***Skipped   0.00 sec
+      Start 46: tq_cpu_parity
+46/57 Test #46: tq_cpu_parity ....................***Skipped   0.01 sec
+      Start 47: tq_cpu_parity_avx2
+47/57 Test #47: tq_cpu_parity_avx2 ...............***Skipped   0.03 sec
+      Start 48: expert_parity
+48/57 Test #48: expert_parity ....................   Passed    0.00 sec
+      Start 49: pool_test
+49/57 Test #49: pool_test ........................   Passed    0.00 sec
+      Start 50: pool_cores_test
+50/57 Test #50: pool_cores_test ..................   Passed    0.06 sec
+      Start 51: pool_plan_test
+51/57 Test #51: pool_plan_test ...................   Passed    0.02 sec
+      Start 52: numa_pool_test
+52/57 Test #52: numa_pool_test ...................   Passed    0.01 sec
+      Start 53: warm_policy_test
+53/57 Test #53: warm_policy_test .................   Passed    0.00 sec
+      Start 54: pool_stress
+54/57 Test #54: pool_stress ......................   Passed    0.01 sec
+      Start 55: isa_guard_check
+55/57 Test #55: isa_guard_check ..................***Failed    4.96 sec
+check_isa_guard: /tmp/f3tc_bld_def/build/libstrata_kernels_cpu.a: 755 functions, 117 hold wide-ISA instructions, 1 not allowed
+  VIOLATION strata::kernels::cpu::iq512x_rows(int, unsigned char const*, unsigned long, int, void const* const*, int, float* const*, int, int) (777 wide instructions, first vmovq): wide-ISA code in an unlisted public function [iq_avx512.cpp.o]
+
+      Start 56: direct_file_async_test
+56/57 Test #56: direct_file_async_test ...........   Passed    0.01 sec
+      Start 57: aux_cpus_test
+57/57 Test #57: aux_cpus_test ....................   Passed    0.01 sec
+
+98% tests passed, 1 tests failed out of 57
+
+Total Test time (real) =  40.52 sec
+
+The following tests did not run:
+	 43 - expert_multi_test (Skipped)
+	 45 - native_hadamard_test (Skipped)
+	 46 - tq_cpu_parity (Skipped)
+	 47 - tq_cpu_parity_avx2 (Skipped)
+
+The following tests FAILED:
+	 55 - isa_guard_check (Failed)
+Errors while running CTest

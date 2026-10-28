@@ -1,0 +1,11 @@
+REVIEWER: omo-native-gate-reviewer st_01a17718 (plan-reviewer refused: plan-gated, ulw-execute already invoked; same contract)
+VERDICT PASS
+blocking: none
+advisory: prior-measured tok/s cited as attributed baselines (not plan-stated claims)
+advisory: todo 5 OBSERVED/BOUNDED-GAP dual outcome - orchestrator must land the docs gap note on BOUNDED-GAP
+advisory: todo 3 escape hatch - RESOLVED by plan edit (control must be run and measured)
+advisory: todo 8 malformed-ids control - RESOLVED by plan edit (genuinely malformed content, parse error named)
+STRUCTURAL: 11 impl rows, 5 F rows, 11 category lines, 0 indented rows
+COVERAGE: DPCT todo2, doorbell todo5, CPU-lane todo6, degenerate/sampling todo7, one-card todo8, two-card todo9, ids-encoded capital-of-france todo8, default-build + ctest -R ds4 todo10
+CONSTRAINTS: throughput only from completed prompts, one card first, no product-code edit claimed, no .omo/bench commit, default byte-identical + Intel opt-in
+MECHANISM RISK: atomic_ref on host USM forbidden, spins bounded, no blanket DPCT1065 conversion

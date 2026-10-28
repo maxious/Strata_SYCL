@@ -1,0 +1,20 @@
+=== F3 two-card manual QA: build phase (task st_01a178ea) ===
+build dir: /tmp/f3tc_build | branch HEAD: ce6218ee2642eaaba29be0735c4a8e45c27d11f2
+PIPELINE_START 2026-10-27T02:59:50+11:00
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake -S sycl -B /tmp/f3tc_build -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DSTRATA_SYCL_DSV41=ON -DSTRATA_SYCL_DSV41_EXE=ON' (cwd /home/maxious/Strata, stdout -> /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3twc-configure.txt)
+SYCL_CONFIGURE_RC=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake --build /tmp/f3tc_build' (stdout -> /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3twc-build.txt)
+SYCL_BUILD_RC=0
+CMD: grep -c 'FAILED' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3twc-build.txt
+BUILD_FAILED_GREP_RC=1 (1 means zero FAILED lines)
+BUILD_FAILED_COUNT=0
+CMD: grep -oE '\[[0-9]+/[0-9]+\]' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3twc-build.txt | tail -1 (last ninja progress)
+BUILD_PROGRESS_GREP_RC=0
+BUILD_PROGRESS_LAST=[259/259]
+CMD: node -e 'import{existsSync,statSync}from"node:fs"; const p="/tmp/f3tc_build/sycl/strata-dsv41"; console.log(JSON.stringify({exists:existsSync(p), size:existsSync(p)?statSync(p).size:null}))'
+EXE_RECEIPT_RC=127
+/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3twc_build.sh: line 37: node: command not found
+CMD: sha256sum /tmp/f3tc_build/sycl/strata-dsv41 (build identity)
+BUILD_IDENTITY_RC=1
+sha256sum: /tmp/f3tc_build/sycl/strata-dsv41: No such file or directory
+BUILD_PHASE_DONE 2026-10-27T03:04:47+11:00

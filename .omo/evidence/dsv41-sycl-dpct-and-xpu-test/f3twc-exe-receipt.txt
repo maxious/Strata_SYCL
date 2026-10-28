@@ -1,0 +1,1 @@
+/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3twc_build.sh: line 37: node: command not found

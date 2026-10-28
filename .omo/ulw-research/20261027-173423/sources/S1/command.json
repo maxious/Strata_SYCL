@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "cat",
+    "/tmp/w5_jm_research/xmx/run_m1.log"
+  ],
+  "cwd": "/tmp/w5_jm_research",
+  "exit_status": 0,
+  "stdout_sha256": "704575ff6616bf672babd3de44df05283d04fa8d8578192d914c616b40212f01",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

@@ -1,0 +1,10 @@
+{
+  "source_id": "S1",
+  "url": "command:cat /tmp/w5_jm_research/xmx/run_m1.log",
+  "observed_at": "2026-10-27T06:54:25.759Z",
+  "sha256": "704575ff6616bf672babd3de44df05283d04fa8d8578192d914c616b40212f01",
+  "extractor": "tool:source-snapshot@1",
+  "revision": null,
+  "kind": "command",
+  "provenance": "primary"
+}

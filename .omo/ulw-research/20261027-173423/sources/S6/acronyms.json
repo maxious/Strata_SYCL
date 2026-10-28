@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "source_id": "S6",
+  "snapshot_sha256": "ce01a54b6246db60df3cc425d3e59da2aef29756948ceaf633edc6efef303a28",
+  "entries": [
+    {
+      "acronym": "IGC",
+      "expansion": "Intel Graphics Compiler",
+      "sentence_id": "S6:s54",
+      "span": [
+        2781,
+        2810
+      ]
+    }
+  ]
+}

@@ -1,0 +1,186 @@
+=== F3 two-card manual QA: analysis phase (task st_01a178c4) ===
+CMD: /tmp/tokvenv/bin/python /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3_decode.py --log /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3qa-run1.log > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-golden-out.txt 2>&1
+GOLDEN_GEN_RC=0
+CMD: diff /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-golden-out.txt /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3qa-decode-RUN1.txt > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-goldencheck.txt 2>&1
+GOLDEN_DIFF_RC=0 (0 = the decode tool reproduces the prior artifact byte-identically)
+CMD: /tmp/tokvenv/bin/python /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3_decode.py --log /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-base.log > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-base.txt 2>&1
+DECODE_base_RC=0
+batch1 ids: 671 6102 294 8760 344 2619 51119 42499
+batch1 first_id: 671
+batch1 type3_ids: none
+batch1 decoded: The capital of France is **Paris**.
+CMD: grep -ci paris /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-base.txt
+1
+PARIS_base_RC=0 (0 = decoded text contains Paris)
+CMD: /tmp/tokvenv/bin/python /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3_decode.py --log /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-run1.txt 2>&1
+DECODE_run1_RC=1
+Traceback (most recent call last):
+  File "/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3_decode.py", line 47, in <module>
+    report(batches_from_log(open(sys.argv[2]).read()))
+                            ~~~~^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log'
+CMD: grep -ci paris /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-run1.txt
+0
+PARIS_run1_RC=1 (0 = decoded text contains Paris)
+CMD: /tmp/tokvenv/bin/python /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3_decode.py --log /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-run2.txt 2>&1
+DECODE_run2_RC=1
+Traceback (most recent call last):
+  File "/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3_decode.py", line 47, in <module>
+    report(batches_from_log(open(sys.argv[2]).read()))
+                            ~~~~^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log'
+CMD: grep -ci paris /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-run2.txt
+0
+PARIS_run2_RC=1 (0 = decoded text contains Paris)
+CMD: diff /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-run1.txt /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-run2.txt > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-repeat-diff.txt 2>&1
+REPEAT_DIFF_RC=1 (0 = run 2 is byte-identical to run 1)
+CMD: diff /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-base.txt /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-decode-run1.txt > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-baseline-diff.txt 2>&1
+BASELINE_DIFF_RC=1 (0 = the one-card baseline emits the same ids as the two-card runs)
+CMD: grep -nE "^prompt: |^decode: |^ds4: CUDA[0-9]+ |the card's waits|the hand-off's waits" /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-base.log > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-keylines-base.txt 2>&1
+KEYLINES_base_RC=0
+7:ds4: CUDA0 layers [0, 39] + head: weights 5.86 GB, experts 14.86 GB (1684 of 15360 in VRAM), caches 0.00 GB, 600 MiB free
+9:prompt: 10 tokens in 278 ms (36.01 tok/s, windows of 8192)
+10:ds4: the card's waits for the answer (device 0): 0 waits (the token path 0, the window path 0), the most reads 0, the last value read 0, 0 hit the bound
+11:ds4: the hand-off's waits (device 0): 0 waits, the most reads 0, the last value read 0
+13:671,6102,294,8760,344,2619,51119,42499,ds4: the card's waits for the answer (device 0): 64 waits (the token path 64, the window path 0), the most reads 1000000, the last value read 255, 24 hit the bound
+14:ds4: the hand-off's waits (device 0): 0 waits, the most reads 0, the last value read 0
+17:decode: 8 tokens in 2683 ms (2.61 tok/s); CPU lane: 112 of 1680 experts; the cache moved 2 (2 in all)
+CMD: grep -nE "^prompt: |^decode: |^ds4: CUDA[0-9]+ |the card's waits|the hand-off's waits" /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-keylines-run1.txt 2>&1
+KEYLINES_run1_RC=2
+grep: /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log: No such file or directory
+CMD: grep -nE "^prompt: |^decode: |^ds4: CUDA[0-9]+ |the card's waits|the hand-off's waits" /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-keylines-run2.txt 2>&1
+KEYLINES_run2_RC=2
+grep: /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log: No such file or directory
+CMD: grep -c '^ds4: CUDA0 ' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log
+DEV0_LINES_run1_GREP_RC=2
+CMD: grep -c '^ds4: CUDA1 ' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log
+DEV1_LINES_run1_GREP_RC=2
+CMD: [ "" -ge 1 ] && [ "" -ge 1 ]   (both cards' engine device lines present)
+XPU_TWO_run1_RC=1 (CUDA0 lines=, CUDA1 lines=)
+CMD: grep -c '^ds4: CUDA0 ' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log
+DEV0_LINES_run2_GREP_RC=2
+CMD: grep -c '^ds4: CUDA1 ' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log
+DEV1_LINES_run2_GREP_RC=2
+CMD: [ "" -ge 1 ] && [ "" -ge 1 ]   (both cards' engine device lines present)
+XPU_TWO_run2_RC=1 (CUDA0 lines=, CUDA1 lines=)
+CMD: grep -c '^ds4: CUDA1 ' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-base.log   (baseline is one card: must be 0)
+0
+DEV1_BASE_GREP_RC=1 (1 = the one-card baseline shows no CUDA1 line)
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-base.log
+0
+RESET_base_RC=1 (1 = zero reset-pattern matches, as required)
+CMD: grep -ic 'level_zero backend failed' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-base.log
+0
+BACKEND_base_RC=1 (1 = zero matches)
+CMD: grep -icE 'UR_RESULT_ERROR_DEVICE_LOST|DEVICE_LOST' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-base.log
+0
+DEVICE_LOST_base_RC=1 (1 = zero matches)
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log
+RESET_run1_RC=2 (1 = zero reset-pattern matches, as required)
+CMD: grep -ic 'level_zero backend failed' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log
+BACKEND_run1_RC=2 (1 = zero matches)
+CMD: grep -icE 'UR_RESULT_ERROR_DEVICE_LOST|DEVICE_LOST' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log
+DEVICE_LOST_run1_RC=2 (1 = zero matches)
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log
+RESET_run2_RC=2 (1 = zero reset-pattern matches, as required)
+CMD: grep -ic 'level_zero backend failed' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log
+BACKEND_run2_RC=2 (1 = zero matches)
+CMD: grep -icE 'UR_RESULT_ERROR_DEVICE_LOST|DEVICE_LOST' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log
+DEVICE_LOST_run2_RC=2 (1 = zero matches)
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-spin-max1.log
+RESET_spin-max1_RC=2 (1 = zero reset-pattern matches, as required)
+CMD: grep -ic 'level_zero backend failed' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-spin-max1.log
+BACKEND_spin-max1_RC=2 (1 = zero matches)
+CMD: grep -icE 'UR_RESULT_ERROR_DEVICE_LOST|DEVICE_LOST' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-spin-max1.log
+DEVICE_LOST_spin-max1_RC=2 (1 = zero matches)
+CMD: grep -c 'the card never saw an answer' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-spin-max1.log
+2
+SPIN_FAIL_LOUD_RC=0 (0 = the bound-hit message is printed; the run must not hand off silently)
+16:671,ds4: the card never saw an answer (its wait ran to its bound): the run ends here
+17:6102,maya-ds4: the card never saw an answer (its wait for one ran to its bound)
+CMD: grep -ic 'out of range' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-neg-badid.log
+1
+NEG2_ERR_RC=0 (0 = the error names the offending token)
+10:maya-ds4: token 999999999 out of range
+CMD: grep -icE 'error|invalid|non-numeric|parse' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-neg-garbage.log
+0
+NEG_ERR_RC=1 (0 = a parse error naming the offending token is printed)
+CMD: grep -c '^0, ' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-smi-loop.txt
+0
+SMI_CARD0_ROWS_RC=1
+CMD: grep -c '^1, ' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-smi-loop.txt
+0
+SMI_CARD1_ROWS_RC=1
+--- per-card memory across run 2 (index, memory.used (MiB), memory.total (MiB)) ---
+[15:48:53.789] index, memory.used (MiB), memory.total (MiB)
+[15:48:53.789] 0, 254.578125, 24480
+[15:48:53.789] 1, 246.140625, 24480
+[15:48:56.795] 0, 3471.90625, 24480
+[15:48:56.795] 1, 3423.18359375, 24480
+[15:48:59.801] 0, 22653.9453125, 24480
+[15:48:59.801] 1, 22650.67578125, 24480
+[15:49:02.806] 0, 22653.9453125, 24480
+[15:49:02.806] 1, 22650.68359375, 24480
+[15:49:05.812] 0, 22653.9453125, 24480
+[15:49:05.812] 1, 22650.68359375, 24480
+[15:49:08.819] 0, 22653.9375, 24480
+[15:49:08.819] 1, 22650.67578125, 24480
+[15:49:11.828] 0, 22653.9375, 24480
+[15:49:11.828] 1, 22650.67578125, 24480
+[15:49:14.837] 0, 22653.9375, 24480
+[15:49:14.837] 1, 22650.67578125, 24480
+[15:49:17.844] 0, 22653.9375, 24480
+[15:49:17.844] 1, 22650.67578125, 24480
+[15:49:20.851] 0, 22653.9375, 24480
+[15:49:20.851] 1, 22650.67578125, 24480
+[15:49:23.857] 0, 22653.9375, 24480
+[15:49:23.857] 1, 22650.67578125, 24480
+[15:49:26.868] 0, 22653.9375, 24480
+[15:49:26.868] 1, 22650.67578125, 24480
+[15:49:29.875] 0, 22653.9375, 24480
+[15:49:29.875] 1, 22650.67578125, 24480
+[15:49:32.881] 0, 22653.9375, 24480
+[15:49:32.881] 1, 22650.67578125, 24480
+[15:49:35.886] 0, 22653.9375, 24480
+[15:49:35.887] 1, 22650.67578125, 24480
+[15:49:38.892] 0, 22653.9375, 24480
+[15:49:38.892] 1, 22650.67578125, 24480
+[15:49:41.902] 0, 22653.9375, 24480
+[15:49:41.902] 1, 22650.67578125, 24480
+[15:49:44.908] 0, 22653.9375, 24480
+[15:49:44.908] 1, 22650.67578125, 24480
+[15:49:47.916] 0, 22653.9375, 24480
+[15:49:47.916] 1, 22650.67578125, 24480
+[15:49:50.927] 0, 22653.9375, 24480
+[15:49:50.927] 1, 22650.67578125, 24480
+[15:49:53.934] 0, 22761.234375, 24480
+[15:49:53.934] 1, 22652.61328125, 24480
+[15:49:56.939] 0, 22855.578125, 24480
+[15:49:56.939] 1, 22849.99609375, 24480
+[15:49:59.945] 0, 254.578125, 24480
+[15:49:59.945] 1, 246.140625, 24480
+[15:50:02.951] 0, 254.578125, 24480
+[15:50:02.951] 1, 246.140625, 24480
+[15:50:05.956] 0, 254.578125, 24480
+[15:50:05.956] 1, 246.140625, 24480
+[15:50:08.962] 0, 254.578125, 24480
+[15:50:08.962] 1, 246.140625, 24480
+[15:50:11.967] 0, 254.578125, 24480
+[15:50:11.967] 1, 246.140625, 24480
+[15:50:14.973] 0, 254.578125, 24480
+[15:50:14.973] 1, 246.140625, 24480
+[15:50:17.979] 0, 254.578125, 24480
+[15:50:17.979] 1, 246.140625, 24480
+[15:50:20.985] 0, 254.578125, 24480
+[15:50:20.985] 1, 246.140625, 24480
+--- todo 8 one-card numbers, quoted from task-8-...log ---
+112:prompt: 10 tokens in 414 ms (24.13 tok/s, windows of 8192)
+114:decode: 9 tokens in 4017 ms (1.99 tok/s); CPU lane: 211 of 1920 experts; the cache moved 14 (14 in all)
+140:prompt: 10 tokens in 309 ms (32.35 tok/s, windows of 8192)
+141:decode: 9 tokens in 3084 ms (2.59 tok/s); CPU lane: 156 of 1920 experts; the cache moved 7 (7 in all)
+145:prompt: 10 tokens in 281 ms (35.61 tok/s, windows of 8192)
+146:decode: 9 tokens in 3348 ms (2.39 tok/s); CPU lane: 158 of 1920 experts; the cache moved 6 (6 in all)
+150:prompt: 10 tokens in 316 ms (31.66 tok/s, windows of 8192)
+151:decode: 9 tokens in 3450 ms (2.32 tok/s); CPU lane: 152 of 1920 experts; the cache moved 3 (3 in all)
+TODO8_QUOTE_RC=0
+ANALYZE_PHASE_DONE 2026-10-27T02:53:00+11:00

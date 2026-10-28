@@ -1,0 +1,6 @@
+Token IDs from both two-card runs: 671,6102,294,8760,344,2619,51119,42499
+
+Decoding via model tokenizer (DeepSeek V4.1 vocab.json):
+"The capital of France is **Paris**."
+
+Verification: Contains "Paris" ✓

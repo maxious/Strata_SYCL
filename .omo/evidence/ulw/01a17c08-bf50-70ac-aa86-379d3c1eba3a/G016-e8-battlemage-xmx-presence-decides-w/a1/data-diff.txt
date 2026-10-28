@@ -1,0 +1,6 @@
+Claim graph vs fact ledger, final state (session .omo/ulw-research/20261027-173423):
+C1 PASS sg16 XMX compiles+runs on B60 (F34-F37); C2 PASS M=1 bandwidth-bound f16 22.2us / i8 11.1us / i8blk 17.9us, cache attack refuted (F39-F40,F53);
+C3 PASS decode GEMV scalar, joint_matrix serves set tiles (F25-F27); C4 PASS PR #29864 ESIMD DPAS int8 (F2-F4); C5 PASS PR #29245 grouped MoE, no batch-1 (F5,F43-F45);
+C6 PASS dkhaldi cookbook (F6-F8); C7 PASS vllm PR #644 int4 sg16 GEMV author-reported (F12-F13,Q4); C8 PASS oneDNN no GPU GEMV, M=1 nocopy (F15-F19,F49);
+C9 PASS oneMKL gemv dense float/double only (F30,F38); C10 PASS valarauca fork reference (F9-F10,Q3); C11 PASS trellis=Strata ds4_tq.cu AMD, absent upstream (F28,Q1,F47);
+C12 PASS Strata ESIMD int8 expert kernels exist (F23); C13 PASS barrier fixed a8ced727 (F29).

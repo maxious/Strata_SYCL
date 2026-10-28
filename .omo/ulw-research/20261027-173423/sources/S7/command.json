@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "grep",
+    "-c",
+    "gemv",
+    "/opt/intel/oneapi/mkl/latest/include/oneapi/mkl.hpp"
+  ],
+  "cwd": "/opt/intel/oneapi",
+  "exit_status": 1,
+  "stdout_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

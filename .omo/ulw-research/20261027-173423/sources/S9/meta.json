@@ -1,0 +1,10 @@
+{
+  "source_id": "S9",
+  "url": "command:grep -c gemv /opt/intel/oneapi/mkl/latest/include/oneapi/mkl/blas/usm_decls.hpp",
+  "observed_at": "2026-10-27T06:55:01.917Z",
+  "sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+  "extractor": "tool:source-snapshot@1",
+  "revision": null,
+  "kind": "command",
+  "provenance": "primary"
+}

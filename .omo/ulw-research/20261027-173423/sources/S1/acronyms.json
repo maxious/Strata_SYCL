@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "source_id": "S1",
+  "snapshot_sha256": "704575ff6616bf672babd3de44df05283d04fa8d8578192d914c616b40212f01",
+  "entries": [
+    {
+      "acronym": "TM",
+      "expansion": "Arc",
+      "sentence_id": "S1:s1",
+      "span": [
+        16,
+        23
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+=== pgrep card-discipline gates (origin: /tmp/dpct_run/f3_pgrep_pre_*.txt, readbacks in f3_receipts.txt) ===
+--- /tmp/dpct_run/f3_pgrep_pre_neg2.txt ---
+0
+--- /tmp/dpct_run/f3_pgrep_pre_neg.txt ---
+0
+--- /tmp/dpct_run/f3_pgrep_pre_run1_agent.txt ---
+0
+--- /tmp/dpct_run/f3_pgrep_pre_run1.txt ---
+0
+--- /tmp/dpct_run/f3_pgrep_pre_run2.txt ---
+0
+--- /tmp/dpct_run/f3_pgrep_pre_run3.txt ---
+0
+--- /tmp/dpct_run/f3_pgrep_pre_run4.txt ---
+0
+--- /tmp/dpct_run/f3_pgrep_during2.txt ---
+1
+--- /tmp/dpct_run/f3_pgrep_during4.txt ---
+0

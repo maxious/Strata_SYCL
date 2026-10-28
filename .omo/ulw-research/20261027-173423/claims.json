@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "graph": "/home/maxious/Strata/.omo/ulw-research/20261027-173423/claim-graph.md",
+  "graph_sha256": "65f09b70c1eb247d263666c6de168dfe315de7ba27743dd2301d4cfe5c9ee896",
+  "claims": [
+    {
+      "claim_id": "C1",
+      "statement": "XMX sg16 compiles and runs on the B60 with icpx 2026.2 (headers present; bench builds and runs)",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C2",
+      "statement": "Decode batch M=1 is bandwidth-bound: joint_matrix f16 moves 6.55MB in 22.2us (~295 GB/s), int8 halves bytes to 11.1us",
+      "risk": "verified-claims",
+      "status": "PASS (derived from lead runs)",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C3",
+      "statement": "Strata decode GEMV is scalar on CUDA and SYCL; joint_matrix serves expert set tiles only",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C4",
+      "statement": "Upstream merged decode-side XMX path is ESIMD DPAS int8 multi-column MMV (PR #29864), Xe2-only, reorder layout, 1-80 cols",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C5",
+      "statement": "Upstream joint_matrix path is grouped MoE GEMM (PR #29245), IQ + K-quants, KSPLIT=4",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C6",
+      "statement": "dkhaldi supplies the joint_matrix API cookbook: load/mad/store, load_checked/store_checked, prefetch hint L1, joint_matrix_apply, ext_intel_packed VNNI, M=1 reduce variant",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C7",
+      "statement": "vllm PR #644 shows a pure-SYCL sg16 int4 GEMV beats CUTLASS grouped GEMM at rows<=8 (56->18us gate_up, 34->14us down, +14% decode) with device-side expert scan and no host sync",
+      "risk": "verified-claims (author-run, B70)",
+      "status": "PASS as author-reported",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C8",
+      "statement": "oneDNN has no GPU GEMV primitive; M=1 routes through systolic matmul with M-unroll floor 16; grouped_micro_gemm is the only is_gemv_ path",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C9",
+      "statement": "oneMKL gemv is dense float/double/complex only - no quantized decode surface",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C10",
+      "statement": "valarauca PR #1 is the richest XMX integration reference (FA joint_matrix default, MoE device routing, oneDNN reorder, fused GLU decode, graph replay) but is an open fork on B70, not upstream",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C11",
+      "statement": "'trellis' is Strata's ds4_tq.cu AMD WMMA path; absent from llama.cpp",
+      "risk": "verified-claims (second observer: R1b L4 zero joint_matrix/trellis hits in fattn*)",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C12",
+      "statement": "Strata's own ESIMD int8 expert kernels already exist outside dsv41 (esimd_moe.dp.cpp etc.) with I8_ESIMD=AUTO",
+      "risk": "verified-claims",
+      "status": "PASS",
+      "in_verified": false
+    },
+    {
+      "claim_id": "C13",
+      "statement": "The ds4_iq barrier defect is fixed (a8ced727)",
+      "risk": "verified-claims (commit re-read from git log)",
+      "status": "PASS",
+      "in_verified": false
+    }
+  ],
+  "errors": []
+}

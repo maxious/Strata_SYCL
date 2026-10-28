@@ -1,0 +1,25 @@
+=== F3 two-card manual QA: todo 10 default-build regression re-run (task st_01a178c4) ===
+scratch dir: /tmp/f3tc_bld_def (fresh), build dir: /tmp/f3tc_bld_def/build (never under /home/maxious/Strata)
+CMD: (cwd /tmp/f3tc_bld_def) bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake -S /home/maxious/Strata -B build -G Ninja -DSTRATA_BUILD_TESTS=ON > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-def-configure.txt 2>&1'
+DEFAULT_CONFIGURE_RC=0
+-- The CXX compiler identification is GNU 15.2.0
+CMD: (cwd /tmp/f3tc_bld_def) bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake --build build > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-def-build.txt 2>&1'
+DEFAULT_BUILD_RC=0
+[159/161] Linking CXX executable kq_cpu_bench
+[160/161] Linking CXX executable expert_multi_test
+[161/161] Linking CXX executable pool_stress
+CMD: (cwd /tmp/f3tc_bld_def) bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ctest --test-dir build --output-on-failure > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-ctest.txt 2>&1'
+DEFAULT_CTEST_RC=8
+CMD: sed -n '/The following tests FAILED/,$p' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-ctest.txt > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-ctest-failed-names.txt 2>&1
+FAILED_NAMES_RC=0
+The following tests FAILED:
+	 55 - isa_guard_check (Failed)
+Errors while running CTest
+CMD: grep -n 'iq512x_rows' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-ctest.txt > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-isa-violation.txt 2>&1
+IQ512X_VIOLATION_RC=0 (0 = the iq512x_rows violation line is present in the isa_guard_check output)
+113:  VIOLATION strata::kernels::cpu::iq512x_rows(int, unsigned char const*, unsigned long, int, void const* const*, int, float* const*, int, int) (777 wide instructions, first vmovq): wide-ISA code in an unlisted public function [iq_avx512.cpp.o]
+CMD: grep -c 'tests passed' /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-ctest.txt
+1
+CTEST_SUMMARY_GREP_RC=0
+120:98% tests passed, 1 tests failed out of 57
+DEFAULT_PHASE_DONE 2026-10-27T02:27:46+11:00

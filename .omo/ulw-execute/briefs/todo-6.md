@@ -1,0 +1,13 @@
+ROLE: you are the executor of this unit; do it yourself; do NOT delegate.
+UNIT: plan todo 6 - B60 measurement of the stageA tile path vs legacy at M=160, plus full decode tok/s, flag off and on.
+WORKTREE: supplied in the dispatch message (off the landed wave-2 base). NEVER touch /home/maxious/Strata.
+READ FIRST: how the bench binary is invoked (sycl/src/kernels/xmx_gemm_bench.cpp argument parsing and its tolerances 89-91) and the new tile dispatch from todo 4.
+DO: run both flag states (unset, and stageA enabled) on both B60 cards; record gate/up/down us per shape and full decode tok/s. Compare against the plan's measured baselines (M=160 gate+up 69.5 us f16 / 34.0 us i8 / 52.0 us i8-block, down 34.2 / 17.7 / 26.8 us; M=1 floor 22.3 / 11.1 us gate+up, 11.9 / 5.9 us down; decode 1.65 tok/s one card, 12.08 two card). Adopt default-on ONLY if measured faster AND parity-clean; otherwise keep default off and report the numbers. Do not change the default in code beyond what the measurement supports.
+FILES IN SCOPE: none beyond the evidence log; if a bench-argument or reporting tweak is genuinely needed, keep it to sycl/src/kernels/xmx_gemm_bench.cpp and say so.
+VERIFY: rc=0 lines for both flag states in the evidence log, with the device name printed by the program itself.
+CONSTRAINTS: every build/run inside bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; <command>'. Report only un-piped exit codes, each on its own named RC line. NEVER state a throughput number unless a prompt actually completed - a number from a failed or partial run is a defect. The two B60 cards are exclusive: this unit runs alone, it must stop any server it started before returning (strata launch --stop, PID check) and record the teardown receipt.
+MANUAL QA: the real surface is a completed API prompt. Start the server, send one fixed prompt via curl -i to the OpenAI-compatible endpoint at temperature 0, capture the HTTP status and the completion text plus the engine's own tok/s line into the evidence log. A dry run or a plan printout is NOT evidence.
+CLEANUP: stop every server/process you started, remove temp dirs, and record the teardown receipts.
+ARTIFACT: /home/maxious/Strata/.omo/evidence/dsv41-trellis-sg16-perf/task-6-dsv41-trellis-sg16-perf.log ending with VERDICT PASS or VERDICT FAIL.
+COMMIT: bench artifacts stay untracked; if a source tweak was made, allowlist only that file, title '[Benchmark] stageA measured vs legacy'.
+RETURN a DoneClaim JSON: task, changed_files, tests, manual_qa, cleanup, risks.

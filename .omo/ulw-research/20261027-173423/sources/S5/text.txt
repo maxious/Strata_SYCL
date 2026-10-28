@@ -1,0 +1,128 @@
+Skip to content
+Navigation Menu
+Sign in
+Appearance settings
+Platform AI CODE CREATION GitHub CopilotWrite better code with AI GitHub Copilot appDirect agents from issue to merge MCP RegistryIntegrate external tools DEVELOPER WORKFLOWS ActionsAutomate any workflow CodespacesInstant dev environments IssuesPlan and track work Code ReviewManage code changes Code QualityEnforce quality at merge APPLICATION SECURITY GitHub Advanced SecurityFind and fix vulnerabilities Code securitySecure your code as you build Secret protectionStop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features
+Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government See all industries View all solutions
+Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources
+Open Source COMMUNITY GitHub SponsorsFund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections
+Enterprise ENTERPRISE SOLUTIONS Enterprise platformAI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced SecurityEnterprise-grade security features Copilot for BusinessEnterprise-grade AI features Premium SupportEnterprise-grade 24/7 support
+Pricing
+Search
+Sign in
+Sign up
+Appearance settings
+You signed in with another tab or window. Reload to refresh your session. You signed out in another tab or window. Reload to refresh your session. You switched accounts on another tab or window. Reload to refresh your session.
+Dismiss alert
+vllm-project
+vllm-xpu-kernels
+Repository navigation
+Code
+Issues21 (21)
+Pull requests82 (82)
+Actions
+Projects
+Security and quality
+Insights
+More items
+[MoE] Int4 GEMV for decode-sized grouped GEMMs - #644
+#644
+Open
+riceharvest wants to merge 2 commits into
+vllm-project:mainvllm-project/vllm-xpu-kernels:mainfrom
+riceharvest:moe-int4-decode-gemvriceharvest/vllm-xpu-kernels:moe-int4-decode-gemv
+Copy head branch name to clipboard
+ConversationCommits2 (2)ChecksFiles changed
+Open
+[MoE] Int4 GEMV for decode-sized grouped GEMMs#644 riceharvest wants to merge 2 commits into vllm-project:mainvllm-project/vllm-xpu-kernels:mainfrom riceharvest:moe-int4-decode-gemvriceharvest/vllm-xpu-kernels:moe-int4-decode-gemvCopy head branch name to clipboard
+Conversation
+riceharvest commented Oct 15, 2026 • edited Loading Uh oh! There was an error while loading. Please reload this page.
+Copy link
+Copy Markdown
+Essential Elements of an Effective PR Description Checklist
+The purpose of the PR, such as "Fix some issue (link existing issues this PR will resolve)".
+The test plan, such as providing test command.
+The test results, such as pasting the results comparison before and after, or e2e results
+(Optional) The necessary documentation update, such as updating and for a new model.
+Purpose
+Int4 MoE decode on Xe2 spends most of its expert time in the fixed cost of . At one decode token with top-8 routing each expert sees one row. On Qwen3.6-35B-A3B (GPTQ int4 experts), the 8 active experts of a layer are 13 MB of weights, about 21 us at the B70's bandwidth, but a gate_up call takes ~56 us and a down call ~34 us.
+This PR adds , a SYCL GEMV for the int4 layout the grouped GEMM already uses (int8-packed signed 4-bit from , per-group scales in the activation dtype). routes int4 calls with at most 8 rows to it (); larger calls (prefill, MTP verify, batched decode) keep the grouped GEMM. turns it off.
+Kernel: one work-group per (active expert, block of N). The work-group finds its expert with a group scan over (no host sync, works under graph capture). Each sub-group computes 4 output columns for up to 2 rows at a time, lanes split K in chunks of 32 int4 values (16-byte weight loads), fp32 accumulation, per-group scale applied per chunk.
+Related: #509 (fixed per-step MoE decode cost on the Arc Pro B70).
+Related, not duplicates: #628 / #637 (fused routed + shared-expert decode for FP8 per-tensor weights) and #623 (FP8 decode GEMV). This PR covers int4 experts in the existing path and does not touch those.
+Test Plan
+checks the op against a dequantized fp32 reference and against on the same inputs: Qwen3.6-35B-A3B shapes (w13 1024x2048, w2 2048x512) and 5120x8192, 16 and 256 experts, 1-8 rows with one or two rows per expert, bf16 and fp16.
+E2E (vLLM main + this branch, one B70): (palmfuture), single request, decode tok/s with , plus a short accuracy eval (gsm8k via lm_eval, 250 questions) for both.
+Test Result
+Measured 2026-10-15 on one Arc Pro B70 (b70 tab, testq 004). Kernel source = this branch ( and from fad147a) applied to release/0.1.15.4, which is the vllm-xpu-kernels in the vLLM nightly XPU image used (vllm 0.32.0rc1.dev190+g3f1bcfd82); the op was built as an library fragment instead of a full rebuild. Not run: a full build of upstream main 6b30c9b.
+pytest (installed package + this branch):
+: 46 passed. 6 more cases (n=5120, k=8192, e=256) ran out of memory in the test itself: it built the random int4 weights as int64 (~40 GiB) before converting. The test now generates them as uint8 and runs that shape with 16 experts only, like the existing cases for it (256 experts would still need ~10 GiB), so its 30 cases are exactly the shapes that passed above (the uint8 generation itself has not been run on a GPU yet).
+: 40 passed (m=1 and m=4 without bias go through the new path).
+E2E, vLLM nightly 3f1bcfd8 + this branch, palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4, , fp8 KV, 4K context, XPU graphs, no MTP, 1 request, 512-token answers, decode tok/s (code / prose):
+decode tok/s
+gsm8k (first 100 test q, greedy, chat, no thinking)
+0 (CUTLASS grouped GEMM)
+75.8 / 76.3
+97/100
+1 (this PR)
+86.6 / 87.2 (+14%)
+97/100
+With MTP (, 2K context) and the GEMV on: 157.3 / 118.7 tok/s, no GPU faults in the kernel log. Not tested: other Intel GPUs (PVC, Xe3), expert parallelism.
+Prior measurements of the same kernel, out of tree (vLLM v0.31.0 XPU image, kernel loaded as a separate extension and dispatched from , one Arc Pro B70, palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4, 1 request, 16K context, 512-token code / prose answers, decode tok/s; source: https://github.com/riceharvest/b70-qwen38-cookbook README, "Qwen3.6-35B-A3B (MoE)"):
+no MTP
+MTP k=4
+without the GEMV
+78.7 / 79.1
+183.9 / 134.3
+with the GEMV
+93.8 / 94.3
+200.8 / 145.4
+Per layer at 1 token: gate_up 56 -> 18 us, down 34 -> 14 us.
+Matches CUTLASS to 3e-4 relative error per call (stress test: 900 routings including outlier activations; 500 replays inside an XPU graph). In serving, an eager cross-check of every decode call found 0 mismatches over 2,048 steps. Greedy GEMV vs CUTLASS per-step KL: p50 0.0001, p99 0.043, with divergences at near-ties, the same as CUTLASS graph vs eager.
+0/32 corrupted outputs with 8 concurrent long requests.
+(Optional) Documentation Update
+None (no user-facing option besides the env var, documented in ).
+AI assistance was used: the kernel, dispatch and test were written with Claude (Anthropic). I reviewed the change and ran the tests and measurements above on my B70.
+Sorry, something went wrong.
+Uh oh!
+There was an error while loading. Please reload this page.
+All reactions
+…
+riceharvest mentioned this pull request
+Oct 15, 2026
+[Quantization] Allow online fp8 weight-only quantization of an unquantized lm_head vllm-project/vllm#61815
+Open
+6 tasks done
+…
+Sign up for free to join this conversation on GitHub. Already have an account? Sign in to comment
+Reviewers
+No reviews
+Uh oh!
+There was an error while loading. Please reload this page.
+Assignees
+No one assigned
+Labels
+None yet
+Projects
+None yet
+Milestone
+No milestone
+Development
+Successfully merging this pull request may close these issues.
+Uh oh!
+There was an error while loading. Please reload this page.
+1 participant
+Add this suggestion to a batch that can be applied as a single commit.This suggestion is invalid because no changes were made to the code.Suggestions cannot be applied while the pull request is closed.Suggestions cannot be applied while viewing a subset of changes.Only one suggestion per line can be applied in a batch.Add this suggestion to a batch that can be applied as a single commit.Applying suggestions on deleted lines is not supported.You must change the existing code in this line in order to create a valid suggestion.Outdated suggestions cannot be applied.This suggestion has been applied or marked resolved.Suggestions cannot be applied from pending reviews.Suggestions cannot be applied on multi-line comments.Suggestions cannot be applied while the pull request is queued to merge.Suggestion cannot be applied right now. Please check back later.
+Footer
+© 2026 GitHub, Inc.
+Footer navigation
+Terms
+Privacy
+Security
+Status
+Community
+Docs
+Contact
+Manage cookies
+Do not share my personal information
+You can’t perform that action at this time.

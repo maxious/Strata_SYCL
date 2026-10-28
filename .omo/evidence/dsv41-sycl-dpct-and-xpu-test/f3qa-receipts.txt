@@ -1,0 +1,212 @@
+F3 manual-QA consolidated receipts - task st_01a1789d (omo-native-qa-executor), run 2026-10-26/27 (+11:00)
+Host: linux x64, AMD Ryzen 7 5700X3D, 2x Intel Arc Pro B60 (8086:e211, DRM card0/card1).
+Integration tree /home/maxious/Strata, branch sycl/dsv41-sycl-support, HEAD 28bd2aaac8300a2d3952284c1559c4d3bf35529d.
+Pack: /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 (the step-3 "V4-1" spelling does
+not exist on disk; the instruction's exact pack path "DeepSeek-V4.1-..." was used).
+
+Every *_RC below is the un-piped exit code of the CMD line printed directly above it (captured as `rc=$?`
+immediately after the command in the phase scripts copied next to this file). The raw capture
+(/tmp/dpct_run/f3_receipts.txt -> f3qa-receipts-raw.txt) interleaved the two parallel build phases' appends and
+broke CMD/RC adjacency for the first four lines; this file re-presents the same values with each RC directly
+below its own CMD. No value was altered.
+
+=== BUILD: SYCL target, scratch dir /tmp/f3_sycl_build (owned by this run) ===
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake -S /home/maxious/Strata -B /tmp/f3_sycl_build -G Ninja -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_DSV41=ON -DCMAKE_CXX_COMPILER=icpx > /tmp/dpct_run/f3_configure.txt 2>&1'
+CFG_RC=0
+CMD: cmake --build /tmp/f3_sycl_build > /tmp/dpct_run/f3_build.txt 2>&1
+BUILD_RC=1   (literal command as given; fails at sycl/src/prefill/gemm.dp.cpp: "#error SYCLomatic runtime
+              requires oneMath/oneMKL support" - oneMKL headers are only on the include path under setvars.sh.
+              Prior lanes' build commands are all setvars-wrapped, see task-6 log lines 106-142.)
+CMD: grep -c strata-dsv41 /tmp/f3_sycl_build/build.ninja > /tmp/dpct_run/f3_exe_grep_pre.txt 2>&1
+EXE_TARGET_PRE_GREP_RC=1   (count 0: the step-2 flags leave STRATA_SYCL_DSV41_EXE OFF (sycl/CMakeLists.txt:297),
+              so the literal build produces no strata-dsv41 binary - caller correction confirmed)
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake -S /home/maxious/Strata -B /tmp/f3_sycl_build -G Ninja -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_DSV41=ON -DSTRATA_SYCL_DSV41_EXE=ON -DCMAKE_CXX_COMPILER=icpx > /tmp/dpct_run/f3_configure_exe.txt 2>&1'
+CFG_EXE_RC=0
+CMD: grep -c strata-dsv41 /tmp/f3_sycl_build/build.ninja > /tmp/dpct_run/f3_exe_grep_post.txt 2>&1
+EXE_TARGET_POST_GREP_RC=0   (count 84)
+CMD: cmake --build /tmp/f3_sycl_build > /tmp/dpct_run/f3_build_exe.txt 2>&1
+BUILD_EXE_RC=1   (bare build again, same oneMKL failure; superseded by BUILD2_RC below)
+CMD: timeout 1200 bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake --build /tmp/f3_sycl_build > /tmp/dpct_run/f3_build2.txt 2>&1'
+BUILD2_RC=0
+CMD: bun -e node:fs existsSync+statSize of /tmp/f3_sycl_build/sycl/strata-dsv41 > /tmp/dpct_run/f3_exe_receipt.txt 2>&1
+SYCL_EXE_RC=0   (0 = binary present at its real path)
+EXISTS=true
+SIZE=37896656
+MTIME=2026-10-26T14:49:29.857Z
+(binary real path: /tmp/f3_sycl_build/sycl/strata-dsv41 - build root holds no copy; w6c used a symlink)
+CMD: git -C /home/maxious/Strata rev-parse HEAD > /tmp/dpct_run/f3_build_identity.txt 2>&1
+GIT_HEAD_RC=0
+28bd2aaac8300a2d3952284c1559c4d3bf35529d
+BUILD_FLAGS=STRATA_ENABLE_SYCL=ON STRATA_SYCL_DSV41=ON STRATA_SYCL_DSV41_EXE=ON CMAKE_CXX_COMPILER=icpx (JIT, no STRATA_SYCL_AOT)
+
+=== ENCODING provenance (/tmp/q_france.ids, written by the ids-prep lane, re-encoded here) ===
+CMD: /tmp/tokvenv/bin/python /tmp/enc_q_france.py enc > /tmp/dpct_run/f3_enc_check.txt 2>&1
+ENC_RC=0
+PROMPT_TEXT="<|User|>What is the capital of France?<|Assistant|>..."
+IDS=128803,3085,344,270,6102,294,8760,33,128804,128822
+N_IDS=10
+CMD: diff /tmp/dpct_run/f3_ids_comma.txt /tmp/dpct_run/f3_enc_ids_comma.txt > /tmp/dpct_run/f3_enc_diff.txt 2>&1
+ENC_DIFF_RC=0   (the ids file the engine consumed is byte-identical to a fresh pack-tokenizer encode)
+
+=== CARD DISCIPLINE + CARD RUNS (every launch gated on pgrep -c strata-dsv41 count 0, read back before launch) ===
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run1_agent.txt 2>&1
+PGREP_AGENT_RC=1   (pgrep exits 1 when the count is 0)
+READBACK=0
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run1.txt 2>&1
+PGREP_RUN1_RC=1
+PGREP_RUN1_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_n8.log 2>&1'
+RUN_RC=0
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run2.txt 2>&1
+PGREP_RUN2_RC=1
+PGREP_RUN2_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_n8_r2.log 2>&1'
+RUN2_RC=0
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run3.txt 2>&1
+PGREP_RUN3_RC=1
+PGREP_RUN3_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_n8_r3.log 2>&1'
+RUN3_RC=0
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run4.txt 2>&1
+PGREP_RUN4_RC=1
+PGREP_RUN4_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_n8_r4.log 2>&1'
+RUN4_RC=0
+(runs 2/3/4 are byte-identical repeats of the run-1 invocation; only the output log path differs.
+ run 4 exists solely to capture a true during-window xpu-smi trajectory for the literal invocation.)
+
+=== XPU-SMI state during/after ===
+CMD: xpu-smi --query-gpu=memory.used --id=0 > /tmp/dpct_run/f3_smi_one_during.txt 2>&1
+XPU_ONE_RC=0   (one device line + used-memory figure)
+memory.used (MiB)
+254.578125
+CMD: xpu-smi --query-gpu=memory.used --id=1 >> /tmp/dpct_run/f3_smi_one_during.txt 2>&1
+XPU_DEV1_DURING_RC=0
+246.140625
+CMD: xpu-smi --query-gpu=memory.used --id=0 > /tmp/dpct_run/f3_smi_one_after.txt 2>&1
+XPU_ONE_AFTER_RC=0
+254.578125
+(timing note: these three single-shots landed just after run 1's ~55 s window closed; the during-engine
+ evidence is the loop trajectory and the during2 block below.)
+CMD: xpu-smi --query-gpu=memory.used --loop=3 --count=40 -f /tmp/dpct_run/f3_smi_during_loop.txt > /tmp/dpct_run/f3_smi_loop2_rc.txt 2>&1
+XPU_LOOP2_RC=0
+   trajectory, card0 / card1 memory.used (MiB), timestamps UTC (local +11:00):
+   14:56:36  254.578125 / 246.140625   (idle, before run 4)
+   14:56:39  439.4296875 / 246.203125  (run 4 starting)
+   14:56:42  5871.98828125 / 505.30078125
+   14:56:45  22649.609375 / 505.30078125
+   14:56:48  22653.8046875 / 505.30078125   (run 4 loaded: one card loaded, ~22.6 GB)
+   14:56:51  22653.8046875 / 505.30078125
+   14:56:54  22853.8125 / 505.30078125   (decode window)
+   14:56:57  254.578125 / 246.140625   (run 4 exited at RUN4_DONE 01:56:57+11:00, memory released)
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_during2.txt 2>&1
+PGREP_DURING2_RC=0
+1   (engine process live at snapshot = during-engine-run state)
+CMD: xpu-smi --query-gpu=memory.used --id=0 > /tmp/dpct_run/f3_smi_one_during2.txt 2>&1
+XPU_ONE_DURING2_RC=0
+memory.used (MiB)
+2960.390625
+CMD: xpu-smi --query-gpu=memory.used --id=1 >> /tmp/dpct_run/f3_smi_one_during2.txt 2>&1
+XPU_DEV1_DURING2_RC=0
+505.296875
+CMD: xpu-smi > /tmp/dpct_run/f3_smi_table_during2.txt 2>&1
+XPU_TABLE_DURING2_RC=0   (table: 1498MiB / 505MiB at that second; the loop shows the full rise to ~22.6 GB)
+
+=== RUN LOG ANALYSIS (ids extracted by /tmp/dpct_run/f3_decode.py --log, golden-checked byte-identical
+=== against the prior lane's /tmp/dpct_run/w8/ids1.txt + decoded1.txt before use) ===
+per run 1..4:
+CMD: grep -n '^prompt: ' <log> > /tmp/dpct_run/f3_prompt_lines_RUNn.txt
+PROMPT_LINE_RUNn_RC=0
+CMD: grep -n '^decode' <log> > /tmp/dpct_run/f3_decode_lines_RUNn.txt
+DECODE_LINE_RUNn_RC=0
+CMD: grep -n 'CPU lane:' <log> > /tmp/dpct_run/f3_cpulane_lines_RUNn.txt
+CPULANE_RUNn_RC=0
+CMD: /tmp/tokvenv/bin/python /tmp/dpct_run/f3_decode.py --log <log> > /tmp/dpct_run/f3_decode_RUNn.txt
+DECODE_IDS_RUNn_RC=0
+CMD: sed -n 's/^batch1 decoded: //p' /tmp/dpct_run/f3_decode_RUNn.txt > /tmp/dpct_run/f3_answer_RUNn.txt
+ANSWER_RUNn_RC=0
+CMD: grep -ci paris /tmp/dpct_run/f3_answer_RUNn.txt > /tmp/dpct_run/f3_paris_RUNn.txt
+PARIS_RUNn_RC=0   (count 1 in each run)
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' <log> > /tmp/dpct_run/f3_reset_RUNn.txt
+RESET_RUNn_RC=1   (count 0 in each run = no GPU-reset pattern; RESET_RC=1 as required)
+CMD: grep -c 'ds4: CUDA0' <log> > /tmp/dpct_run/f3_dev0_RUNn.txt
+DEV0_RUNn_RC=0   (count 2 per log: load line + prompt-path line)
+CMD: grep -c 'ds4: CUDA1' <log> > /tmp/dpct_run/f3_dev1_RUNn.txt
+DEV1_RUNn_RC=1   (count 0 per log = no second device)
+CMD: diff /tmp/dpct_run/f3_answer_RUN1.txt /tmp/dpct_run/f3_answer_RUN2.txt > /tmp/dpct_run/f3_repeat2_diff.txt 2>&1
+REPEAT2_RC=0
+CMD: diff /tmp/dpct_run/f3_answer_RUN1.txt /tmp/dpct_run/f3_answer_RUN3.txt > /tmp/dpct_run/f3_repeat3_diff.txt 2>&1
+REPEAT3_RC=0
+CMD: diff /tmp/dpct_run/f3_answer_RUN1.txt /tmp/dpct_run/f3_answer_RUN4.txt > /tmp/dpct_run/f3_repeat4_diff.txt 2>&1
+REPEAT4_RC=0
+CMD: diff /tmp/dpct_run/f3_decode_RUN1.txt /tmp/dpct_run/f3_decode_RUN2.txt > /tmp/dpct_run/f3_ids2_diff.txt 2>&1
+IDS_REPEAT2_RC=0
+CMD: diff /tmp/dpct_run/f3_decode_RUN1.txt /tmp/dpct_run/f3_decode_RUN3.txt > /tmp/dpct_run/f3_ids3_diff.txt 2>&1
+IDS_REPEAT3_RC=0
+CMD: diff /tmp/dpct_run/f3_decode_RUN1.txt /tmp/dpct_run/f3_decode_RUN4.txt > /tmp/dpct_run/f3_ids4_diff.txt 2>&1
+IDS_REPEAT4_RC=0
+(all four runs: ids 671 6102 294 8760 344 2619 51119 42499, first_id 671, type3_ids: none,
+ decoded "The capital of France is **Paris**.")
+CMD: grep -q 'first_id: 11111' /tmp/dpct_run/f3_decode_RUN1.txt
+FIRST_ID_RC=1   (1 = first id is NOT the plan-literal 11111; observed 671 "The")
+CMD: grep -c 'type3_ids: none' /tmp/dpct_run/f3_decode_RUN1.txt > /tmp/dpct_run/f3_control_count.txt
+CONTROL_RC=0   (count 1 = no emitted id has token type 3 in these --n 8 runs; the EOS id 1 - type 3 per
+                token_type.json - is never reached because --n 8 truncates before it)
+
+=== ADVERSARIAL RUNS ===
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_neg.txt 2>&1
+PGREP_NEG_RC=1
+PGREP_NEG_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_garbage.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_neg.log 2>&1'
+NEG_IDS_RC=0   (/tmp/q_garbage.ids = "hello world": the run does NOT fail loudly)
+CMD: grep -n 'out of range\|parse\|error' /tmp/dpct_run/f3_neg.log > /tmp/dpct_run/f3_neg_err.txt
+NEG_ERR_GREP_RC=1   (count 0: no parse error printed; the shared parser src/dsv41/ds4_main.cpp:71 silently
+              stops at the first non-numeric token and decodes an empty context - the plan's [~] gap NEG_IDS)
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_neg2.txt 2>&1
+PGREP_NEG2_RC=1
+PGREP_NEG2_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_badid.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_neg2.log 2>&1'
+NEG2_RC=1   (/tmp/q_badid.ids = "128803 999999999")
+CMD: grep -n 'out of range' /tmp/dpct_run/f3_neg2.log > /tmp/dpct_run/f3_neg2_err.txt
+NEG2_ERR_GREP_RC=0
+"maya-ds4: token 999999999 out of range"   (the harness can fail loudly and names the offending token)
+
+=== TODO 10: default build (no SYCL flags) + full ctest ===
+CMD: cmake -S /home/maxious/Strata -B /tmp/f3_default_build -G Ninja -DSTRATA_BUILD_TESTS=ON > /tmp/dpct_run/f3_def_configure.txt 2>&1
+DEF_CONFIGURE_RC=0
+CMD: cmake --build /tmp/f3_default_build > /tmp/dpct_run/f3_def_build.txt 2>&1
+DEF_BUILD_RC=0
+CMD: ctest --test-dir /tmp/f3_default_build --output-on-failure > /tmp/dpct_run/f3_ctest.txt 2>&1
+CTEST_RC=8
+CMD: grep -n '% tests passed' /tmp/dpct_run/f3_ctest.txt > /tmp/dpct_run/f3_ctest_summary.txt
+CTEST_SUMMARY_RC=0
+120:98% tests passed, 1 tests failed out of 57   (56 passed, 1 failed)
+CMD: grep -n 'Failed' /tmp/dpct_run/f3_ctest.txt > /tmp/dpct_run/f3_ctest_failed.txt
+CTEST_FAILED_NAMES_RC=0
+111:55/57 Test #55: isa_guard_check ..................***Failed    1.57 sec
+131:	 55 - isa_guard_check (Failed)
+CMD: grep -c 'ds4_' /tmp/f3_default_build/build.ninja > /tmp/dpct_run/f3_off_grep.txt
+DSV41_OFF_GREP_RC=1   (count 0 = the default build lists no dsv41 sources)
+CMD: grep -c 'ds4_' /tmp/f3_sycl_build/build.ninja > /tmp/dpct_run/f3_on_grep.txt
+DSV41_ON_GREP_RC=0   (count 71 = the ON build lists them; todo 10's positive control)
+CMD: grep -F '***Failed' /tmp/dpct_run/f3_ctest.txt > /tmp/dpct_run/f3_failed_lines.txt
+FAILED_LINES_RC=0
+CMD: grep -oE 'Test #[0-9]+: [a-zA-Z_0-9]+' /tmp/dpct_run/f3_failed_lines.txt > /tmp/dpct_run/f3_failed_only.txt
+FAILED_ONLY_EXTRACT_RC=0
+Test #55: isa_guard_check
+CMD: grep -oE 'Test #[0-9]+: [a-zA-Z_0-9]+' /tmp/dpct_run/f3_ctl_failed_lines.txt > /tmp/dpct_run/f3_ctl_failed_only.txt
+CTL_FAILED_ONLY_EXTRACT_RC=0
+Test #55: isa_guard_check
+CMD: diff /tmp/dpct_run/f3_failed_only.txt /tmp/dpct_run/f3_ctl_failed_only.txt > /tmp/dpct_run/f3_faildiff2.txt 2>&1
+FAILDIFF2_RC=0   (the failing test names are identical to the origin/main 4b9e05a2 control's
+                  /tmp/dpct_w10_ctl_ctestout.log; an earlier FAILDIFF_RC=0 in the raw capture compared full
+                  test lists and is superseded by this failed-only comparison)
+
+CLEANUP and node:fs absence receipts are appended below after the scratch dirs are removed.
+=== CLEANUP 2026-10-27T02:09:40+11:00 ===
+CMD: rm -rf /tmp/f3_sycl_build /tmp/f3_default_build
+CLEANUP_RC=0
+CMD: bun -e node:fs existsSync('/tmp/f3_sycl_build')/existsSync('/tmp/f3_default_build')
+SYCL_EXISTS=false
+DEFAULT_EXISTS=false
+NODE_FS_ABSENT_RC=0 (0 = both scratch dirs gone per node:fs existsSync === false)

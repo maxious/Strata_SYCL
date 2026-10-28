@@ -1,0 +1,4 @@
+batch1 ids: 671 6102 294 8760 344 2619 51119 42499
+batch1 first_id: 671
+batch1 type3_ids: none
+batch1 decoded: The capital of France is **Paris**.

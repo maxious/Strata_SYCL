@@ -1,0 +1,24 @@
+=== F3 two-card manual QA: AOT SYCL build phase (task st_01a178c4) ===
+scratch build dir: /tmp/f3tc_bld_aot (fresh, created by this run; never under /home/maxious/Strata)
+configure flags: -DSTRATA_SYCL_AOT=bmg-g21 -DSTRATA_SYCL_DSV41_EXE=ON (plus the enabling base flags
+  -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_DSV41=ON without which sycl/ is not configured and the EXE
+  option is nested inside if(STRATA_SYCL_DSV41), sycl/CMakeLists.txt:257-258/:297-298)
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake -S /home/maxious/Strata -B /tmp/f3tc_bld_aot -G Ninja -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_DSV41=ON -DSTRATA_SYCL_DSV41_EXE=ON -DSTRATA_SYCL_AOT=bmg-g21 -DCMAKE_CXX_COMPILER=icpx > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-configure-aot.txt 2>&1'
+AOT_CONFIGURE_RC=0
+-- The CXX compiler identification is IntelLLVM 2026.2.0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake --build /tmp/f3tc_bld_aot > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-build-aot.txt 2>&1'
+AOT_BUILD_RC=0
+Build succeeded.
+Compilation from IR - skipping loading of FCL
+Build succeeded.
+CMD: bun -e node:fs existsSync+statSync of /tmp/f3tc_bld_aot/sycl/strata-dsv41 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-exe-receipt.txt 2>&1
+AOT_EXE_RC=0 (0 = the binary exists at /tmp/f3tc_bld_aot/sycl/strata-dsv41)
+BINARY=/tmp/f3tc_bld_aot/sycl/strata-dsv41
+EXISTS=true
+SIZE=87518488
+MTIME=2026-10-26T15:44:31.636Z
+CMD: git -C /home/maxious/Strata rev-parse HEAD > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-build-identity.txt 2>&1
+GIT_HEAD_RC=0
+4e003d34a7e0611d0da3345bb25b35ddde2aea9f
+BUILD_FLAGS=STRATA_ENABLE_SYCL=ON STRATA_SYCL_DSV41=ON STRATA_SYCL_DSV41_EXE=ON STRATA_SYCL_AOT=bmg-g21 CMAKE_CXX_COMPILER=icpx
+AOT_PHASE_DONE 2026-10-27T02:46:33+11:00

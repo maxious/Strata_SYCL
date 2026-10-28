@@ -1,0 +1,71 @@
+{
+  "schema_version": 2,
+  "active_work_id": null,
+  "works": {
+    "dsv41-trellis-sg16-perf": {
+      "work_id": "dsv41-trellis-sg16-perf",
+      "active_plan": ".omo/plans/dsv41-trellis-sg16-perf.md",
+      "plan_name": "dsv41-trellis-sg16-perf",
+      "session_ids": [
+        "senpi:01a17c08-bf50-70ac-aa86-379d3c1eba3a",
+        "senpi:01a17d02-cea9-77ce-81f2-4f6914dbf890"
+      ],
+      "status": "completed",
+      "delivery_mode": "direct",
+      "integration_base": "sycl/dsv41-sycl-support@aa09dc07",
+      "integration_branch": "dsv41-trellis-int",
+      "current_attempt_dir": ".omo/evidence/dsv41-trellis-sg16-perf",
+      "worktree_path": "/home/maxious/Strata-wt/dsv41-trellis-base",
+      "worktrees": {
+        "base": "/home/maxious/Strata-wt/dsv41-trellis-base",
+        "wave1a": "/home/maxious/Strata-wt/dsv41-trellis-w1a",
+        "wave1b": "/home/maxious/Strata-wt/dsv41-trellis-w1b"
+      },
+      "waves": {
+        "wave1": {
+          "checkboxes": [
+            "1",
+            "2"
+          ],
+          "worktree": "/home/maxious/Strata-wt/dsv41-trellis-w1a"
+        },
+        "wave2": {
+          "checkboxes": [
+            "3",
+            "4",
+            "5"
+          ],
+          "worktree": null
+        },
+        "wave3": {
+          "checkboxes": [
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "13"
+          ],
+          "worktree": null
+        },
+        "wave4": {
+          "checkboxes": [
+            "12"
+          ],
+          "worktree": null
+        },
+        "final": {
+          "checkboxes": [
+            "F1",
+            "F2",
+            "F3",
+            "F4"
+          ],
+          "worktree": null
+        }
+      },
+      "updated_at": "2026-10-28T07:50:32.746Z"
+    }
+  }
+}

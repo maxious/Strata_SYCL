@@ -1,0 +1,41 @@
+=== FULL RERUN 2026-10-27T07:12Z (G016 a1) ===
+--- header presence (C002 gate evidence) ---
+XMX_HEADER_RC=2
+MATRIX_HEADER_RC=2
+SYCL_HEADER_RC=0
+--- sg16 joint_matrix bench on Arc Pro B60, M=1 (C001/C003) ---
+device Intel(R) Arc(TM) Pro B60 Graphics, sub-group 16, M 1, 64 experts
+gate+up  N 1280 K 2560: f16 22.3 us/expert (0.3 TFLOPs), i8 11.1 us (0.6 TOPS), i8blk 17.9 us (0.4 TOPS); i8blk max err 577 of 577
+down     N 2560 K 640: f16 11.9 us/expert (0.3 TFLOPs), i8 5.9 us (0.6 TOPS), i8blk 9.2 us (0.4 TOPS); i8blk max err 241 of 241
+BENCH_M1_RC=0
+--- sg16 bench M=160 (C001) ---
+device Intel(R) Arc(TM) Pro B60 Graphics, sub-group 16, M 160, 64 experts
+gate+up  N 1280 K 2560: f16 69.5 us/expert (15.1 TFLOPs), i8 34.0 us (30.9 TOPS), i8blk 52.0 us (20.2 TOPS); i8blk max err 0.000166 of 769
+down     N 2560 K 640: f16 34.2 us/expert (15.3 TFLOPs), i8 17.7 us (29.6 TOPS), i8blk 26.8 us (19.6 TOPS); i8blk max err 4.61e-05 of 316
+BENCH_M160_RC=0
+--- libsycl runtime version (F51: version decides) ---
+
+=== C002 REPAIRED CAPTURE 2026-10-27T07:35Z (G016 a1) ===
+$ ls dpas.hpp matrix.hpp -> rc=2
+ls: cannot access '/opt/intel/oneapi/compiler/2026.2/include/oneapi/experimental/sycl_ext_oneapi_dpas.hpp': No such file or directory
+ls: cannot access '/opt/intel/oneapi/compiler/2026.2/include/oneapi/experimental/sycl_ext_oneapi_matrix.hpp': No such file or directory
+$ libsycl version + installed compiler dirs -> rc=0
+/opt/intel/oneapi/compiler/2026.2/lib/libsycl.so.9.0.0
+/opt/intel/oneapi/compiler/2026.2
+/opt/intel/oneapi/compiler/latest
+$ icpx --version -> rc=0
+Intel(R) oneAPI DPC++/C++ Compiler 2026.2.0 (2026.2.0.20261001)
+Target: x86_64-unknown-linux-gnu
+Thread model: posix
+InstalledDir: /opt/intel/oneapi/compiler/2026.2/bin/compiler
+Configuration file: /opt/intel/oneapi/compiler/2026.2/bin/compiler/../icpx.cfg
+$ search for a 2025.3-era libsycl.so.8 locally -> rc=0
+(outcome: none found)
+NOTE: no 2025.3 libsycl runtime exists on this machine; the 2025.3-fail half of C002 is evidenced externally on bmg_g31 (S6 viz single-variable experiment), not on bmg_g21. Scope label: version-gating mechanism proven; bmg_g21-specific 2025.3 failure unverified locally.
+
+=== C002 HEADER CAPTURE, CORRECTED PATHS 2026-10-27T07:38Z ===
+Legend: rc=0 means the header exists; rc=2 means ls reported not found.
+$ ls dpas.hpp matrix.hpp (correct paths under include/sycl/) -> rc=0
+-rw-r--r-- 1 root root 25012 Oct  2 04:54 /opt/intel/oneapi/compiler/2026.2/include/sycl/ext/intel/esimd/xmx/dpas.hpp
+-rw-r--r-- 1 root root   821 Oct  2 04:54 /opt/intel/oneapi/compiler/2026.2/include/sycl/ext/oneapi/matrix/matrix.hpp
+Prior rc=2 lines above used wrong paths include/oneapi/experimental/...; corrected here.

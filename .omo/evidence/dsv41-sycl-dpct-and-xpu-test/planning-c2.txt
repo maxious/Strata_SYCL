@@ -1,0 +1,14 @@
+DPCT=12
+doorbell=12
+CPU lane=16
+Paris=7
+capital of france=4
+--gpus 0,=4
+--gpus 0 =1
+ctest -R ds4=3
+STRATA_SYCL_DSV41=6
+dump-logits=4
+xpu-smi=5
+11111=4
+atomic_ref=3
+sys_store_mapped=1

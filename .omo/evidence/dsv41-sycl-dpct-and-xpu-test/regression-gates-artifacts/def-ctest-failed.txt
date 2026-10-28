@@ -1,0 +1,40 @@
+33:Unable to find executable: /home/maxious/Strata_Niko1221/build/logit_bias_test
+66:Unable to find executable: /home/maxious/Strata_Niko1221/build/gguf_reader_test
+99:Unable to find executable: /home/maxious/Strata_Niko1221/build/gguf_split_test
+132:Unable to find executable: /home/maxious/Strata_Niko1221/build/batch_read_test
+165:Unable to find executable: /home/maxious/Strata_Niko1221/build/tuning_header_arch_family_test
+198:Unable to find executable: /home/maxious/Strata_Niko1221/build/split_rules_test
+231:Unable to find executable: /home/maxious/Strata_Niko1221/build/share_rules_test
+264:Unable to find executable: /home/maxious/Strata_Niko1221/build/host_limits_test
+297:Unable to find executable: /home/maxious/Strata_Niko1221/build/arch_defaults_test
+330:Unable to find executable: /home/maxious/Strata_Niko1221/build/suffix_drafter_test
+363:Unable to find executable: /home/maxious/Strata_Niko1221/build/controller_test
+396:Unable to find executable: /home/maxious/Strata_Niko1221/build/draft_policy_test
+429:Unable to find executable: /home/maxious/Strata_Niko1221/build/message_boundary_test
+462:Unable to find executable: /home/maxious/Strata_Niko1221/build/split_ring_test
+495:Unable to find executable: /home/maxious/Strata_Niko1221/build/conv_cache_test
+528:Unable to find executable: /home/maxious/Strata_Niko1221/build/draft_kv_plan_test
+561:Unable to find executable: /home/maxious/Strata_Niko1221/build/coupled_draft_test
+594:Unable to find executable: /home/maxious/Strata_Niko1221/build/spec_prob_test
+627:Unable to find executable: /home/maxious/Strata_Niko1221/build/bf16_bits_test
+660:Unable to find executable: /home/maxious/Strata_Niko1221/build/batch_rows_test
+693:Unable to find executable: /home/maxious/Strata_Niko1221/build/batch_groups_test
+726:Unable to find executable: /home/maxious/Strata_Niko1221/build/dequant_q5_1_test
+759:Unable to find executable: /home/maxious/Strata_Niko1221/build/pool_tasks_test
+792:Unable to find executable: /home/maxious/Strata_Niko1221/build/router_dot_parity
+795:25/39 Test #25: router_dot_parity_avx ............***Failed    0.02 sec
+829:Unable to find executable: /home/maxious/Strata_Niko1221/build/iq_avx2_parity
+832:27/39 Test #27: iq_avx2_parity_iq3s_mt1 ..........***Failed    0.02 sec
+866:Unable to find executable: /home/maxious/Strata_Niko1221/build/iq_avx1_parity
+899:Unable to find executable: /home/maxious/Strata_Niko1221/build/q8k_quant_parity
+902:30/39 Test #30: q8k_quant_parity_avx .............***Failed    0.02 sec
+936:Unable to find executable: /home/maxious/Strata_Niko1221/build/pool_affinity_test
+969:Unable to find executable: /home/maxious/Strata_Niko1221/build/expert_multi_test
+1002:Unable to find executable: /home/maxious/Strata_Niko1221/build/q2_bitplane_parity
+1035:Unable to find executable: /home/maxious/Strata_Niko1221/build/expert_parity
+1068:Unable to find executable: /home/maxious/Strata_Niko1221/build/pool_test
+1101:Unable to find executable: /home/maxious/Strata_Niko1221/build/pool_stress
+1104:37/39 Test #37: isa_guard_check ..................***Failed    0.03 sec
+1138:Unable to find executable: /home/maxious/Strata_Niko1221/build/direct_file_async_test
+1171:Unable to find executable: /home/maxious/Strata_Niko1221/build/aux_cpus_test
+1174:0% tests passed, 39 tests failed out of 39

@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "skipped": false,
+  "report": "/home/maxious/Strata/.omo/ulw-research/20261027-173423/report.html",
+  "format": "html",
+  "artifact_sha256": "4c5b43e3b543c2c2ab779fb938da9e49abae4c73b03926a3814bdeaf364c6d7d",
+  "pairs_sha256": "9ab2255399d9beca9c8962239b02f3f868a1ce9a93c25a94f4c7b53a78d644eb",
+  "counts": {
+    "total": 8,
+    "force_strong": 0,
+    "quote": 8,
+    "claim": 0,
+    "translation": 0
+  },
+  "verdict_schema": {
+    "model_tier": [
+      "cheap",
+      "strong"
+    ],
+    "verdict": [
+      "drift",
+      "ok"
+    ],
+    "drift_kind": [
+      "subject_changed",
+      "scope_widened",
+      "hedge_dropped",
+      "certainty_added",
+      "causality_added",
+      "direction_flipped",
+      "population_changed",
+      "evidence_grade_raised",
+      "other"
+    ],
+    "required": [
+      "pair_id",
+      "verdict"
+    ],
+    "drift_required": [
+      "drift_kind",
+      "fragment",
+      "source_fragment"
+    ]
+  },
+  "pairs": [
+    {
+      "pair_id": "P1",
+      "kind": "quote",
+      "sentence_key": "verdict#F1,F4",
+      "fact_ids": [
+        "F1"
+      ],
+      "quote": "gate+up  N 1280 K 2560: f16 22.2 us/expert (0.3 TFLOPs), i8 11.1 us (0.6 TOPS), i8blk 17.9 us (0.4 TOPS); i8blk max err 577 of 577",
+      "sentence": "The tile path measures 22.2 us/expert on gate+up and 11.2 us/expert on down, at the memory floor for these expert shapes.",
+      "source_lang": "en",
+      "report_lang": "en",
+      "force_strong": false
+    },
+    {
+      "pair_id": "P2",
+      "kind": "quote",
+      "sentence_key": "verdict#F1,F4",
+      "fact_ids": [
+        "F4"
+      ],
+      "quote": "down     N 2560 K 640: f16 11.2 us/expert (0.3 TFLOPs), i8 5.9 us (0.6 TOPS), i8blk 9.2 us (0.4 TOPS); i8blk max err 241 of 241",
+      "sentence": "The tile path measures 22.2 us/expert on gate+up and 11.2 us/expert on down, at the memory floor for these expert shapes.",
+      "source_lang": "en",
+      "report_lang": "en",
+      "force_strong": false
+    },
+    {
+      "pair_id": "P3",
+      "kind": "quote",
+      "sentence_key": "verdict#F20,F21,F22",
+      "fact_ids": [
+        "F20",
+        "F21",
+        "F22"
+      ],
+      "quote": "gate+up  N 1280 K 2560: f16 69.4 us/expert (15.1 TFLOPs), i8 34.0 us (30.9 TOPS), i8blk 52.0 us (20.1 TOPS); i8blk max err 0.000166 of 769",
+      "sentence": "The port worth doing is the fused-gemm trellis for batched shapes, where tiles pay off [S4]: 69.4 us (), 34.0 us (), 52.0 us () for gate+up at  [S2].",
+      "source_lang": "en",
+      "report_lang": "en",
+      "force_strong": false
+    },
+    {
+      "pair_id": "P4",
+      "kind": "quote",
+      "sentence_key": "what-decides-support#Q4",
+      "fact_ids": [
+        "Q4"
+      ],
+      "quote": "The crash is decided by one variable only: the (DPC++ runtime) version.",
+      "sentence": "The crash is decided by one variable only: the (DPC++ runtime) version.",
+      "source_lang": "en",
+      "report_lang": "en",
+      "force_strong": false
+    },
+    {
+      "pair_id": "P5",
+      "kind": "quote",
+      "sentence_key": "limits#F13,F14",
+      "fact_ids": [
+        "F13"
+      ],
+      "quote": "- artifact-one-card-1: Full execution log showing prompt 7.92 tok/s, decode 1.65 tok/s",
+      "sentence": "End-to-end on the repo build [S3]: prompt 7.92 tok/s on one card and 38.09 tok/s on two.",
+      "source_lang": "en",
+      "report_lang": "en",
+      "force_strong": false
+    },
+    {
+      "pair_id": "P6",
+      "kind": "quote",
+      "sentence_key": "limits#F13,F14",
+      "fact_ids": [
+        "F14"
+      ],
+      "quote": "- artifact-two-card-2-2: Improved performance (prompt 38.09 tok/s, decode 12.08 tok/s)",
+      "sentence": "End-to-end on the repo build [S3]: prompt 7.92 tok/s on one card and 38.09 tok/s on two.",
+      "source_lang": "en",
+      "report_lang": "en",
+      "force_strong": false
+    },
+    {
+      "pair_id": "P7",
+      "kind": "quote",
+      "sentence_key": "limits#Q1",
+      "fact_ids": [
+        "Q1"
+      ],
+      "quote": "- artifact-one-card-1: Full execution log showing prompt 7.92 tok/s, decode 1.65 tok/s",
+      "sentence": "- artifact-one-card-1: Full execution log showing prompt 7.92 tok/s, decode 1.65 tok/s [S3]",
+      "source_lang": "en",
+      "report_lang": "en",
+      "force_strong": false
+    },
+    {
+      "pair_id": "P8",
+      "kind": "quote",
+      "sentence_key": "limits#Q2",
+      "fact_ids": [
+        "Q2"
+      ],
+      "quote": "- artifact-two-card-2-2: Improved performance (prompt 38.09 tok/s, decode 12.08 tok/s)",
+      "sentence": "- artifact-two-card-2-2: Improved performance (prompt 38.09 tok/s, decode 12.08 tok/s) [S3]",
+      "source_lang": "en",
+      "report_lang": "en",
+      "force_strong": false
+    }
+  ]
+}

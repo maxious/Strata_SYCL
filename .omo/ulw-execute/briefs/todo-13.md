@@ -1,0 +1,13 @@
+ROLE: you are the executor of this unit; do it yourself; do NOT delegate.
+UNIT: plan todo 13 - trellis A-stage feasibility probe (measurement only).
+WORKTREE: supplied in the dispatch message. NEVER touch /home/maxious/Strata.
+FILES IN SCOPE: one new probe source under sycl/src/dsv41/ plus, if strictly needed, an opt-in bench target in sycl/CMakeLists.txt. Do NOT edit src/dsv41/ds4_tq_cpu.cpp, do NOT change the is_tq dispatch in ds4_iq.dp.cpp.
+READ FIRST: trellis block shape ds4_tq.dp.cpp:46-56 and 63-80, the tq portable-FMA lane ds4_tq.dp.cpp:770-792 (no joint_matrix in that file), WMMA HIP-only note 23-25, is_tq routing ds4_iq.dp.cpp:2266/2282/2297-2307, the CPU reference src/dsv41/ds4_tq_cpu.cpp (linked at sycl/CMakeLists.txt:302 - read-only), block types TQK6/TQK7/TQK5X/TQK4X/TQK5T/TQK4T at ds4_iq.dp.hpp:30.
+DO: measure whether a joint_matrix 16x16x16 A-stage tile can serve the trellis types, whose blocks are 128 values {fp16 d + 4K stream bytes} decoded through 15-bit state windows - a different block shape from the 32-value contract. Deliver a measured us comparison of the current tq:: lane against a probe tile and a written contract note. Adoption returns to the approval gate; do not wire it up.
+VERIFY: probe build rc=0 and completed runs with us lines for both lanes captured; the decision note states the measured winner or "no adoption".
+CONSTRAINTS: every build/run inside bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; <command>'. Report only un-piped exit codes, each on its own named RC line. NEVER state a throughput number unless a prompt actually completed - a number from a failed or partial run is a defect. The two B60 cards are exclusive: this unit runs alone, it must stop any server it started before returning (strata launch --stop, PID check) and record the teardown receipt.
+MANUAL QA: the real surface is a completed API prompt. Start the server, send one fixed prompt via curl -i to the OpenAI-compatible endpoint at temperature 0, capture the HTTP status and the completion text plus the engine's own tok/s line into the evidence log. A dry run or a plan printout is NOT evidence.
+CLEANUP: stop every server/process you started, remove temp dirs, and record the teardown receipts.
+ARTIFACT: /home/maxious/Strata/.omo/evidence/dsv41-trellis-sg16-perf/task-13-dsv41-trellis-sg16-perf.log ending with VERDICT PASS or VERDICT FAIL.
+COMMIT: allowlist only the probe file(s), title '[Benchmark] trellis A-stage feasibility probe'. Do not push.
+RETURN a DoneClaim JSON: task, changed_files, tests, manual_qa, cleanup, risks.

@@ -1,0 +1,194 @@
+ARK XPU — The Debug Journey
+How an ARK m>1 WOQ GEMM "no matrix hardware on the target device" crash on a Battlemage B70 was chased through three wrong turns to a single-variable root cause — and then proven on the real production kernel, torch-free.
+Node root@10.239.98.43 (b70-pc6)
+Device bmg_g31
+L0 driver (fixed throughout)
+Symptom m>1 WOQ GEMM throws at inference
+Root cause matrix arch table
+Span 2026-06-03 → 06-05
+✓ TL;DR
+The crash is decided by one variable only: the (DPC++ runtime) version. Holding the GPU, kernel driver, and IGC all byte-identical, swapping from oneAPI 2025.3.2 () to a 2026 build () flips the result FAIL → PASS.
+The 2025.3 runtime's compiled matrix table pre-dates the entry, so it refuses to advertise on this device even though the silicon, driver, and IGC are all capable.
+Verified on ARK's actual production kernel ( via a torch-free harness), not just a probe. The fix: ship/link a DPC++ runtime whose table includes .
+The journey
+expand all
+The symptom & what worked
+Theory 1 — "missing SPIR-V extension / TLA-off build bug" wrong
+Theory 2 — "IGC is too old" partial
+Theory 3 — "the GPU lacks matrix hardware" wrong
+Root cause — "it's libsycl" correct
+Route B — proving it on the real kernel verified
+Why vllm-xpu-kernels never hits this
+The fix & escape hatches
+The symptom w4g128 quantize + repack succeed; the crash is at inference, m>1 only.
+The ARK backend UT quantizes to w4g128, writes shards, and repacks to XPU — all fine. It dies inside :
+Two early facts shaped everything after:
+The hardware is fine. PyTorch's own XMX matmul (/, which routes through oneDNN) works on this exact device. So the silicon and L0 driver expose DPAS.
+Only m>1 fails. The m==1 decode/GEMV path works — BesTLA's GEMV does not use . The crash is specifically ARK's hand-written int8 tile (M8×N16×K32, sub_group=16), reached via for m>1 / prefill.
+1
+"The was built without the matrix-MMA SPIR-V extension"
+2026-06-03 · initial analysis
+✗ DISPROVEN — byte-identical binaries
+▶
+The reasoning
+Inspecting the shipped wheel, the device image contained but was missing and — symptoms of an build. In the matrix-MMA extension is declared only inside (gated on ), yet uses unconditionally. Conclusion at the time: a TLA-off build emits ops without declaring the capability → runtime can't lower them → throw.
+Why it's wrong
+The C++ API already emits by default. A built with the explicit flag is byte-identical to one built without it — the extra flag adds a different, unused extension. Both fail identically. No build flag, and no rebuild, changes the outcome.
+Lesson
+The string lives in (the DPC++ runtime) — not in ARK and not in the driver. That was the first clue the real determinant was the runtime, not the build. It took two more turns to act on it.
+2
+"The Intel Graphics Compiler (IGC) is too old"
+2026-06-03 · first correction
+◐ A REAL CORRELATION — but a co-varying proxy
+▶
+The reasoning
+The same wheel binary PASSES on one node and FAILS on another. The visible difference was IGC — the JIT compiler that lowers SPIR-V into Battlemage DPAS:
+PASS node
+FAIL node
+Wheel md5
+(identical)
+libsycl
+(identical)
+IGC
+2.34.4
+2.32.7
+Device
+Arc Pro B60
+Graphics 0xe223 (B70)
+Result
+PASSED
+FAILED
+The conclusion — "upgrade to ≥ 2.34" — was acted on as THE FIX.
+Why it's only partial
+This compared two different physical machines. Hardware (B60 vs B70) and the rest of the software stack co-varied with IGC. The correlation was real but not isolated — the B60 node also had a newer everything. IGC turned out to be a passenger, not the driver. (Theory 4 later holds IGC fixed at 2.32.7 and still flips the result.)
+Lesson
+A version table across two machines proves correlation, not causation. The only way to assign cause is to change one variable on one machine. That discipline is what finally cracked it.
+3
+"This GPU silicon doesn't advertise the matrix aspect"
+2026-06-05 · second correction
+✗ DISPROVEN — same driver + newer libsycl makes the aspect appear
+▶
+The reasoning
+To isolate IGC, a single-machine container experiment held the GPU fixed and upgraded only the user-space IGC/runtime (via passthrough):
+Environment
+IGC
+runtime / L0
+jm_probe
+Host (bare metal)
+2.32.7
+26.14 / 1.15.37833
+NO
+FAIL
+Container
+2.34.4
+26.18 / 1.15.38308
+NO
+FAIL
+IGC 2.34.4 — the supposed "PASS" version from Theory 2 — still failed here. Since the device reported in , the new conclusion was: the B70 () silicon/driver simply does not advertise the aspect, full stop.
+Why it's wrong
+This correctly killed Theory 2 (IGC isn't sufficient) but drew the wrong new conclusion. The container only swaps user-space IGC + compute-runtime — it does not swap . The query is answered by , which was 2025.3 in both rows. So this table actually proves "IGC doesn't matter" and accidentally held the true culprit fixed. The "missing aspect" was real — but it was refusing to report it, not the hardware lacking it.
+Lesson
+When you isolate variable A and the bug persists, make sure variable B (here ) didn't silently stay fixed too. "The aspect is NO" is an observation; "the hardware can't" is an inference — and the inference was unsupported.
+4
+Root cause: it's — its matrix arch table is stale
+2026-06-05 · definitive (CORRECTION #3)
+✓ PROVEN — one machine, only libsycl changed
+▶
+The single-variable experiment
+Same physical GPU, same kernel driver (), same IGC (2.32.7). The only thing swapped is , by rebuilding the same / sources against each runtime:
+libsycl runtime
+GPU / driver
+IGC
+jm_probe
+oneAPI 2025.3.2 .so.8
+0xe223 / 1.15.37833
+2.32.7
+YES
+NO
+FAIL
+nightly 2026-06-04 .so.9
+0xe223 / 1.15.37833
+2.32.7
+YES
+YES
+OK
+Driver and IGC are byte-identical across rows. Only differs → the result flips.
+The smoking gun — a self-contradiction inside 2025.3
+On 2025.3 the runtime simultaneously reports:
+But upstream defines:
+If is YES, then matrix must be YES — unless the compiled table in that predates the entry. The 2025.3 table does; the nightly's includes it.
+Why can't see it
+The string is present in both files — it backs . Only the runtime query, which walks the compiled matrix table, distinguishes them. You cannot grep your way to this; you have to run the query.
+Why the earlier theories were all passengers
+Theory 3 (silicon): same driver + newer libsycl → the aspect appears and the DPAS tile runs. The hardware was always capable.
+Theory 2 (IGC): IGC stayed 2.32.7 across the PASS row. IGC 2.34 "fixing" it elsewhere was a co-varying proxy — those machines also had newer libsycl. Once libsycl advertises the aspect, IGC 2.32.7 lowers the tile fine.
+Theory 1 (build flags): byte-identical device images; the gate is entirely runtime-side.
+✓
+Route B — proving it on ARK's real kernel, torch-free
+2026-06-05 · end-to-end verification
+✓ VERIFIED — production IGemmDQCore, not a probe
+▶
+Why a torch-free harness was needed
+The full ARK UT links , which hard-pins and links . torch and ARK share one process, so the 2026 runtime () can't be swapped under the torch UT without also rebuilding torch. The probe proved the mechanism, but skeptics could ask: is ARK's actual kernel really the same path?
+The harness
+— where lives — is header-only SYCL, no oneDNN, no torch. A ~70-line calls the exact launch that instantiates:
+Same source, same GPU/driver/IGC — only libsycl differs
+Harness build
+libsycl runtime
+Result
+, → links
+2025.3.2 venv .so.8
+FAIL — "no matrix hardware … joint_matrix is not supported"
+nightly 2026-06-04 → links
+2026.0.0 .so.9
+PASS — kernel launched & completed
+Device (bmg_g31) and L0 driver identical across both rows. This is the production joint_matrix kernel, not a proxy.
+Build flags that matter (learned the hard way)
+— the header uses C++20 dependent-type syntax ().
+— gates the entire body (it's 'd out otherwise).
+, include — pulls for (including alone misses it).
+The one remaining blocker
+True in-process e2e (Route A) needs a 2026-based torch + ARK rebuilt against , because the SONAME bump (→) means no drop-in works. The kernel itself is proven fixed; only the torch packaging pin stands between here and a green UT.
+Why vllm-xpu-kernels never hits this Same DPAS hardware, two different compiler paths — only one goes through the broken stage.
+A recurring confusion: "vllm also uses XMX/DPAS on the same hardware — why does it work?" There are two ways to reach the same Battlemage DPAS unit, through different compiler stages:
+✗ ARK IGemmDQCore — the failing path
+C++ +
+high-level matrix abstraction
+↓
+libsycl emits SPIR-V
+↓
+*** runtime libsycl gate ***
+2025.3 table lacks bmg_g31 →
+refuses to advertise matrix →
+THROWS before any IGC lowering
+↓
+dpas on XMX (only on a runtime whose table has bmg_g31)
+✓ vllm sycl-tla XE_DPAS_TT — immune
+C++
+↓
+lowers to INLINE ASSEMBLY:
+the dpas is hand-written in the header
+↓
+no joint_matrix op, no capability,
+nothing for the runtime to gate
+↓
+IGC just assembles the given dpas
+(any runtime / any IGC works)
+Two independent reasons vllm-xpu-kernels is unaffected — either alone is sufficient, and it has both:
+No anywhere. over the whole tree returns zero hits. Its matrix math is CuTe (inline asm) or oneDNN — neither emits the gated op. (Same reason torch bf16/f16 matmul, which is oneDNN, already passes on the FAIL node.)
+AOT compilation. vllm builds with — device code is lowered to real Battlemage ISA at build time. ARK ships generic SPIR-V () and JIT-lowers on the deploy node — which is exactly why the deploy node's runtime became the deciding factor.
+The fix & escape hatches
+PRIMARY
+Upgrade the runtime
+Ship/link a DPC++ whose matrix includes (intel/llvm ≥ 2026-06-04, or a oneAPI release carrying that entry). No driver, IGC, or hardware change needed.
+Caveat: SONAME bumps →; the consumer (torch-xpu / ARK ) must be built against it — no drop-in.
+ESCAPE
+Route m>1 through oneDNN
+Send w4 m>1 through the oneDNN fp GEMM instead of the fused int8 kernel. oneDNN does its own DPAS codegen and never touches the gated op.
+ESCAPE
+Inline-dpas kernel
+Replace ARK's int8 kernel with hand-written asm (à la ), or switch ARK to AOT (). Keeps fused int8 perf, removes all runtime sensitivity.
+Reproduce
+Artifacts. Finding doc: · Harness source: · Build/run scripts on node under .
+Environment. root@10.239.98.43 (b70-pc6) · Intel Graphics 0xe223 (Battlemage, bmg_g31, 256 EU) · L0 · (Python 3.13, torch 2.11.0+xpu).
+Refs: intel-graphics-compiler releases · compute-runtime releases. Generated 2026-06-05 from the debug session.

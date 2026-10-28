@@ -1,0 +1,1 @@
+113:  VIOLATION strata::kernels::cpu::iq512x_rows(int, unsigned char const*, unsigned long, int, void const* const*, int, float* const*, int, int) (777 wide instructions, first vmovq): wide-ISA code in an unlisted public function [iq_avx512.cpp.o]

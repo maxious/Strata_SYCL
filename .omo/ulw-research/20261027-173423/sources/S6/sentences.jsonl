@@ -1,0 +1,246 @@
+{"sid":"S6:s1","start":0,"end":27,"text":"ARK XPU — The Debug Journey"}
+{"sid":"S6:s2","start":28,"end":249,"text":"How an ARK m>1 WOQ GEMM \"no matrix hardware on the target device\" crash on a Battlemage B70 was chased through three wrong turns to a single-variable root cause — and then proven on the real production kernel, torch-free."}
+{"sid":"S6:s3","start":250,"end":282,"text":"Node root@10.239.98.43 (b70-pc6)"}
+{"sid":"S6:s4","start":283,"end":297,"text":"Device bmg_g31"}
+{"sid":"S6:s5","start":298,"end":326,"text":"L0 driver (fixed throughout)"}
+{"sid":"S6:s6","start":327,"end":367,"text":"Symptom m>1 WOQ GEMM throws at inference"}
+{"sid":"S6:s7","start":368,"end":396,"text":"Root cause matrix arch table"}
+{"sid":"S6:s8","start":397,"end":420,"text":"Span 2026-06-03 → 06-05"}
+{"sid":"S6:s9","start":421,"end":428,"text":"✓ TL;DR"}
+{"sid":"S6:s10","start":429,"end":500,"text":"The crash is decided by one variable only: the (DPC++ runtime) version."}
+{"sid":"S6:s11","start":501,"end":642,"text":"Holding the GPU, kernel driver, and IGC all byte-identical, swapping from oneAPI 2025.3.2 () to a 2026 build () flips the result FAIL → PASS."}
+{"sid":"S6:s12","start":643,"end":806,"text":"The 2025.3 runtime's compiled matrix table pre-dates the entry, so it refuses to advertise on this device even though the silicon, driver, and IGC are all capable."}
+{"sid":"S6:s13","start":807,"end":896,"text":"Verified on ARK's actual production kernel ( via a torch-free harness), not just a probe."}
+{"sid":"S6:s14","start":897,"end":954,"text":"The fix: ship/link a DPC++ runtime whose table includes ."}
+{"sid":"S6:s15","start":955,"end":966,"text":"The journey"}
+{"sid":"S6:s16","start":967,"end":977,"text":"expand all"}
+{"sid":"S6:s17","start":978,"end":1003,"text":"The symptom & what worked"}
+{"sid":"S6:s18","start":1004,"end":1067,"text":"Theory 1 — \"missing SPIR-V extension / TLA-off build bug\" wrong"}
+{"sid":"S6:s19","start":1068,"end":1103,"text":"Theory 2 — \"IGC is too old\" partial"}
+{"sid":"S6:s20","start":1104,"end":1152,"text":"Theory 3 — \"the GPU lacks matrix hardware\" wrong"}
+{"sid":"S6:s21","start":1153,"end":1188,"text":"Root cause — \"it's libsycl\" correct"}
+{"sid":"S6:s22","start":1189,"end":1237,"text":"Route B — proving it on the real kernel verified"}
+{"sid":"S6:s23","start":1238,"end":1274,"text":"Why vllm-xpu-kernels never hits this"}
+{"sid":"S6:s24","start":1275,"end":1299,"text":"The fix & escape hatches"}
+{"sid":"S6:s25","start":1300,"end":1382,"text":"The symptom w4g128 quantize + repack succeed; the crash is at inference, m>1 only."}
+{"sid":"S6:s26","start":1383,"end":1468,"text":"The ARK backend UT quantizes to w4g128, writes shards, and repacks to XPU — all fine."}
+{"sid":"S6:s27","start":1469,"end":1485,"text":"It dies inside :"}
+{"sid":"S6:s28","start":1486,"end":1526,"text":"Two early facts shaped everything after:"}
+{"sid":"S6:s29","start":1527,"end":1548,"text":"The hardware is fine."}
+{"sid":"S6:s30","start":1549,"end":1634,"text":"PyTorch's own XMX matmul (/, which routes through oneDNN) works on this exact device."}
+{"sid":"S6:s31","start":1635,"end":1676,"text":"So the silicon and L0 driver expose DPAS."}
+{"sid":"S6:s32","start":1677,"end":1692,"text":"Only m>1 fails."}
+{"sid":"S6:s33","start":1693,"end":1755,"text":"The m==1 decode/GEMV path works — BesTLA's GEMV does not use ."}
+{"sid":"S6:s34","start":1756,"end":1869,"text":"The crash is specifically ARK's hand-written int8 tile (M8×N16×K32, sub_group=16), reached via for m>1 / prefill."}
+{"sid":"S6:s35","start":1870,"end":1871,"text":"1"}
+{"sid":"S6:s36","start":1872,"end":1927,"text":"\"The was built without the matrix-MMA SPIR-V extension\""}
+{"sid":"S6:s37","start":1928,"end":1957,"text":"2026-06-03 · initial analysis"}
+{"sid":"S6:s38","start":1958,"end":1995,"text":"✗ DISPROVEN — byte-identical binaries"}
+{"sid":"S6:s39","start":1996,"end":1997,"text":"▶"}
+{"sid":"S6:s40","start":1998,"end":2011,"text":"The reasoning"}
+{"sid":"S6:s41","start":2012,"end":2112,"text":"Inspecting the shipped wheel, the device image contained but was missing and — symptoms of an build."}
+{"sid":"S6:s42","start":2113,"end":2203,"text":"In the matrix-MMA extension is declared only inside (gated on ), yet uses unconditionally."}
+{"sid":"S6:s43","start":2204,"end":2322,"text":"Conclusion at the time: a TLA-off build emits ops without declaring the capability → runtime can't lower them → throw."}
+{"sid":"S6:s44","start":2323,"end":2337,"text":"Why it's wrong"}
+{"sid":"S6:s45","start":2338,"end":2375,"text":"The C++ API already emits by default."}
+{"sid":"S6:s46","start":2376,"end":2501,"text":"A built with the explicit flag is byte-identical to one built without it — the extra flag adds a different, unused extension."}
+{"sid":"S6:s47","start":2502,"end":2524,"text":"Both fail identically."}
+{"sid":"S6:s48","start":2525,"end":2576,"text":"No build flag, and no rebuild, changes the outcome."}
+{"sid":"S6:s49","start":2577,"end":2583,"text":"Lesson"}
+{"sid":"S6:s50","start":2584,"end":2659,"text":"The string lives in (the DPC++ runtime) — not in ARK and not in the driver."}
+{"sid":"S6:s51","start":2660,"end":2736,"text":"That was the first clue the real determinant was the runtime, not the build."}
+{"sid":"S6:s52","start":2737,"end":2773,"text":"It took two more turns to act on it."}
+{"sid":"S6:s53","start":2774,"end":2775,"text":"2"}
+{"sid":"S6:s54","start":2776,"end":2822,"text":"\"The Intel Graphics Compiler (IGC) is too old\""}
+{"sid":"S6:s55","start":2823,"end":2852,"text":"2026-06-03 · first correction"}
+{"sid":"S6:s56","start":2853,"end":2898,"text":"◐ A REAL CORRELATION — but a co-varying proxy"}
+{"sid":"S6:s57","start":2899,"end":2900,"text":"▶"}
+{"sid":"S6:s58","start":2901,"end":2914,"text":"The reasoning"}
+{"sid":"S6:s59","start":2915,"end":2977,"text":"The same wheel binary PASSES on one node and FAILS on another."}
+{"sid":"S6:s60","start":2978,"end":3068,"text":"The visible difference was IGC — the JIT compiler that lowers SPIR-V into Battlemage DPAS:"}
+{"sid":"S6:s61","start":3069,"end":3078,"text":"PASS node"}
+{"sid":"S6:s62","start":3079,"end":3088,"text":"FAIL node"}
+{"sid":"S6:s63","start":3089,"end":3098,"text":"Wheel md5"}
+{"sid":"S6:s64","start":3099,"end":3110,"text":"(identical)"}
+{"sid":"S6:s65","start":3111,"end":3118,"text":"libsycl"}
+{"sid":"S6:s66","start":3119,"end":3130,"text":"(identical)"}
+{"sid":"S6:s67","start":3131,"end":3134,"text":"IGC"}
+{"sid":"S6:s68","start":3135,"end":3141,"text":"2.34.4"}
+{"sid":"S6:s69","start":3142,"end":3148,"text":"2.32.7"}
+{"sid":"S6:s70","start":3149,"end":3155,"text":"Device"}
+{"sid":"S6:s71","start":3156,"end":3167,"text":"Arc Pro B60"}
+{"sid":"S6:s72","start":3168,"end":3189,"text":"Graphics 0xe223 (B70)"}
+{"sid":"S6:s73","start":3190,"end":3196,"text":"Result"}
+{"sid":"S6:s74","start":3197,"end":3203,"text":"PASSED"}
+{"sid":"S6:s75","start":3204,"end":3210,"text":"FAILED"}
+{"sid":"S6:s76","start":3211,"end":3274,"text":"The conclusion — \"upgrade to ≥ 2.34\" — was acted on as THE FIX."}
+{"sid":"S6:s77","start":3275,"end":3296,"text":"Why it's only partial"}
+{"sid":"S6:s78","start":3297,"end":3343,"text":"This compared two different physical machines."}
+{"sid":"S6:s79","start":3344,"end":3420,"text":"Hardware (B60 vs B70) and the rest of the software stack co-varied with IGC."}
+{"sid":"S6:s80","start":3421,"end":3506,"text":"The correlation was real but not isolated — the B60 node also had a newer everything."}
+{"sid":"S6:s81","start":3507,"end":3556,"text":"IGC turned out to be a passenger, not the driver."}
+{"sid":"S6:s82","start":3557,"end":3627,"text":"(Theory 4 later holds IGC fixed at 2.32.7 and still flips the result.)"}
+{"sid":"S6:s83","start":3628,"end":3634,"text":"Lesson"}
+{"sid":"S6:s84","start":3635,"end":3705,"text":"A version table across two machines proves correlation, not causation."}
+{"sid":"S6:s85","start":3706,"end":3776,"text":"The only way to assign cause is to change one variable on one machine."}
+{"sid":"S6:s86","start":3777,"end":3820,"text":"That discipline is what finally cracked it."}
+{"sid":"S6:s87","start":3821,"end":3822,"text":"3"}
+{"sid":"S6:s88","start":3823,"end":3877,"text":"\"This GPU silicon doesn't advertise the matrix aspect\""}
+{"sid":"S6:s89","start":3878,"end":3908,"text":"2026-06-05 · second correction"}
+{"sid":"S6:s90","start":3909,"end":3974,"text":"✗ DISPROVEN — same driver + newer libsycl makes the aspect appear"}
+{"sid":"S6:s91","start":3975,"end":3976,"text":"▶"}
+{"sid":"S6:s92","start":3977,"end":3990,"text":"The reasoning"}
+{"sid":"S6:s93","start":3991,"end":4127,"text":"To isolate IGC, a single-machine container experiment held the GPU fixed and upgraded only the user-space IGC/runtime (via passthrough):"}
+{"sid":"S6:s94","start":4128,"end":4139,"text":"Environment"}
+{"sid":"S6:s95","start":4140,"end":4143,"text":"IGC"}
+{"sid":"S6:s96","start":4144,"end":4156,"text":"runtime / L0"}
+{"sid":"S6:s97","start":4157,"end":4165,"text":"jm_probe"}
+{"sid":"S6:s98","start":4166,"end":4183,"text":"Host (bare metal)"}
+{"sid":"S6:s99","start":4184,"end":4190,"text":"2.32.7"}
+{"sid":"S6:s100","start":4191,"end":4209,"text":"26.14 / 1.15.37833"}
+{"sid":"S6:s101","start":4210,"end":4212,"text":"NO"}
+{"sid":"S6:s102","start":4213,"end":4217,"text":"FAIL"}
+{"sid":"S6:s103","start":4218,"end":4227,"text":"Container"}
+{"sid":"S6:s104","start":4228,"end":4234,"text":"2.34.4"}
+{"sid":"S6:s105","start":4235,"end":4253,"text":"26.18 / 1.15.38308"}
+{"sid":"S6:s106","start":4254,"end":4256,"text":"NO"}
+{"sid":"S6:s107","start":4257,"end":4261,"text":"FAIL"}
+{"sid":"S6:s108","start":4262,"end":4337,"text":"IGC 2.34.4 — the supposed \"PASS\" version from Theory 2 — still failed here."}
+{"sid":"S6:s109","start":4338,"end":4467,"text":"Since the device reported in , the new conclusion was: the B70 () silicon/driver simply does not advertise the aspect, full stop."}
+{"sid":"S6:s110","start":4468,"end":4482,"text":"Why it's wrong"}
+{"sid":"S6:s111","start":4483,"end":4571,"text":"This correctly killed Theory 2 (IGC isn't sufficient) but drew the wrong new conclusion."}
+{"sid":"S6:s112","start":4572,"end":4650,"text":"The container only swaps user-space IGC + compute-runtime — it does not swap ."}
+{"sid":"S6:s113","start":4651,"end":4708,"text":"The query is answered by , which was 2025.3 in both rows."}
+{"sid":"S6:s114","start":4709,"end":4805,"text":"So this table actually proves \"IGC doesn't matter\" and accidentally held the true culprit fixed."}
+{"sid":"S6:s115","start":4806,"end":4900,"text":"The \"missing aspect\" was real — but it was refusing to report it, not the hardware lacking it."}
+{"sid":"S6:s116","start":4901,"end":4907,"text":"Lesson"}
+{"sid":"S6:s117","start":4908,"end":5018,"text":"When you isolate variable A and the bug persists, make sure variable B (here ) didn't silently stay fixed too."}
+{"sid":"S6:s118","start":5019,"end":5130,"text":"\"The aspect is NO\" is an observation; \"the hardware can't\" is an inference — and the inference was unsupported."}
+{"sid":"S6:s119","start":5131,"end":5132,"text":"4"}
+{"sid":"S6:s120","start":5133,"end":5182,"text":"Root cause: it's — its matrix arch table is stale"}
+{"sid":"S6:s121","start":5183,"end":5222,"text":"2026-06-05 · definitive (CORRECTION #3)"}
+{"sid":"S6:s122","start":5223,"end":5267,"text":"✓ PROVEN — one machine, only libsycl changed"}
+{"sid":"S6:s123","start":5268,"end":5269,"text":"▶"}
+{"sid":"S6:s124","start":5270,"end":5300,"text":"The single-variable experiment"}
+{"sid":"S6:s125","start":5301,"end":5361,"text":"Same physical GPU, same kernel driver (), same IGC (2.32.7)."}
+{"sid":"S6:s126","start":5362,"end":5444,"text":"The only thing swapped is , by rebuilding the same / sources against each runtime:"}
+{"sid":"S6:s127","start":5445,"end":5460,"text":"libsycl runtime"}
+{"sid":"S6:s128","start":5461,"end":5473,"text":"GPU / driver"}
+{"sid":"S6:s129","start":5474,"end":5477,"text":"IGC"}
+{"sid":"S6:s130","start":5478,"end":5486,"text":"jm_probe"}
+{"sid":"S6:s131","start":5487,"end":5508,"text":"oneAPI 2025.3.2 .so.8"}
+{"sid":"S6:s132","start":5509,"end":5528,"text":"0xe223 / 1.15.37833"}
+{"sid":"S6:s133","start":5529,"end":5535,"text":"2.32.7"}
+{"sid":"S6:s134","start":5536,"end":5539,"text":"YES"}
+{"sid":"S6:s135","start":5540,"end":5542,"text":"NO"}
+{"sid":"S6:s136","start":5543,"end":5547,"text":"FAIL"}
+{"sid":"S6:s137","start":5548,"end":5572,"text":"nightly 2026-06-04 .so.9"}
+{"sid":"S6:s138","start":5573,"end":5592,"text":"0xe223 / 1.15.37833"}
+{"sid":"S6:s139","start":5593,"end":5599,"text":"2.32.7"}
+{"sid":"S6:s140","start":5600,"end":5603,"text":"YES"}
+{"sid":"S6:s141","start":5604,"end":5607,"text":"YES"}
+{"sid":"S6:s142","start":5608,"end":5610,"text":"OK"}
+{"sid":"S6:s143","start":5611,"end":5657,"text":"Driver and IGC are byte-identical across rows."}
+{"sid":"S6:s144","start":5658,"end":5690,"text":"Only differs → the result flips."}
+{"sid":"S6:s145","start":5691,"end":5743,"text":"The smoking gun — a self-contradiction inside 2025.3"}
+{"sid":"S6:s146","start":5744,"end":5789,"text":"On 2025.3 the runtime simultaneously reports:"}
+{"sid":"S6:s147","start":5790,"end":5811,"text":"But upstream defines:"}
+{"sid":"S6:s148","start":5812,"end":5902,"text":"If is YES, then matrix must be YES — unless the compiled table in that predates the entry."}
+{"sid":"S6:s149","start":5903,"end":5952,"text":"The 2025.3 table does; the nightly's includes it."}
+{"sid":"S6:s150","start":5953,"end":5969,"text":"Why can't see it"}
+{"sid":"S6:s151","start":5970,"end":6018,"text":"The string is present in both files — it backs ."}
+{"sid":"S6:s152","start":6019,"end":6101,"text":"Only the runtime query, which walks the compiled matrix table, distinguishes them."}
+{"sid":"S6:s153","start":6102,"end":6162,"text":"You cannot grep your way to this; you have to run the query."}
+{"sid":"S6:s154","start":6163,"end":6207,"text":"Why the earlier theories were all passengers"}
+{"sid":"S6:s155","start":6208,"end":6300,"text":"Theory 3 (silicon): same driver + newer libsycl → the aspect appears and the DPAS tile runs."}
+{"sid":"S6:s156","start":6301,"end":6333,"text":"The hardware was always capable."}
+{"sid":"S6:s157","start":6334,"end":6388,"text":"Theory 2 (IGC): IGC stayed 2.32.7 across the PASS row."}
+{"sid":"S6:s158","start":6389,"end":6483,"text":"IGC 2.34 \"fixing\" it elsewhere was a co-varying proxy — those machines also had newer libsycl."}
+{"sid":"S6:s159","start":6484,"end":6552,"text":"Once libsycl advertises the aspect, IGC 2.32.7 lowers the tile fine."}
+{"sid":"S6:s160","start":6553,"end":6641,"text":"Theory 1 (build flags): byte-identical device images; the gate is entirely runtime-side."}
+{"sid":"S6:s161","start":6642,"end":6643,"text":"✓"}
+{"sid":"S6:s162","start":6644,"end":6697,"text":"Route B — proving it on ARK's real kernel, torch-free"}
+{"sid":"S6:s163","start":6698,"end":6734,"text":"2026-06-05 · end-to-end verification"}
+{"sid":"S6:s164","start":6735,"end":6783,"text":"✓ VERIFIED — production IGemmDQCore, not a probe"}
+{"sid":"S6:s165","start":6784,"end":6785,"text":"▶"}
+{"sid":"S6:s166","start":6786,"end":6821,"text":"Why a torch-free harness was needed"}
+{"sid":"S6:s167","start":6822,"end":6873,"text":"The full ARK UT links , which hard-pins and links ."}
+{"sid":"S6:s168","start":6874,"end":6996,"text":"torch and ARK share one process, so the 2026 runtime () can't be swapped under the torch UT without also rebuilding torch."}
+{"sid":"S6:s169","start":6997,"end":7097,"text":"The probe proved the mechanism, but skeptics could ask: is ARK's actual kernel really the same path?"}
+{"sid":"S6:s170","start":7098,"end":7109,"text":"The harness"}
+{"sid":"S6:s171","start":7110,"end":7167,"text":"— where lives — is header-only SYCL, no oneDNN, no torch."}
+{"sid":"S6:s172","start":7168,"end":7220,"text":"A ~70-line calls the exact launch that instantiates:"}
+{"sid":"S6:s173","start":7221,"end":7276,"text":"Same source, same GPU/driver/IGC — only libsycl differs"}
+{"sid":"S6:s174","start":7277,"end":7290,"text":"Harness build"}
+{"sid":"S6:s175","start":7291,"end":7306,"text":"libsycl runtime"}
+{"sid":"S6:s176","start":7307,"end":7313,"text":"Result"}
+{"sid":"S6:s177","start":7314,"end":7323,"text":", → links"}
+{"sid":"S6:s178","start":7324,"end":7343,"text":"2025.3.2 venv .so.8"}
+{"sid":"S6:s179","start":7344,"end":7403,"text":"FAIL — \"no matrix hardware … joint_matrix is not supported\""}
+{"sid":"S6:s180","start":7404,"end":7430,"text":"nightly 2026-06-04 → links"}
+{"sid":"S6:s181","start":7431,"end":7445,"text":"2026.0.0 .so.9"}
+{"sid":"S6:s182","start":7446,"end":7480,"text":"PASS — kernel launched & completed"}
+{"sid":"S6:s183","start":7481,"end":7539,"text":"Device (bmg_g31) and L0 driver identical across both rows."}
+{"sid":"S6:s184","start":7540,"end":7596,"text":"This is the production joint_matrix kernel, not a proxy."}
+{"sid":"S6:s185","start":7597,"end":7643,"text":"Build flags that matter (learned the hard way)"}
+{"sid":"S6:s186","start":7644,"end":7693,"text":"— the header uses C++20 dependent-type syntax ()."}
+{"sid":"S6:s187","start":7694,"end":7742,"text":"— gates the entire body (it's 'd out otherwise)."}
+{"sid":"S6:s188","start":7743,"end":7793,"text":", include — pulls for (including alone misses it)."}
+{"sid":"S6:s189","start":7794,"end":7819,"text":"The one remaining blocker"}
+{"sid":"S6:s190","start":7820,"end":7950,"text":"True in-process e2e (Route A) needs a 2026-based torch + ARK rebuilt against , because the SONAME bump (→) means no drop-in works."}
+{"sid":"S6:s191","start":7951,"end":8050,"text":"The kernel itself is proven fixed; only the torch packaging pin stands between here and a green UT."}
+{"sid":"S6:s192","start":8051,"end":8178,"text":"Why vllm-xpu-kernels never hits this Same DPAS hardware, two different compiler paths — only one goes through the broken stage."}
+{"sid":"S6:s193","start":8179,"end":8268,"text":"A recurring confusion: \"vllm also uses XMX/DPAS on the same hardware — why does it work?\""}
+{"sid":"S6:s194","start":8269,"end":8362,"text":"There are two ways to reach the same Battlemage DPAS unit, through different compiler stages:"}
+{"sid":"S6:s195","start":8363,"end":8399,"text":"✗ ARK IGemmDQCore — the failing path"}
+{"sid":"S6:s196","start":8400,"end":8405,"text":"C++ +"}
+{"sid":"S6:s197","start":8406,"end":8435,"text":"high-level matrix abstraction"}
+{"sid":"S6:s198","start":8436,"end":8437,"text":"↓"}
+{"sid":"S6:s199","start":8438,"end":8458,"text":"libsycl emits SPIR-V"}
+{"sid":"S6:s200","start":8459,"end":8460,"text":"↓"}
+{"sid":"S6:s201","start":8461,"end":8489,"text":"*** runtime libsycl gate ***"}
+{"sid":"S6:s202","start":8490,"end":8518,"text":"2025.3 table lacks bmg_g31 →"}
+{"sid":"S6:s203","start":8519,"end":8548,"text":"refuses to advertise matrix →"}
+{"sid":"S6:s204","start":8549,"end":8579,"text":"THROWS before any IGC lowering"}
+{"sid":"S6:s205","start":8580,"end":8581,"text":"↓"}
+{"sid":"S6:s206","start":8582,"end":8637,"text":"dpas on XMX (only on a runtime whose table has bmg_g31)"}
+{"sid":"S6:s207","start":8638,"end":8673,"text":"✓ vllm sycl-tla XE_DPAS_TT — immune"}
+{"sid":"S6:s208","start":8674,"end":8677,"text":"C++"}
+{"sid":"S6:s209","start":8678,"end":8679,"text":"↓"}
+{"sid":"S6:s210","start":8680,"end":8706,"text":"lowers to INLINE ASSEMBLY:"}
+{"sid":"S6:s211","start":8707,"end":8745,"text":"the dpas is hand-written in the header"}
+{"sid":"S6:s212","start":8746,"end":8747,"text":"↓"}
+{"sid":"S6:s213","start":8748,"end":8782,"text":"no joint_matrix op, no capability,"}
+{"sid":"S6:s214","start":8783,"end":8814,"text":"nothing for the runtime to gate"}
+{"sid":"S6:s215","start":8815,"end":8816,"text":"↓"}
+{"sid":"S6:s216","start":8817,"end":8850,"text":"IGC just assembles the given dpas"}
+{"sid":"S6:s217","start":8851,"end":8880,"text":"(any runtime / any IGC works)"}
+{"sid":"S6:s218","start":8881,"end":8982,"text":"Two independent reasons vllm-xpu-kernels is unaffected — either alone is sufficient, and it has both:"}
+{"sid":"S6:s219","start":8983,"end":8995,"text":"No anywhere."}
+{"sid":"S6:s220","start":8996,"end":9034,"text":"over the whole tree returns zero hits."}
+{"sid":"S6:s221","start":9035,"end":9111,"text":"Its matrix math is CuTe (inline asm) or oneDNN — neither emits the gated op."}
+{"sid":"S6:s222","start":9112,"end":9198,"text":"(Same reason torch bf16/f16 matmul, which is oneDNN, already passes on the FAIL node.)"}
+{"sid":"S6:s223","start":9199,"end":9215,"text":"AOT compilation."}
+{"sid":"S6:s224","start":9216,"end":9295,"text":"vllm builds with — device code is lowered to real Battlemage ISA at build time."}
+{"sid":"S6:s225","start":9296,"end":9434,"text":"ARK ships generic SPIR-V () and JIT-lowers on the deploy node — which is exactly why the deploy node's runtime became the deciding factor."}
+{"sid":"S6:s226","start":9435,"end":9459,"text":"The fix & escape hatches"}
+{"sid":"S6:s227","start":9460,"end":9467,"text":"PRIMARY"}
+{"sid":"S6:s228","start":9468,"end":9487,"text":"Upgrade the runtime"}
+{"sid":"S6:s229","start":9488,"end":9595,"text":"Ship/link a DPC++ whose matrix includes (intel/llvm ≥ 2026-06-04, or a oneAPI release carrying that entry)."}
+{"sid":"S6:s230","start":9596,"end":9638,"text":"No driver, IGC, or hardware change needed."}
+{"sid":"S6:s231","start":9639,"end":9733,"text":"Caveat: SONAME bumps →; the consumer (torch-xpu / ARK ) must be built against it — no drop-in."}
+{"sid":"S6:s232","start":9734,"end":9740,"text":"ESCAPE"}
+{"sid":"S6:s233","start":9741,"end":9765,"text":"Route m>1 through oneDNN"}
+{"sid":"S6:s234","start":9766,"end":9838,"text":"Send w4 m>1 through the oneDNN fp GEMM instead of the fused int8 kernel."}
+{"sid":"S6:s235","start":9839,"end":9903,"text":"oneDNN does its own DPAS codegen and never touches the gated op."}
+{"sid":"S6:s236","start":9904,"end":9910,"text":"ESCAPE"}
+{"sid":"S6:s237","start":9911,"end":9929,"text":"Inline-dpas kernel"}
+{"sid":"S6:s238","start":9930,"end":10011,"text":"Replace ARK's int8 kernel with hand-written asm (à la ), or switch ARK to AOT ()."}
+{"sid":"S6:s239","start":10012,"end":10067,"text":"Keeps fused int8 perf, removes all runtime sensitivity."}
+{"sid":"S6:s240","start":10068,"end":10077,"text":"Reproduce"}
+{"sid":"S6:s241","start":10078,"end":10088,"text":"Artifacts."}
+{"sid":"S6:s242","start":10089,"end":10155,"text":"Finding doc: · Harness source: · Build/run scripts on node under ."}
+{"sid":"S6:s243","start":10156,"end":10168,"text":"Environment."}
+{"sid":"S6:s244","start":10169,"end":10290,"text":"root@10.239.98.43 (b70-pc6) · Intel Graphics 0xe223 (Battlemage, bmg_g31, 256 EU) · L0 · (Python 3.13, torch 2.11.0+xpu)."}
+{"sid":"S6:s245","start":10291,"end":10357,"text":"Refs: intel-graphics-compiler releases · compute-runtime releases."}
+{"sid":"S6:s246","start":10358,"end":10402,"text":"Generated 2026-06-05 from the debug session."}

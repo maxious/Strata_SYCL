@@ -1,0 +1,1071 @@
+{"sid":"S4:s1","start":0,"end":25,"text":"#include \"fused-gemm.hpp\""}
+{"sid":"S4:s2","start":27,"end":71,"text":"#include <sycl/ext/oneapi/matrix/matrix.hpp>"}
+{"sid":"S4:s3","start":73,"end":93,"text":"#include <algorithm>"}
+{"sid":"S4:s4","start":94,"end":111,"text":"#include <string>"}
+{"sid":"S4:s5","start":112,"end":128,"text":"#include <tuple>"}
+{"sid":"S4:s6","start":129,"end":145,"text":"#include <mutex>"}
+{"sid":"S4:s7","start":146,"end":160,"text":"#include <set>"}
+{"sid":"S4:s8","start":161,"end":185,"text":"#include <unordered_map>"}
+{"sid":"S4:s9","start":187,"end":242,"text":"namespace mx = sycl::ext::oneapi::experimental::matrix;"}
+{"sid":"S4:s10","start":244,"end":346,"text":"// FG_ / fg_ is short for fused GEMM: the weights are dequantized inside the GEMM, into the XMX tiles."}
+{"sid":"S4:s11","start":348,"end":444,"text":"// A k step is one 32-value weight sub-block; iq3_s and the other superblock formats split their"}
+{"sid":"S4:s12","start":445,"end":484,"text":"// superblock into steps of this width."}
+{"sid":"S4:s13","start":485,"end":543,"text":"The sub-groups of a work-group each walk their own K range"}
+{"sid":"S4:s14","start":544,"end":573,"text":"// and are summed at the end."}
+{"sid":"S4:s15","start":574,"end":614,"text":"static constexpr int FG_BK     = QK4_NL;"}
+{"sid":"S4:s16","start":615,"end":650,"text":"static constexpr int FG_KSPLIT = 4;"}
+{"sid":"S4:s17","start":652,"end":703,"text":"// Element traits of one joint_matrix operand type."}
+{"sid":"S4:s18","start":704,"end":749,"text":"The A stage and the B pack compute in f32 and"}
+{"sid":"S4:s19","start":750,"end":846,"text":"// convert once, in registers, when they write the element, so any type costs the same one pass."}
+{"sid":"S4:s20","start":847,"end":904,"text":"//   store: storage in SLM (A) and in the packed B buffer"}
+{"sid":"S4:s21","start":905,"end":951,"text":"//   mtype: matrix_type in matrix_combinations"}
+{"sid":"S4:s22","start":952,"end":1020,"text":"//   mode:  GGML_SYCL_DYNAMIC_PRECISION value that selects this type"}
+{"sid":"S4:s23","start":1021,"end":1106,"text":"//   src:   ggml type that needs no conversion into this type (GGML_TYPE_COUNT: none)"}
+{"sid":"S4:s24","start":1107,"end":1154,"text":"//   slow:  XMX throughput class, 0 is fastest."}
+{"sid":"S4:s25","start":1155,"end":1207,"text":"f16 and bf16 share the DPAS rate; tf32 does half the"}
+{"sid":"S4:s26","start":1208,"end":1238,"text":"//          K per instruction."}
+{"sid":"S4:s27","start":1239,"end":1298,"text":"B60, Qwen3-30B-A3B pp512: f16 1108, bf16 1000, tf32 751 t/s"}
+{"sid":"S4:s28","start":1299,"end":1336,"text":"template <typename T> struct fg_elem;"}
+{"sid":"S4:s29","start":1338,"end":1378,"text":"template <> struct fg_elem<sycl::half> {"}
+{"sid":"S4:s30","start":1383,"end":1408,"text":"using store = sycl::half;"}
+{"sid":"S4:s31","start":1413,"end":1439,"text":"using pair  = sycl::half2;"}
+{"sid":"S4:s32","start":1444,"end":1507,"text":"static constexpr mx::matrix_type mtype = mx::matrix_type::fp16;"}
+{"sid":"S4:s33","start":1512,"end":1585,"text":"static constexpr int             mode  = GGML_SYCL_DYNAMIC_PRECISION_F16;"}
+{"sid":"S4:s34","start":1590,"end":1645,"text":"static constexpr ggml_type       src   = GGML_TYPE_F16;"}
+{"sid":"S4:s35","start":1650,"end":1694,"text":"static constexpr int             mant  = 10;"}
+{"sid":"S4:s36","start":1699,"end":1742,"text":"static constexpr int             slow  = 0;"}
+{"sid":"S4:s37","start":1747,"end":1794,"text":"static store cvt(float x) { return (store) x; }"}
+{"sid":"S4:s38","start":1799,"end":1872,"text":"static pair make(float x, float y) { return pair((store) x, (store) y); }"}
+{"sid":"S4:s39","start":1873,"end":1875,"text":"};"}
+{"sid":"S4:s40","start":1877,"end":1975,"text":"// tf32 rounds to nearest even with plain bit ops: round_to_tf32 needs a SPIR-V extension that the"}
+{"sid":"S4:s41","start":1976,"end":2001,"text":"// DG2 AOT target rejects"}
+{"sid":"S4:s42","start":2002,"end":2059,"text":"static inline uint32_t fg_round_bits(float x, int drop) {"}
+{"sid":"S4:s43","start":2064,"end":2111,"text":"const uint32_t u = sycl::bit_cast<uint32_t>(x);"}
+{"sid":"S4:s44","start":2116,"end":2155,"text":"if ((u & 0x7f800000u) == 0x7f800000u) {"}
+{"sid":"S4:s45","start":2164,"end":2188,"text":"return (u & 0x7fffffu) ?"}
+{"sid":"S4:s46","start":2189,"end":2227,"text":"u | (1u << drop) : u; // nan stays nan"}
+{"sid":"S4:s47","start":2232,"end":2233,"text":"}"}
+{"sid":"S4:s48","start":2238,"end":2294,"text":"return u + ((1u << (drop - 1)) - 1) + ((u >> drop) & 1);"}
+{"sid":"S4:s49","start":2295,"end":2296,"text":"}"}
+{"sid":"S4:s50","start":2298,"end":2327,"text":"struct alignas(4) fg_bf16x2 {"}
+{"sid":"S4:s51","start":2332,"end":2365,"text":"sycl::ext::oneapi::bfloat16 x, y;"}
+{"sid":"S4:s52","start":2366,"end":2368,"text":"};"}
+{"sid":"S4:s53","start":2370,"end":2427,"text":"template <> struct fg_elem<sycl::ext::oneapi::bfloat16> {"}
+{"sid":"S4:s54","start":2432,"end":2474,"text":"using store = sycl::ext::oneapi::bfloat16;"}
+{"sid":"S4:s55","start":2479,"end":2503,"text":"using pair  = fg_bf16x2;"}
+{"sid":"S4:s56","start":2508,"end":2571,"text":"static constexpr mx::matrix_type mtype = mx::matrix_type::bf16;"}
+{"sid":"S4:s57","start":2576,"end":2650,"text":"static constexpr int             mode  = GGML_SYCL_DYNAMIC_PRECISION_BF16;"}
+{"sid":"S4:s58","start":2655,"end":2711,"text":"static constexpr ggml_type       src   = GGML_TYPE_BF16;"}
+{"sid":"S4:s59","start":2716,"end":2759,"text":"static constexpr int             mant  = 7;"}
+{"sid":"S4:s60","start":2764,"end":2807,"text":"static constexpr int             slow  = 0;"}
+{"sid":"S4:s61","start":2812,"end":2858,"text":"static store cvt(float x) { return store(x); }"}
+{"sid":"S4:s62","start":2863,"end":2928,"text":"static pair make(float x, float y) { return { cvt(x), cvt(y) }; }"}
+{"sid":"S4:s63","start":2929,"end":2931,"text":"};"}
+{"sid":"S4:s64","start":2933,"end":2989,"text":"// tf32 keeps f32 range and f16 mantissa, in f32 storage"}
+{"sid":"S4:s65","start":2990,"end":3039,"text":"template <> struct fg_elem<mx::precision::tf32> {"}
+{"sid":"S4:s66","start":3044,"end":3064,"text":"using store = float;"}
+{"sid":"S4:s67","start":3069,"end":3096,"text":"using pair  = sycl::float2;"}
+{"sid":"S4:s68","start":3101,"end":3164,"text":"static constexpr mx::matrix_type mtype = mx::matrix_type::tf32;"}
+{"sid":"S4:s69","start":3169,"end":3243,"text":"static constexpr int             mode  = GGML_SYCL_DYNAMIC_PRECISION_TF32;"}
+{"sid":"S4:s70","start":3248,"end":3305,"text":"static constexpr ggml_type       src   = GGML_TYPE_COUNT;"}
+{"sid":"S4:s71","start":3310,"end":3354,"text":"static constexpr int             mant  = 10;"}
+{"sid":"S4:s72","start":3359,"end":3402,"text":"static constexpr int             slow  = 1;"}
+{"sid":"S4:s73","start":3407,"end":3499,"text":"static store cvt(float x) { return sycl::bit_cast<float>(fg_round_bits(x, 13) & ~0x1fffu); }"}
+{"sid":"S4:s74","start":3504,"end":3571,"text":"static pair make(float x, float y) { return pair(cvt(x), cvt(y)); }"}
+{"sid":"S4:s75","start":3572,"end":3574,"text":"};"}
+{"sid":"S4:s76","start":3576,"end":3675,"text":"// One joint_matrix combination (A type, B type, TM x TN x TK, sub-group size; C and D are f32) and"}
+{"sid":"S4:s77","start":3676,"end":3702,"text":"// the tiling built on it."}
+{"sid":"S4:s78","start":3703,"end":3772,"text":"A sub-group owns SG_ROWS rows of A (at least 16) and BN (at least 32)"}
+{"sid":"S4:s79","start":3773,"end":3789,"text":"// columns of B."}
+{"sid":"S4:s80","start":3790,"end":3849,"text":"A and B may differ: the device lists the pairs it supports."}
+{"sid":"S4:s81","start":3850,"end":3939,"text":"template <typename TA, typename TB, int TM_, int TN_, int TK_, int SG_> struct fg_combo {"}
+{"sid":"S4:s82","start":3944,"end":3959,"text":"using ta  = TA;"}
+{"sid":"S4:s83","start":3964,"end":3979,"text":"using tb  = TB;"}
+{"sid":"S4:s84","start":3984,"end":4008,"text":"using EA  = fg_elem<TA>;"}
+{"sid":"S4:s85","start":4013,"end":4037,"text":"using EB  = fg_elem<TB>;"}
+{"sid":"S4:s86","start":4042,"end":4073,"text":"using tsa = typename EA::store;"}
+{"sid":"S4:s87","start":4078,"end":4109,"text":"using tsb = typename EB::store;"}
+{"sid":"S4:s88","start":4114,"end":4144,"text":"static constexpr int TM = TM_;"}
+{"sid":"S4:s89","start":4149,"end":4179,"text":"static constexpr int TN = TN_;"}
+{"sid":"S4:s90","start":4184,"end":4214,"text":"static constexpr int TK = TK_;"}
+{"sid":"S4:s91","start":4219,"end":4249,"text":"static constexpr int SG = SG_;"}
+{"sid":"S4:s92","start":4254,"end":4343,"text":"static constexpr int VNNI    = 4 / sizeof(tsb);  // K rows of B packed in one 32-bit word"}
+{"sid":"S4:s93","start":4348,"end":4388,"text":"static constexpr int SG_ROWS = TM > 16 ?"}
+{"sid":"S4:s94","start":4389,"end":4397,"text":"TM : 16;"}
+{"sid":"S4:s95","start":4402,"end":4488,"text":"static constexpr int RPL     = SG_ROWS / SG;     // A rows one lane decodes per k step"}
+{"sid":"S4:s96","start":4493,"end":4537,"text":"static constexpr int MT      = SG_ROWS / TM;"}
+{"sid":"S4:s97","start":4542,"end":4582,"text":"static constexpr int BN      = TN > 32 ?"}
+{"sid":"S4:s98","start":4583,"end":4591,"text":"TN : 32;"}
+{"sid":"S4:s99","start":4596,"end":4635,"text":"static constexpr int NT      = BN / TN;"}
+{"sid":"S4:s100","start":4640,"end":4686,"text":"static constexpr int WG_SIZE = FG_KSPLIT * SG;"}
+{"sid":"S4:s101","start":4691,"end":4741,"text":"static constexpr mx::layout b_layout = VNNI == 1 ?"}
+{"sid":"S4:s102","start":4742,"end":4795,"text":"mx::layout::row_major : mx::layout::ext_intel_packed;"}
+{"sid":"S4:s103","start":4800,"end":4895,"text":"// a 64-wide N is mostly padding here and a 32x64 f32 accumulator needs 128 registers per lane,"}
+{"sid":"S4:s104","start":4900,"end":4934,"text":"// so it spills: 13x slower on B60"}
+{"sid":"S4:s105","start":4939,"end":4982,"text":"static constexpr bool efficient = TN <= 32;"}
+{"sid":"S4:s106","start":4987,"end":5088,"text":"static_assert(SG_ROWS % SG == 0 && SG_ROWS % TM == 0 && BN % TN == 0 && FG_BK % TK == 0, \"bad tile\");"}
+{"sid":"S4:s107","start":5093,"end":5174,"text":"static_assert(BN <= GGML_SYCL_FG_MAX_N, \"header gate must cover the tile width\");"}
+{"sid":"S4:s108","start":5175,"end":5177,"text":"};"}
+{"sid":"S4:s109","start":5179,"end":5206,"text":"using fg_half = sycl::half;"}
+{"sid":"S4:s110","start":5207,"end":5251,"text":"using fg_bf16 = sycl::ext::oneapi::bfloat16;"}
+{"sid":"S4:s111","start":5252,"end":5288,"text":"using fg_tf32 = mx::precision::tf32;"}
+{"sid":"S4:s112","start":5290,"end":5348,"text":"// One bit of GGML_SYCL_XMX_GATHER_SHAPES per combination."}
+{"sid":"S4:s113","start":5349,"end":5387,"text":"Only combinations some device lists in"}
+{"sid":"S4:s114","start":5388,"end":5485,"text":"// matrix_combinations are built (appendix of sycl_ext_oneapi_matrix and the runtime's own list)."}
+{"sid":"S4:s115","start":5486,"end":5552,"text":"template <typename F> static void fg_visit_combo(int idx, F && f);"}
+{"sid":"S4:s116","start":5553,"end":5590,"text":"static constexpr int FG_N_COMBOS = 8;"}
+{"sid":"S4:s117","start":5592,"end":5691,"text":"// A spir64_gen AOT build (GGML_SYCL_XMX_AOT_SG) drops the combinations of the other sub-group size"}
+{"sid":"S4:s118","start":5692,"end":5780,"text":"// entirely: ocloc rejects even an empty kernel that asks for a sub-group size it lacks."}
+{"sid":"S4:s119","start":5781,"end":5834,"text":"template <int SG> static constexpr bool fg_listed() {"}
+{"sid":"S4:s120","start":5835,"end":5868,"text":"#if defined(GGML_SYCL_XMX_AOT_SG)"}
+{"sid":"S4:s121","start":5873,"end":5907,"text":"return SG == GGML_SYCL_XMX_AOT_SG;"}
+{"sid":"S4:s122","start":5908,"end":5913,"text":"#else"}
+{"sid":"S4:s123","start":5918,"end":5930,"text":"return true;"}
+{"sid":"S4:s124","start":5931,"end":5937,"text":"#endif"}
+{"sid":"S4:s125","start":5938,"end":5939,"text":"}"}
+{"sid":"S4:s126","start":5941,"end":6010,"text":"template <typename S, typename F> static void fg_call_combo(F && f) {"}
+{"sid":"S4:s127","start":6015,"end":6050,"text":"if constexpr (fg_listed<S::SG>()) {"}
+{"sid":"S4:s128","start":6059,"end":6066,"text":"f(S{});"}
+{"sid":"S4:s129","start":6071,"end":6072,"text":"}"}
+{"sid":"S4:s130","start":6073,"end":6074,"text":"}"}
+{"sid":"S4:s131","start":6076,"end":6143,"text":"template <typename F> static void fg_visit_combo(int idx, F && f) {"}
+{"sid":"S4:s132","start":6148,"end":6162,"text":"switch (idx) {"}
+{"sid":"S4:s133","start":6171,"end":6267,"text":"case 0: fg_call_combo<fg_combo<fg_half, fg_half, 8, 16, 16, 16>>(f);  break; // Xe2, Xe3, Xe-HPC"}
+{"sid":"S4:s134","start":6276,"end":6372,"text":"case 1: fg_call_combo<fg_combo<fg_half, fg_half, 16, 16, 16, 16>>(f); break; // Xe2, Xe3, Xe-HPC"}
+{"sid":"S4:s135","start":6381,"end":6477,"text":"case 2: fg_call_combo<fg_combo<fg_half, fg_half, 32, 64, 16, 16>>(f); break; // Xe2, Xe3, Xe-HPC"}
+{"sid":"S4:s136","start":6486,"end":6582,"text":"case 3: fg_call_combo<fg_combo<fg_half, fg_half, 32, 64, 32, 16>>(f); break; // Xe2, Xe3, Xe-HPC"}
+{"sid":"S4:s137","start":6591,"end":6692,"text":"case 4: fg_call_combo<fg_combo<fg_half, fg_half, 8, 8, 16, 8>>(f);    break; // Xe-HPG (Arc A), ARL-H"}
+{"sid":"S4:s138","start":6701,"end":6797,"text":"case 5: fg_call_combo<fg_combo<fg_tf32, fg_tf32, 8, 16, 8, 16>>(f);   break; // Xe2, Xe3, Xe-HPC"}
+{"sid":"S4:s139","start":6806,"end":6902,"text":"case 6: fg_call_combo<fg_combo<fg_bf16, fg_bf16, 8, 16, 16, 16>>(f);  break; // Xe2, Xe3, Xe-HPC"}
+{"sid":"S4:s140","start":6911,"end":7012,"text":"case 7: fg_call_combo<fg_combo<fg_bf16, fg_bf16, 8, 8, 16, 8>>(f);    break; // Xe-HPG (Arc A), ARL-H"}
+{"sid":"S4:s141","start":7021,"end":7072,"text":"default: GGML_ABORT(\"bad XMX combination %d\", idx);"}
+{"sid":"S4:s142","start":7077,"end":7078,"text":"}"}
+{"sid":"S4:s143","start":7079,"end":7080,"text":"}"}
+{"sid":"S4:s144","start":7082,"end":7180,"text":"// AOT with -fsycl-targets=intel_gpu_*: compile each tile body only for targets with its sub-group"}
+{"sid":"S4:s145","start":7181,"end":7224,"text":"// size, since IGC fails on the other ones."}
+{"sid":"S4:s146","start":7225,"end":7282,"text":"A JIT build keeps them all, but each combination lands in"}
+{"sid":"S4:s147","start":7283,"end":7378,"text":"// its own device image (joint_matrix is an optional kernel feature) and only a combination the"}
+{"sid":"S4:s148","start":7379,"end":7455,"text":"// device reports is launched, so the runtime never asks IGC for the others."}
+{"sid":"S4:s149","start":7456,"end":7489,"text":"#if defined(__SYCL_DEVICE_ONLY__)"}
+{"sid":"S4:s150","start":7490,"end":7610,"text":"#    if __SYCL_TARGET_INTEL_GPU_ACM_G10__ || __SYCL_TARGET_INTEL_GPU_ACM_G11__ || __SYCL_TARGET_INTEL_GPU_ACM_G12__ || \\"}
+{"sid":"S4:s151","start":7619,"end":7650,"text":"__SYCL_TARGET_INTEL_GPU_ARL_H__"}
+{"sid":"S4:s152","start":7651,"end":7678,"text":"#        define FG_AOT_SG 8"}
+{"sid":"S4:s153","start":7679,"end":7796,"text":"#    elif __SYCL_TARGET_INTEL_GPU_PVC__ || __SYCL_TARGET_INTEL_GPU_PVC_VG__ || __SYCL_TARGET_INTEL_GPU_BMG_G21__ || \\"}
+{"sid":"S4:s154","start":7805,"end":7915,"text":"__SYCL_TARGET_INTEL_GPU_BMG_G31__ || __SYCL_TARGET_INTEL_GPU_LNL_M__ || __SYCL_TARGET_INTEL_GPU_PTL_H__ ||   \\"}
+{"sid":"S4:s155","start":7924,"end":8034,"text":"__SYCL_TARGET_INTEL_GPU_PTL_U__ || __SYCL_TARGET_INTEL_GPU_WCL__ || __SYCL_TARGET_INTEL_GPU_NVL_S__ ||       \\"}
+{"sid":"S4:s156","start":8043,"end":8109,"text":"__SYCL_TARGET_INTEL_GPU_NVL_U__ || __SYCL_TARGET_INTEL_GPU_NVL_P__"}
+{"sid":"S4:s157","start":8110,"end":8138,"text":"#        define FG_AOT_SG 16"}
+{"sid":"S4:s158","start":8139,"end":8253,"text":"#    elif __SYCL_TARGET_INTEL_GPU_TGLLP__ || __SYCL_TARGET_INTEL_GPU_RKL__ || __SYCL_TARGET_INTEL_GPU_ADL_S__ || \\"}
+{"sid":"S4:s159","start":8262,"end":8368,"text":"__SYCL_TARGET_INTEL_GPU_ADL_P__ || __SYCL_TARGET_INTEL_GPU_ADL_N__ || __SYCL_TARGET_INTEL_GPU_DG1__ ||   \\"}
+{"sid":"S4:s160","start":8377,"end":8443,"text":"__SYCL_TARGET_INTEL_GPU_MTL_U__ || __SYCL_TARGET_INTEL_GPU_MTL_H__"}
+{"sid":"S4:s161","start":8444,"end":8481,"text":"#        define FG_AOT_SG 0 // no XMX"}
+{"sid":"S4:s162","start":8482,"end":8492,"text":"#    endif"}
+{"sid":"S4:s163","start":8493,"end":8499,"text":"#endif"}
+{"sid":"S4:s164","start":8501,"end":8553,"text":"template <int SG> static constexpr bool fg_built() {"}
+{"sid":"S4:s165","start":8554,"end":8576,"text":"#if defined(FG_AOT_SG)"}
+{"sid":"S4:s166","start":8581,"end":8604,"text":"return SG == FG_AOT_SG;"}
+{"sid":"S4:s167","start":8605,"end":8610,"text":"#else"}
+{"sid":"S4:s168","start":8615,"end":8627,"text":"return true;"}
+{"sid":"S4:s169","start":8628,"end":8634,"text":"#endif"}
+{"sid":"S4:s170","start":8635,"end":8636,"text":"}"}
+{"sid":"S4:s171","start":8638,"end":8740,"text":"// Upper bound on the tile count when total_rows rows are routed to n_as experts: the worst case gives"}
+{"sid":"S4:s172","start":8741,"end":8800,"text":"// each expert one row and fills whole tiles with the rest."}
+{"sid":"S4:s173","start":8801,"end":8841,"text":"The bound depends only on the shape, not"}
+{"sid":"S4:s174","start":8842,"end":8941,"text":"// on the routing, so the pool reuses one buffer every ubatch instead of keeping one per size seen."}
+{"sid":"S4:s175","start":8942,"end":9037,"text":"static constexpr int64_t grouped_gemm_max_tiles(int64_t total_rows, int64_t n_as, int64_t BN) {"}
+{"sid":"S4:s176","start":9042,"end":9069,"text":"return total_rows <= n_as ?"}
+{"sid":"S4:s177","start":9070,"end":9115,"text":"total_rows : n_as + (total_rows - n_as) / BN;"}
+{"sid":"S4:s178","start":9116,"end":9117,"text":"}"}
+{"sid":"S4:s179","start":9118,"end":9219,"text":"// Tiles do not cross experts, so the bound is not ceil(total_rows / BN): 34 rows over 2 experts with"}
+{"sid":"S4:s180","start":9220,"end":9286,"text":"// BN = 16 split 17 + 17 need 2 + 2 tiles, where the ceil gives 3."}
+{"sid":"S4:s181","start":9287,"end":9341,"text":"static_assert(grouped_gemm_max_tiles(34, 2, 16) == 4);"}
+{"sid":"S4:s182","start":9343,"end":9399,"text":"// the device lists S with an f32 accumulator and output"}
+{"sid":"S4:s183","start":9400,"end":9506,"text":"template <typename S> static bool fg_device_has_combo(const std::vector<mx::combination> & combinations) {"}
+{"sid":"S4:s184","start":9511,"end":9548,"text":"for (const auto & c : combinations) {"}
+{"sid":"S4:s185","start":9557,"end":9650,"text":"if (c.atype == S::EA::mtype && c.btype == S::EB::mtype && c.ctype == mx::matrix_type::fp32 &&"}
+{"sid":"S4:s186","start":9663,"end":9698,"text":"c.dtype == mx::matrix_type::fp32 &&"}
+{"sid":"S4:s187","start":9711,"end":9774,"text":"(c.max_msize >= (size_t) S::TM || c.msize == (size_t) S::TM) &&"}
+{"sid":"S4:s188","start":9787,"end":9850,"text":"(c.max_nsize >= (size_t) S::TN || c.nsize == (size_t) S::TN) &&"}
+{"sid":"S4:s189","start":9863,"end":9926,"text":"(c.max_ksize >= (size_t) S::TK || c.ksize == (size_t) S::TK)) {"}
+{"sid":"S4:s190","start":9939,"end":9951,"text":"return true;"}
+{"sid":"S4:s191","start":9960,"end":9961,"text":"}"}
+{"sid":"S4:s192","start":9966,"end":9967,"text":"}"}
+{"sid":"S4:s193","start":9972,"end":9985,"text":"return false;"}
+{"sid":"S4:s194","start":9986,"end":9987,"text":"}"}
+{"sid":"S4:s195","start":9989,"end":10047,"text":"template <typename T> static const char * fg_type_name() {"}
+{"sid":"S4:s196","start":10052,"end":10087,"text":"return std::is_same_v<T, fg_half> ?"}
+{"sid":"S4:s197","start":10088,"end":10124,"text":"\"f16\" : std::is_same_v<T, fg_bf16> ?"}
+{"sid":"S4:s198","start":10125,"end":10141,"text":"\"bf16\" : \"tf32\";"}
+{"sid":"S4:s199","start":10142,"end":10143,"text":"}"}
+{"sid":"S4:s200","start":10145,"end":10188,"text":"static std::string fg_combo_name(int idx) {"}
+{"sid":"S4:s201","start":10193,"end":10210,"text":"std::string name;"}
+{"sid":"S4:s202","start":10215,"end":10248,"text":"fg_visit_combo(idx, [&](auto s) {"}
+{"sid":"S4:s203","start":10257,"end":10279,"text":"using S = decltype(s);"}
+{"sid":"S4:s204","start":10288,"end":10385,"text":"name = std::string(fg_type_name<typename S::ta>()) + \"x\" + fg_type_name<typename S::tb>() + \" \" +"}
+{"sid":"S4:s205","start":10401,"end":10492,"text":"std::to_string(S::TM) + \"x\" + std::to_string(S::TN) + \"x\" + std::to_string(S::TK) + \" sg\" +"}
+{"sid":"S4:s206","start":10508,"end":10530,"text":"std::to_string(S::SG);"}
+{"sid":"S4:s207","start":10535,"end":10538,"text":"});"}
+{"sid":"S4:s208","start":10543,"end":10555,"text":"return name;"}
+{"sid":"S4:s209","start":10556,"end":10557,"text":"}"}
+{"sid":"S4:s210","start":10559,"end":10637,"text":"// Combinations this build has kernels for and the device lists, one bit each."}
+{"sid":"S4:s211","start":10638,"end":10656,"text":"Cached per device:"}
+{"sid":"S4:s212","start":10657,"end":10721,"text":"// on a mixed box the first caller's verdict is not the others'."}
+{"sid":"S4:s213","start":10722,"end":10777,"text":"static int fg_device_combos(const sycl::device & dev) {"}
+{"sid":"S4:s214","start":10782,"end":10831,"text":"static std::mutex                            mtx;"}
+{"sid":"S4:s215","start":10836,"end":10887,"text":"static std::unordered_map<sycl::device, int> known;"}
+{"sid":"S4:s216","start":10892,"end":10947,"text":"std::lock_guard<std::mutex>                  lock(mtx);"}
+{"sid":"S4:s217","start":10952,"end":11018,"text":"const auto                                   it = known.find(dev);"}
+{"sid":"S4:s218","start":11023,"end":11047,"text":"if (it != known.end()) {"}
+{"sid":"S4:s219","start":11056,"end":11074,"text":"return it->second;"}
+{"sid":"S4:s220","start":11079,"end":11080,"text":"}"}
+{"sid":"S4:s221","start":11085,"end":11103,"text":"int available = 0;"}
+{"sid":"S4:s222","start":11108,"end":11113,"text":"try {"}
+{"sid":"S4:s223","start":11122,"end":11231,"text":"const auto combinations = dev.get_info<sycl::ext::oneapi::experimental::info::device::matrix_combinations>();"}
+{"sid":"S4:s224","start":11240,"end":11318,"text":"const auto sg_sizes     = dev.get_info<sycl::info::device::sub_group_sizes>();"}
+{"sid":"S4:s225","start":11327,"end":11372,"text":"for (int idx = 0; idx < FG_N_COMBOS; ++idx) {"}
+{"sid":"S4:s226","start":11385,"end":11418,"text":"fg_visit_combo(idx, [&](auto s) {"}
+{"sid":"S4:s227","start":11435,"end":11457,"text":"using S = decltype(s);"}
+{"sid":"S4:s228","start":11474,"end":11571,"text":"const bool sg_ok = std::find(sg_sizes.begin(), sg_sizes.end(), (size_t) S::SG) != sg_sizes.end();"}
+{"sid":"S4:s229","start":11588,"end":11640,"text":"if (sg_ok && fg_device_has_combo<S>(combinations)) {"}
+{"sid":"S4:s230","start":11661,"end":11683,"text":"available |= 1 << idx;"}
+{"sid":"S4:s231","start":11700,"end":11701,"text":"}"}
+{"sid":"S4:s232","start":11714,"end":11717,"text":"});"}
+{"sid":"S4:s233","start":11726,"end":11727,"text":"}"}
+{"sid":"S4:s234","start":11732,"end":11767,"text":"} catch (const sycl::exception &) {"}
+{"sid":"S4:s235","start":11776,"end":11790,"text":"available = 0;"}
+{"sid":"S4:s236","start":11795,"end":11796,"text":"}"}
+{"sid":"S4:s237","start":11801,"end":11896,"text":"GGML_LOG_INFO(\"%s: %s: XMX dequant-GEMM combinations available 0x%x, allowed 0x%x\\n\", __func__,"}
+{"sid":"S4:s238","start":11915,"end":12007,"text":"dev.get_info<sycl::info::device::name>().c_str(), available, g_ggml_sycl_xmx_gather_shapes);"}
+{"sid":"S4:s239","start":12012,"end":12042,"text":"known.emplace(dev, available);"}
+{"sid":"S4:s240","start":12047,"end":12064,"text":"return available;"}
+{"sid":"S4:s241","start":12065,"end":12066,"text":"}"}
+{"sid":"S4:s242","start":12068,"end":12139,"text":"// Rank of combination S for a src1 of type src1_type, lower is better."}
+{"sid":"S4:s243","start":12140,"end":12146,"text":"Order:"}
+{"sid":"S4:s244","start":12147,"end":12153,"text":"//  1."}
+{"sid":"S4:s245","start":12154,"end":12232,"text":"throughput: a tile that does not spill, then the fastest type class of A and B"}
+{"sid":"S4:s246","start":12233,"end":12239,"text":"//  2."}
+{"sid":"S4:s247","start":12240,"end":12298,"text":"B type equal to the src1 type, so the pack is a plain copy"}
+{"sid":"S4:s248","start":12299,"end":12305,"text":"//  3."}
+{"sid":"S4:s249","start":12306,"end":12334,"text":"B at least as precise as f16"}
+{"sid":"S4:s250","start":12335,"end":12341,"text":"//  4."}
+{"sid":"S4:s251","start":12342,"end":12420,"text":"the device's native DPAS tile (8 x SG x 32 bytes of K), then the largest M x K"}
+{"sid":"S4:s252","start":12421,"end":12496,"text":"// A costs nothing to convert: the A stage emits any type at the same cost."}
+{"sid":"S4:s253","start":12497,"end":12564,"text":"template <typename S> static int64_t fg_rank(ggml_type src1_type) {"}
+{"sid":"S4:s254","start":12569,"end":12607,"text":"const int64_t spills  = !S::efficient;"}
+{"sid":"S4:s255","start":12612,"end":12671,"text":"const int64_t slow    = std::max(S::EA::slow, S::EB::slow);"}
+{"sid":"S4:s256","start":12676,"end":12724,"text":"const int64_t convert = S::EB::src != src1_type;"}
+{"sid":"S4:s257","start":12729,"end":12770,"text":"const int64_t lossy   = S::EB::mant < 10;"}
+{"sid":"S4:s258","start":12775,"end":12831,"text":"const int64_t foreign = !(S::TM == 8 && S::TN == S::SG);"}
+{"sid":"S4:s259","start":12836,"end":12881,"text":"const int64_t mk      = 1024 - S::TM * S::TK;"}
+{"sid":"S4:s260","start":12886,"end":12971,"text":"return ((((spills * 2 + slow) * 2 + convert) * 2 + lossy) * 2 + foreign) * 2048 + mk;"}
+{"sid":"S4:s261","start":12972,"end":12973,"text":"}"}
+{"sid":"S4:s262","start":12975,"end":13071,"text":"// whether XMX operands of type mode (a GGML_SYCL_DYNAMIC_PRECISION value) meet the src1 request"}
+{"sid":"S4:s263","start":13072,"end":13091,"text":"// [TAG_GGML_PREC]."}
+{"sid":"S4:s264","start":13092,"end":13174,"text":"f16 lacks the f32 range that BF16 and F32 ask for; an F32 request goes only as far"}
+{"sid":"S4:s265","start":13175,"end":13230,"text":"// down as GGML_SYCL_DYNAMIC_REQUIRED_PRECISION allows."}
+{"sid":"S4:s266","start":13231,"end":13287,"text":"static bool fg_mode_meets(int mode, int32_t src1_prec) {"}
+{"sid":"S4:s267","start":13292,"end":13361,"text":"if (src1_prec == GGML_PREC_UNDEFINED || src1_prec >= GGML_PREC_F16) {"}
+{"sid":"S4:s268","start":13370,"end":13382,"text":"return true;"}
+{"sid":"S4:s269","start":13387,"end":13388,"text":"}"}
+{"sid":"S4:s270","start":13393,"end":13427,"text":"if (src1_prec >= GGML_PREC_BF16) {"}
+{"sid":"S4:s271","start":13436,"end":13483,"text":"return mode != GGML_SYCL_DYNAMIC_PRECISION_F16;"}
+{"sid":"S4:s272","start":13488,"end":13489,"text":"}"}
+{"sid":"S4:s273","start":13494,"end":13543,"text":"switch (g_ggml_sycl_dynamic_required_precision) {"}
+{"sid":"S4:s274","start":13552,"end":13639,"text":"case GGML_SYCL_DYNAMIC_PRECISION_TF32: return mode == GGML_SYCL_DYNAMIC_PRECISION_TF32;"}
+{"sid":"S4:s275","start":13648,"end":13734,"text":"case GGML_SYCL_DYNAMIC_PRECISION_BF16: return mode != GGML_SYCL_DYNAMIC_PRECISION_F16;"}
+{"sid":"S4:s276","start":13743,"end":13795,"text":"default:                               return false;"}
+{"sid":"S4:s277","start":13800,"end":13801,"text":"}"}
+{"sid":"S4:s278","start":13802,"end":13803,"text":"}"}
+{"sid":"S4:s279","start":13805,"end":13862,"text":"// Best allowed combination for this call, or -1 if none."}
+{"sid":"S4:s280","start":13863,"end":13908,"text":"The type is GGML_SYCL_DYNAMIC_PRECISION if it"}
+{"sid":"S4:s281","start":13909,"end":14012,"text":"// meets the src1 request; if not, bf16 then tf32 for a BF16 request (fastest first) and tf32 then bf16"}
+{"sid":"S4:s282","start":14013,"end":14057,"text":"// for an F32 request (most mantissa first)."}
+{"sid":"S4:s283","start":14058,"end":14148,"text":"static int fg_pick_combo(dpct::queue_ptr stream, ggml_type src1_type, int32_t src1_prec) {"}
+{"sid":"S4:s284","start":14153,"end":14203,"text":"const sycl::device dev     = stream->get_device();"}
+{"sid":"S4:s285","start":14208,"end":14291,"text":"const int          allowed = fg_device_combos(dev) & g_ggml_sycl_xmx_gather_shapes;"}
+{"sid":"S4:s286","start":14296,"end":14388,"text":"const bool         f32_req = src1_prec != GGML_PREC_UNDEFINED && src1_prec < GGML_PREC_BF16;"}
+{"sid":"S4:s287","start":14393,"end":14423,"text":"const int          modes[] = {"}
+{"sid":"S4:s288","start":14432,"end":14462,"text":"g_ggml_sycl_dynamic_precision,"}
+{"sid":"S4:s289","start":14471,"end":14480,"text":"f32_req ?"}
+{"sid":"S4:s290","start":14481,"end":14549,"text":"GGML_SYCL_DYNAMIC_PRECISION_TF32 : GGML_SYCL_DYNAMIC_PRECISION_BF16,"}
+{"sid":"S4:s291","start":14558,"end":14567,"text":"f32_req ?"}
+{"sid":"S4:s292","start":14568,"end":14636,"text":"GGML_SYCL_DYNAMIC_PRECISION_BF16 : GGML_SYCL_DYNAMIC_PRECISION_TF32,"}
+{"sid":"S4:s293","start":14641,"end":14643,"text":"};"}
+{"sid":"S4:s294","start":14648,"end":14671,"text":"int     best      = -1;"}
+{"sid":"S4:s295","start":14676,"end":14698,"text":"int64_t best_rank = 0;"}
+{"sid":"S4:s296","start":14703,"end":14744,"text":"for (int i = 0; i < 3 && best < 0; ++i) {"}
+{"sid":"S4:s297","start":14753,"end":14779,"text":"const int mode = modes[i];"}
+{"sid":"S4:s298","start":14788,"end":14826,"text":"if (!fg_mode_meets(mode, src1_prec)) {"}
+{"sid":"S4:s299","start":14839,"end":14848,"text":"continue;"}
+{"sid":"S4:s300","start":14857,"end":14858,"text":"}"}
+{"sid":"S4:s301","start":14867,"end":14912,"text":"for (int idx = 0; idx < FG_N_COMBOS; ++idx) {"}
+{"sid":"S4:s302","start":14925,"end":14955,"text":"if (!(allowed & (1 << idx))) {"}
+{"sid":"S4:s303","start":14972,"end":14981,"text":"continue;"}
+{"sid":"S4:s304","start":14994,"end":14995,"text":"}"}
+{"sid":"S4:s305","start":15008,"end":15041,"text":"fg_visit_combo(idx, [&](auto s) {"}
+{"sid":"S4:s306","start":15058,"end":15080,"text":"using S = decltype(s);"}
+{"sid":"S4:s307","start":15097,"end":15146,"text":"if (S::EA::mode != mode || S::EB::mode != mode) {"}
+{"sid":"S4:s308","start":15167,"end":15174,"text":"return;"}
+{"sid":"S4:s309","start":15191,"end":15192,"text":"}"}
+{"sid":"S4:s310","start":15209,"end":15252,"text":"const int64_t rank = fg_rank<S>(src1_type);"}
+{"sid":"S4:s311","start":15269,"end":15304,"text":"if (best < 0 || rank < best_rank) {"}
+{"sid":"S4:s312","start":15325,"end":15341,"text":"best      = idx;"}
+{"sid":"S4:s313","start":15362,"end":15379,"text":"best_rank = rank;"}
+{"sid":"S4:s314","start":15396,"end":15397,"text":"}"}
+{"sid":"S4:s315","start":15410,"end":15413,"text":"});"}
+{"sid":"S4:s316","start":15422,"end":15423,"text":"}"}
+{"sid":"S4:s317","start":15428,"end":15429,"text":"}"}
+{"sid":"S4:s318","start":15434,"end":15468,"text":"// log each distinct decision once"}
+{"sid":"S4:s319","start":15473,"end":15532,"text":"static std::mutex                                      mtx;"}
+{"sid":"S4:s320","start":15537,"end":15597,"text":"static std::set<std::tuple<size_t, int, int32_t, int>> seen;"}
+{"sid":"S4:s321","start":15602,"end":15667,"text":"std::lock_guard<std::mutex>                            lock(mtx);"}
+{"sid":"S4:s322","start":15672,"end":15764,"text":"if (seen.emplace(std::hash<sycl::device>{}(dev), (int) src1_type, src1_prec, best).second) {"}
+{"sid":"S4:s323","start":15773,"end":15871,"text":"GGML_LOG_INFO(\"%s: src1 %s, src1 prec %d -> %s\\n\", __func__, ggml_type_name(src1_type), src1_prec,"}
+{"sid":"S4:s324","start":15894,"end":15905,"text":"best >= 0 ?"}
+{"sid":"S4:s325","start":15906,"end":15959,"text":"fg_combo_name(best).c_str() : \"none (library GEMM)\");"}
+{"sid":"S4:s326","start":15964,"end":15965,"text":"}"}
+{"sid":"S4:s327","start":15970,"end":15982,"text":"return best;"}
+{"sid":"S4:s328","start":15983,"end":15984,"text":"}"}
+{"sid":"S4:s329","start":15986,"end":16069,"text":"// src1 [N][K] -> packed [K/V][Npad][V] so B tiles load straight from global memory"}
+{"sid":"S4:s330","start":16070,"end":16107,"text":"template <typename E, typename T_src>"}
+{"sid":"S4:s331","start":16108,"end":16206,"text":"static void fused_gemm_pack_b(const T_src * y, typename E::store * packed, int N, int Npad, int K,"}
+{"sid":"S4:s332","start":16237,"end":16262,"text":"dpct::queue_ptr stream) {"}
+{"sid":"S4:s333","start":16267,"end":16317,"text":"constexpr int V   = 4 / sizeof(typename E::store);"}
+{"sid":"S4:s334","start":16322,"end":16348,"text":"const int     kqs = K / V;"}
+{"sid":"S4:s335","start":16353,"end":16432,"text":"stream->parallel_for(sycl::range<1>((size_t) Npad * kqs), [=](sycl::id<1> id) {"}
+{"sid":"S4:s336","start":16441,"end":16463,"text":"const int idx = id[0];"}
+{"sid":"S4:s337","start":16472,"end":16498,"text":"const int n   = idx / kqs;"}
+{"sid":"S4:s338","start":16507,"end":16537,"text":"const int kq  = idx - n * kqs;"}
+{"sid":"S4:s339","start":16546,"end":16577,"text":"typename E::store vals[V] = {};"}
+{"sid":"S4:s340","start":16586,"end":16598,"text":"if (n < N) {"}
+{"sid":"S4:s341","start":16611,"end":16659,"text":"const T_src * src = y + (size_t) n * K + V * kq;"}
+{"sid":"S4:s342","start":16660,"end":16674,"text":"#pragma unroll"}
+{"sid":"S4:s343","start":16687,"end":16716,"text":"for (int v = 0; v < V; ++v) {"}
+{"sid":"S4:s344","start":16733,"end":16766,"text":"vals[v] = E::cvt((float) src[v]);"}
+{"sid":"S4:s345","start":16779,"end":16780,"text":"}"}
+{"sid":"S4:s346","start":16789,"end":16790,"text":"}"}
+{"sid":"S4:s347","start":16799,"end":16863,"text":"typename E::store * out = packed + ((size_t) kq * Npad + n) * V;"}
+{"sid":"S4:s348","start":16864,"end":16878,"text":"#pragma unroll"}
+{"sid":"S4:s349","start":16887,"end":16916,"text":"for (int v = 0; v < V; ++v) {"}
+{"sid":"S4:s350","start":16929,"end":16946,"text":"out[v] = vals[v];"}
+{"sid":"S4:s351","start":16955,"end":16956,"text":"}"}
+{"sid":"S4:s352","start":16961,"end":16964,"text":"});"}
+{"sid":"S4:s353","start":16965,"end":16966,"text":"}"}
+{"sid":"S4:s354","start":16968,"end":17061,"text":"// A stage: one lane owns one row and decodes FG_BK values of it per k step, with every scale"}
+{"sid":"S4:s355","start":17062,"end":17126,"text":"// folded into the value so the mad below sees plain A elements."}
+{"sid":"S4:s356","start":17127,"end":17158,"text":"One overload per weight format."}
+{"sid":"S4:s357","start":17159,"end":17180,"text":"template <typename E>"}
+{"sid":"S4:s358","start":17181,"end":17297,"text":"static __dpct_inline__ void fg_stage_a(const block_iq4_nl * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s359","start":17302,"end":17336,"text":"const block_iq4_nl blk = xrow[kb];"}
+{"sid":"S4:s360","start":17341,"end":17380,"text":"const float        d   = (float) blk.d;"}
+{"sid":"S4:s361","start":17381,"end":17395,"text":"#pragma unroll"}
+{"sid":"S4:s362","start":17400,"end":17441,"text":"for (int j = 0; j < QK4_NL / 2; j += 2) {"}
+{"sid":"S4:s363","start":17450,"end":17479,"text":"const uint8_t q0 = blk.qs[j];"}
+{"sid":"S4:s364","start":17488,"end":17521,"text":"const uint8_t q1 = blk.qs[j + 1];"}
+{"sid":"S4:s365","start":17530,"end":17611,"text":"a[j / 2]     = E::make(d * kvalues_iq4nl[q0 & 0xf], d * kvalues_iq4nl[q1 & 0xf]);"}
+{"sid":"S4:s366","start":17620,"end":17699,"text":"a[j / 2 + 8] = E::make(d * kvalues_iq4nl[q0 >> 4], d * kvalues_iq4nl[q1 >> 4]);"}
+{"sid":"S4:s367","start":17704,"end":17705,"text":"}"}
+{"sid":"S4:s368","start":17706,"end":17707,"text":"}"}
+{"sid":"S4:s369","start":17709,"end":17770,"text":"// iq3_s: k step kb is sub-block kb % 8 of superblock kb / 8."}
+{"sid":"S4:s370","start":17771,"end":17807,"text":"The superblock is 110 bytes, so read"}
+{"sid":"S4:s371","start":17808,"end":17874,"text":"// only the fields of that sub-block instead of copying the block."}
+{"sid":"S4:s372","start":17875,"end":17889,"text":"Same decode as"}
+{"sid":"S4:s373","start":17890,"end":17984,"text":"// dequantize_block_iq3_s: grid entries are taken as dwords and the sign bit is a plain shift."}
+{"sid":"S4:s374","start":17985,"end":18006,"text":"template <typename E>"}
+{"sid":"S4:s375","start":18007,"end":18122,"text":"static __dpct_inline__ void fg_stage_a(const block_iq3_s * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s376","start":18127,"end":18211,"text":"static_assert(QK_K == 256, \"the iq3_s A stage assumes 8 sub-blocks per superblock\");"}
+{"sid":"S4:s377","start":18216,"end":18266,"text":"const block_iq3_s * blk = xrow + kb / (QK_K / 32);"}
+{"sid":"S4:s378","start":18271,"end":18314,"text":"const int           ib8 = kb % (QK_K / 32);"}
+{"sid":"S4:s379","start":18319,"end":18363,"text":"const uint8_t *     qs  = blk->qs + 8 * ib8;"}
+{"sid":"S4:s380","start":18368,"end":18407,"text":"const int           qh  = blk->qh[ib8];"}
+{"sid":"S4:s381","start":18412,"end":18515,"text":"const float         d   = (float) blk->d * (1 + 2 * ((blk->scales[ib8 / 2] >> (4 * (ib8 % 2))) & 0xf));"}
+{"sid":"S4:s382","start":18516,"end":18530,"text":"#pragma unroll"}
+{"sid":"S4:s383","start":18535,"end":18567,"text":"for (int il = 0; il < 4; ++il) {"}
+{"sid":"S4:s384","start":18576,"end":18656,"text":"const uint32_t grid1 = iq3s_grid[qs[2 * il + 0] | ((qh << (8 - 2 * il)) & 256)];"}
+{"sid":"S4:s385","start":18665,"end":18745,"text":"const uint32_t grid2 = iq3s_grid[qs[2 * il + 1] | ((qh << (7 - 2 * il)) & 256)];"}
+{"sid":"S4:s386","start":18754,"end":18802,"text":"const int      signs = blk->signs[4 * ib8 + il];"}
+{"sid":"S4:s387","start":18803,"end":18817,"text":"#pragma unroll"}
+{"sid":"S4:s388","start":18826,"end":18855,"text":"for (int j = 0; j < 2; ++j) {"}
+{"sid":"S4:s389","start":18868,"end":18927,"text":"const float g1a = (float) ((grid1 >> (16 * j + 0)) & 0xff);"}
+{"sid":"S4:s390","start":18940,"end":18999,"text":"const float g1b = (float) ((grid1 >> (16 * j + 8)) & 0xff);"}
+{"sid":"S4:s391","start":19012,"end":19071,"text":"const float g2a = (float) ((grid2 >> (16 * j + 0)) & 0xff);"}
+{"sid":"S4:s392","start":19084,"end":19143,"text":"const float g2b = (float) ((grid2 >> (16 * j + 8)) & 0xff);"}
+{"sid":"S4:s393","start":19156,"end":19180,"text":"const int   s   = 2 * j;"}
+{"sid":"S4:s394","start":19193,"end":19252,"text":"a[4 * il + j]     = E::make(d * ((signs & (1 << (s + 0))) ?"}
+{"sid":"S4:s395","start":19253,"end":19265,"text":"-g1a : g1a),"}
+{"sid":"S4:s396","start":19306,"end":19337,"text":"d * ((signs & (1 << (s + 1))) ?"}
+{"sid":"S4:s397","start":19338,"end":19351,"text":"-g1b : g1b));"}
+{"sid":"S4:s398","start":19364,"end":19423,"text":"a[4 * il + j + 2] = E::make(d * ((signs & (1 << (s + 4))) ?"}
+{"sid":"S4:s399","start":19424,"end":19436,"text":"-g2a : g2a),"}
+{"sid":"S4:s400","start":19477,"end":19508,"text":"d * ((signs & (1 << (s + 5))) ?"}
+{"sid":"S4:s401","start":19509,"end":19522,"text":"-g2b : g2b));"}
+{"sid":"S4:s402","start":19531,"end":19532,"text":"}"}
+{"sid":"S4:s403","start":19537,"end":19538,"text":"}"}
+{"sid":"S4:s404","start":19539,"end":19540,"text":"}"}
+{"sid":"S4:s405","start":19542,"end":19605,"text":"// values per stored block, so a row of K values is K/qk blocks"}
+{"sid":"S4:s406","start":19606,"end":19659,"text":"template <typename block_q_t> struct fg_block_traits;"}
+{"sid":"S4:s407","start":19660,"end":19747,"text":"template <> struct fg_block_traits<block_iq4_nl> { static constexpr int qk = QK4_NL; };"}
+{"sid":"S4:s408","start":19748,"end":19833,"text":"template <> struct fg_block_traits<block_iq3_s>  { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s409","start":19834,"end":19920,"text":"template <> struct fg_block_traits<block_iq3_xxs> { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s410","start":19921,"end":20007,"text":"template <> struct fg_block_traits<block_iq4_xs>  { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s411","start":20008,"end":20094,"text":"template <> struct fg_block_traits<block_iq2_xxs> { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s412","start":20095,"end":20181,"text":"template <> struct fg_block_traits<block_iq2_xs>  { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s413","start":20182,"end":20268,"text":"template <> struct fg_block_traits<block_iq2_s>   { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s414","start":20269,"end":20355,"text":"template <> struct fg_block_traits<block_iq1_s>   { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s415","start":20356,"end":20442,"text":"template <> struct fg_block_traits<block_iq1_m>   { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s416","start":20443,"end":20530,"text":"template <> struct fg_block_traits<block_q8_0>    { static constexpr int qk = QK8_0; };"}
+{"sid":"S4:s417","start":20531,"end":20617,"text":"template <> struct fg_block_traits<block_q4_K>    { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s418","start":20618,"end":20704,"text":"template <> struct fg_block_traits<block_q5_K>    { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s419","start":20705,"end":20791,"text":"template <> struct fg_block_traits<block_q6_K>    { static constexpr int qk = QK_K; };"}
+{"sid":"S4:s420","start":20793,"end":20877,"text":"// The A stages below are the dequantize_block_iq* kernels rewritten for one k step."}
+{"sid":"S4:s421","start":20878,"end":20885,"text":"There a"}
+{"sid":"S4:s422","start":20886,"end":20981,"text":"// work-item handled one quarter (il) of one 32-wide sub-block (ib); here one lane produces the"}
+{"sid":"S4:s423","start":20982,"end":21053,"text":"// whole step, so il becomes a loop and ib is kb inside the superblock."}
+{"sid":"S4:s424","start":21054,"end":21075,"text":"Each quarter yields 8"}
+{"sid":"S4:s425","start":21076,"end":21169,"text":"// consecutive values, i.e. 4 pairs at a[4*il], so nothing larger than 8 floats is ever live."}
+{"sid":"S4:s426","start":21170,"end":21252,"text":"#define FG_SUPERBLOCK(T)                                                         \\"}
+{"sid":"S4:s427","start":21257,"end":21344,"text":"static_assert(QK_K == 256, \"the \" #T \" A stage assumes 8 sub-blocks per superblock\"); \\"}
+{"sid":"S4:s428","start":21349,"end":21427,"text":"const T * blk = xrow + kb / (QK_K / 32);                                     \\"}
+{"sid":"S4:s429","start":21432,"end":21464,"text":"const int ib  = kb % (QK_K / 32)"}
+{"sid":"S4:s430","start":21466,"end":21487,"text":"template <typename E>"}
+{"sid":"S4:s431","start":21488,"end":21593,"text":"static __dpct_inline__ void fg_pack_quarter(const float * __restrict__ t, typename E::pair * a, int il) {"}
+{"sid":"S4:s432","start":21594,"end":21608,"text":"#pragma unroll"}
+{"sid":"S4:s433","start":21613,"end":21642,"text":"for (int j = 0; j < 4; ++j) {"}
+{"sid":"S4:s434","start":21651,"end":21699,"text":"a[4 * il + j] = E::make(t[2 * j], t[2 * j + 1]);"}
+{"sid":"S4:s435","start":21704,"end":21705,"text":"}"}
+{"sid":"S4:s436","start":21706,"end":21707,"text":"}"}
+{"sid":"S4:s437","start":21709,"end":21730,"text":"template <typename E>"}
+{"sid":"S4:s438","start":21731,"end":21847,"text":"static __dpct_inline__ void fg_stage_a(const block_iq4_xs * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s439","start":21852,"end":21880,"text":"FG_SUPERBLOCK(block_iq4_xs);"}
+{"sid":"S4:s440","start":21885,"end":21975,"text":"// low nibbles fill the first half of the step, high nibbles the second, so the two halves"}
+{"sid":"S4:s441","start":21980,"end":22041,"text":"// land at a[0..7] and a[8..15] and no quarter loop is needed"}
+{"sid":"S4:s442","start":22046,"end":22078,"text":"const float d = (float) blk->d *"}
+{"sid":"S4:s443","start":22087,"end":22189,"text":"((((blk->scales_l[ib / 2] >> (4 * (ib % 2))) & 0xf) | (((blk->scales_h >> (2 * ib)) & 3) << 4)) - 32);"}
+{"sid":"S4:s444","start":22194,"end":22233,"text":"const uint8_t * q4 = blk->qs + 16 * ib;"}
+{"sid":"S4:s445","start":22234,"end":22248,"text":"#pragma unroll"}
+{"sid":"S4:s446","start":22253,"end":22282,"text":"for (int j = 0; j < 8; ++j) {"}
+{"sid":"S4:s447","start":22291,"end":22386,"text":"a[j]     = E::make(d * kvalues_iq4nl[q4[2 * j] & 0xf], d * kvalues_iq4nl[q4[2 * j + 1] & 0xf]);"}
+{"sid":"S4:s448","start":22395,"end":22489,"text":"a[8 + j] = E::make(d * kvalues_iq4nl[q4[2 * j] >> 4],  d * kvalues_iq4nl[q4[2 * j + 1] >> 4]);"}
+{"sid":"S4:s449","start":22494,"end":22495,"text":"}"}
+{"sid":"S4:s450","start":22496,"end":22497,"text":"}"}
+{"sid":"S4:s451","start":22499,"end":22520,"text":"template <typename E>"}
+{"sid":"S4:s452","start":22521,"end":22638,"text":"static __dpct_inline__ void fg_stage_a(const block_iq3_xxs * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s453","start":22643,"end":22672,"text":"FG_SUPERBLOCK(block_iq3_xxs);"}
+{"sid":"S4:s454","start":22677,"end":22719,"text":"const uint8_t *  q3    = blk->qs + 8 * ib;"}
+{"sid":"S4:s455","start":22724,"end":22798,"text":"const uint16_t * gas   = (const uint16_t *) (blk->qs + QK_K / 4) + 2 * ib;"}
+{"sid":"S4:s456","start":22803,"end":22852,"text":"const uint32_t   aux32 = gas[0] | (gas[1] << 16);"}
+{"sid":"S4:s457","start":22857,"end":22929,"text":"const float      d     = (float) blk->d * (0.5f + (aux32 >> 28)) * 0.5f;"}
+{"sid":"S4:s458","start":22930,"end":22944,"text":"#pragma unroll"}
+{"sid":"S4:s459","start":22949,"end":22981,"text":"for (int il = 0; il < 4; ++il) {"}
+{"sid":"S4:s460","start":22990,"end":23063,"text":"const uint8_t * grid1 = (const uint8_t *) (iq3xxs_grid + q3[2 * il + 0]);"}
+{"sid":"S4:s461","start":23072,"end":23145,"text":"const uint8_t * grid2 = (const uint8_t *) (iq3xxs_grid + q3[2 * il + 1]);"}
+{"sid":"S4:s462","start":23154,"end":23218,"text":"const uint8_t   signs = ksigns_iq2xs[(aux32 >> (7 * il)) & 127];"}
+{"sid":"S4:s463","start":23227,"end":23238,"text":"float t[8];"}
+{"sid":"S4:s464","start":23239,"end":23253,"text":"#pragma unroll"}
+{"sid":"S4:s465","start":23262,"end":23291,"text":"for (int j = 0; j < 4; ++j) {"}
+{"sid":"S4:s466","start":23304,"end":23359,"text":"t[j + 0] = d * grid1[j] * (signs & kmask_iq2xs[j + 0] ?"}
+{"sid":"S4:s467","start":23360,"end":23372,"text":"-1.f : 1.f);"}
+{"sid":"S4:s468","start":23385,"end":23440,"text":"t[j + 4] = d * grid2[j] * (signs & kmask_iq2xs[j + 4] ?"}
+{"sid":"S4:s469","start":23441,"end":23453,"text":"-1.f : 1.f);"}
+{"sid":"S4:s470","start":23462,"end":23463,"text":"}"}
+{"sid":"S4:s471","start":23472,"end":23501,"text":"fg_pack_quarter<E>(t, a, il);"}
+{"sid":"S4:s472","start":23506,"end":23507,"text":"}"}
+{"sid":"S4:s473","start":23508,"end":23509,"text":"}"}
+{"sid":"S4:s474","start":23511,"end":23532,"text":"template <typename E>"}
+{"sid":"S4:s475","start":23533,"end":23650,"text":"static __dpct_inline__ void fg_stage_a(const block_iq2_xxs * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s476","start":23655,"end":23684,"text":"FG_SUPERBLOCK(block_iq2_xxs);"}
+{"sid":"S4:s477","start":23689,"end":23731,"text":"const uint16_t * q2    = blk->qs + 4 * ib;"}
+{"sid":"S4:s478","start":23736,"end":23782,"text":"const uint8_t *  aux8  = (const uint8_t *) q2;"}
+{"sid":"S4:s479","start":23787,"end":23834,"text":"const uint32_t   aux32 = q2[2] | (q2[3] << 16);"}
+{"sid":"S4:s480","start":23839,"end":23912,"text":"const float      d     = (float) blk->d * (0.5f + (aux32 >> 28)) * 0.25f;"}
+{"sid":"S4:s481","start":23913,"end":23927,"text":"#pragma unroll"}
+{"sid":"S4:s482","start":23932,"end":23964,"text":"for (int il = 0; il < 4; ++il) {"}
+{"sid":"S4:s483","start":23973,"end":24040,"text":"const uint8_t * grid  = (const uint8_t *) (iq2xxs_grid + aux8[il]);"}
+{"sid":"S4:s484","start":24049,"end":24113,"text":"const uint8_t   signs = ksigns_iq2xs[(aux32 >> (7 * il)) & 127];"}
+{"sid":"S4:s485","start":24122,"end":24133,"text":"float t[8];"}
+{"sid":"S4:s486","start":24134,"end":24148,"text":"#pragma unroll"}
+{"sid":"S4:s487","start":24157,"end":24186,"text":"for (int j = 0; j < 8; ++j) {"}
+{"sid":"S4:s488","start":24199,"end":24245,"text":"t[j] = d * grid[j] * (signs & kmask_iq2xs[j] ?"}
+{"sid":"S4:s489","start":24246,"end":24258,"text":"-1.f : 1.f);"}
+{"sid":"S4:s490","start":24267,"end":24268,"text":"}"}
+{"sid":"S4:s491","start":24277,"end":24306,"text":"fg_pack_quarter<E>(t, a, il);"}
+{"sid":"S4:s492","start":24311,"end":24312,"text":"}"}
+{"sid":"S4:s493","start":24313,"end":24314,"text":"}"}
+{"sid":"S4:s494","start":24316,"end":24337,"text":"template <typename E>"}
+{"sid":"S4:s495","start":24338,"end":24454,"text":"static __dpct_inline__ void fg_stage_a(const block_iq2_xs * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s496","start":24459,"end":24487,"text":"FG_SUPERBLOCK(block_iq2_xs);"}
+{"sid":"S4:s497","start":24492,"end":24531,"text":"const uint16_t * q2 = blk->qs + 4 * ib;"}
+{"sid":"S4:s498","start":24532,"end":24546,"text":"#pragma unroll"}
+{"sid":"S4:s499","start":24551,"end":24583,"text":"for (int il = 0; il < 4; ++il) {"}
+{"sid":"S4:s500","start":24592,"end":24664,"text":"const uint8_t * grid  = (const uint8_t *) (iq2xs_grid + (q2[il] & 511));"}
+{"sid":"S4:s501","start":24673,"end":24775,"text":"const float     d     = (float) blk->d * (0.5f + ((blk->scales[ib] >> (4 * (il / 2))) & 0xf)) * 0.25f;"}
+{"sid":"S4:s502","start":24784,"end":24834,"text":"const uint8_t   signs = ksigns_iq2xs[q2[il] >> 9];"}
+{"sid":"S4:s503","start":24843,"end":24854,"text":"float t[8];"}
+{"sid":"S4:s504","start":24855,"end":24869,"text":"#pragma unroll"}
+{"sid":"S4:s505","start":24878,"end":24907,"text":"for (int j = 0; j < 8; ++j) {"}
+{"sid":"S4:s506","start":24920,"end":24966,"text":"t[j] = d * grid[j] * (signs & kmask_iq2xs[j] ?"}
+{"sid":"S4:s507","start":24967,"end":24979,"text":"-1.f : 1.f);"}
+{"sid":"S4:s508","start":24988,"end":24989,"text":"}"}
+{"sid":"S4:s509","start":24998,"end":25027,"text":"fg_pack_quarter<E>(t, a, il);"}
+{"sid":"S4:s510","start":25032,"end":25033,"text":"}"}
+{"sid":"S4:s511","start":25034,"end":25035,"text":"}"}
+{"sid":"S4:s512","start":25037,"end":25058,"text":"template <typename E>"}
+{"sid":"S4:s513","start":25059,"end":25174,"text":"static __dpct_inline__ void fg_stage_a(const block_iq2_s * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s514","start":25179,"end":25206,"text":"FG_SUPERBLOCK(block_iq2_s);"}
+{"sid":"S4:s515","start":25207,"end":25221,"text":"#pragma unroll"}
+{"sid":"S4:s516","start":25226,"end":25258,"text":"for (int il = 0; il < 4; ++il) {"}
+{"sid":"S4:s517","start":25267,"end":25289,"text":"const uint8_t * grid ="}
+{"sid":"S4:s518","start":25302,"end":25399,"text":"(const uint8_t *) (iq2s_grid + (blk->qs[4 * ib + il] | ((blk->qh[ib] << (8 - 2 * il)) & 0x300)));"}
+{"sid":"S4:s519","start":25408,"end":25508,"text":"const float   d     = (float) blk->d * (0.5f + ((blk->scales[ib] >> (4 * (il / 2))) & 0xf)) * 0.25f;"}
+{"sid":"S4:s520","start":25517,"end":25571,"text":"const uint8_t signs = blk->qs[QK_K / 8 + 4 * ib + il];"}
+{"sid":"S4:s521","start":25580,"end":25591,"text":"float t[8];"}
+{"sid":"S4:s522","start":25592,"end":25606,"text":"#pragma unroll"}
+{"sid":"S4:s523","start":25615,"end":25644,"text":"for (int j = 0; j < 8; ++j) {"}
+{"sid":"S4:s524","start":25657,"end":25703,"text":"t[j] = d * grid[j] * (signs & kmask_iq2xs[j] ?"}
+{"sid":"S4:s525","start":25704,"end":25716,"text":"-1.f : 1.f);"}
+{"sid":"S4:s526","start":25725,"end":25726,"text":"}"}
+{"sid":"S4:s527","start":25735,"end":25764,"text":"fg_pack_quarter<E>(t, a, il);"}
+{"sid":"S4:s528","start":25769,"end":25770,"text":"}"}
+{"sid":"S4:s529","start":25771,"end":25772,"text":"}"}
+{"sid":"S4:s530","start":25774,"end":25795,"text":"template <typename E>"}
+{"sid":"S4:s531","start":25796,"end":25911,"text":"static __dpct_inline__ void fg_stage_a(const block_iq1_s * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s532","start":25916,"end":25943,"text":"FG_SUPERBLOCK(block_iq1_s);"}
+{"sid":"S4:s533","start":25948,"end":25990,"text":"const float delta = blk->qh[ib] & 0x8000 ?"}
+{"sid":"S4:s534","start":25991,"end":26025,"text":"-1 - IQ1S_DELTA : -1 + IQ1S_DELTA;"}
+{"sid":"S4:s535","start":26030,"end":26103,"text":"const float d     = (float) blk->d * (2 * ((blk->qh[ib] >> 12) & 7) + 1);"}
+{"sid":"S4:s536","start":26104,"end":26118,"text":"#pragma unroll"}
+{"sid":"S4:s537","start":26123,"end":26155,"text":"for (int il = 0; il < 4; ++il) {"}
+{"sid":"S4:s538","start":26164,"end":26189,"text":"uint32_t       grid32[2];"}
+{"sid":"S4:s539","start":26198,"end":26241,"text":"const int8_t * q = (const int8_t *) grid32;"}
+{"sid":"S4:s540","start":26250,"end":26339,"text":"grid32[0] = iq1s_grid_gpu[blk->qs[4 * ib + il] | (((blk->qh[ib] >> (3 * il)) & 7) << 8)];"}
+{"sid":"S4:s541","start":26348,"end":26390,"text":"grid32[1] = (grid32[0] >> 4) & 0x0f0f0f0f;"}
+{"sid":"S4:s542","start":26399,"end":26423,"text":"grid32[0] &= 0x0f0f0f0f;"}
+{"sid":"S4:s543","start":26432,"end":26443,"text":"float t[8];"}
+{"sid":"S4:s544","start":26444,"end":26458,"text":"#pragma unroll"}
+{"sid":"S4:s545","start":26467,"end":26496,"text":"for (int j = 0; j < 8; ++j) {"}
+{"sid":"S4:s546","start":26509,"end":26535,"text":"t[j] = d * (q[j] + delta);"}
+{"sid":"S4:s547","start":26544,"end":26545,"text":"}"}
+{"sid":"S4:s548","start":26554,"end":26583,"text":"fg_pack_quarter<E>(t, a, il);"}
+{"sid":"S4:s549","start":26588,"end":26589,"text":"}"}
+{"sid":"S4:s550","start":26590,"end":26591,"text":"}"}
+{"sid":"S4:s551","start":26593,"end":26614,"text":"template <typename E>"}
+{"sid":"S4:s552","start":26615,"end":26730,"text":"static __dpct_inline__ void fg_stage_a(const block_iq1_m * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s553","start":26735,"end":26762,"text":"FG_SUPERBLOCK(block_iq1_m);"}
+{"sid":"S4:s554","start":26767,"end":26820,"text":"const uint16_t * sc = (const uint16_t *) blk->scales;"}
+{"sid":"S4:s555","start":26825,"end":26848,"text":"iq1m_scale_t     scale;"}
+{"sid":"S4:s556","start":26853,"end":26950,"text":"scale.u16 = (sc[0] >> 12) | ((sc[1] >> 8) & 0x00f0) | ((sc[2] >> 4) & 0x0f00) | (sc[3] & 0xf000);"}
+{"sid":"S4:s557","start":26951,"end":26965,"text":"#pragma unroll"}
+{"sid":"S4:s558","start":26970,"end":27002,"text":"for (int il = 0; il < 4; ++il) {"}
+{"sid":"S4:s559","start":27011,"end":27047,"text":"const int   ib16  = 2 * ib + il / 2;"}
+{"sid":"S4:s560","start":27056,"end":27149,"text":"const float d     = (float) scale.f16 * (2 * ((sc[ib16 / 4] >> (3 * (ib16 % 4))) & 0x7) + 1);"}
+{"sid":"S4:s561","start":27158,"end":27231,"text":"const float delta = blk->qh[2 * ib + il / 2] & (0x08 << (4 * (il % 2))) ?"}
+{"sid":"S4:s562","start":27232,"end":27266,"text":"-1 - IQ1M_DELTA : -1 + IQ1M_DELTA;"}
+{"sid":"S4:s563","start":27275,"end":27300,"text":"uint32_t       grid32[2];"}
+{"sid":"S4:s564","start":27309,"end":27352,"text":"const int8_t * q = (const int8_t *) grid32;"}
+{"sid":"S4:s565","start":27361,"end":27409,"text":"grid32[0] = iq1s_grid_gpu[blk->qs[4 * ib + il] |"}
+{"sid":"S4:s566","start":27444,"end":27503,"text":"(((blk->qh[2 * ib + il / 2] >> (4 * (il % 2))) & 7) << 8)];"}
+{"sid":"S4:s567","start":27512,"end":27554,"text":"grid32[1] = (grid32[0] >> 4) & 0x0f0f0f0f;"}
+{"sid":"S4:s568","start":27563,"end":27587,"text":"grid32[0] &= 0x0f0f0f0f;"}
+{"sid":"S4:s569","start":27596,"end":27607,"text":"float t[8];"}
+{"sid":"S4:s570","start":27608,"end":27622,"text":"#pragma unroll"}
+{"sid":"S4:s571","start":27631,"end":27660,"text":"for (int j = 0; j < 8; ++j) {"}
+{"sid":"S4:s572","start":27673,"end":27699,"text":"t[j] = d * (q[j] + delta);"}
+{"sid":"S4:s573","start":27708,"end":27709,"text":"}"}
+{"sid":"S4:s574","start":27718,"end":27747,"text":"fg_pack_quarter<E>(t, a, il);"}
+{"sid":"S4:s575","start":27752,"end":27753,"text":"}"}
+{"sid":"S4:s576","start":27754,"end":27755,"text":"}"}
+{"sid":"S4:s577","start":27758,"end":27783,"text":"// q8_0 and the k-quants."}
+{"sid":"S4:s578","start":27784,"end":27856,"text":"Each decode takes the fields of one 32-value sub-block, so the canonical"}
+{"sid":"S4:s579","start":27857,"end":27956,"text":"// layout and the reorder (SoA) layout of reorder_qw() share it and differ only in where the fields"}
+{"sid":"S4:s580","start":27957,"end":27987,"text":"// live, as in dequantize.hpp."}
+{"sid":"S4:s581","start":27988,"end":28009,"text":"template <typename E>"}
+{"sid":"S4:s582","start":28010,"end":28123,"text":"static __dpct_inline__ void fg_decode_q8_0(const int8_t * __restrict__ qs, const float d, typename E::pair * a) {"}
+{"sid":"S4:s583","start":28124,"end":28138,"text":"#pragma unroll"}
+{"sid":"S4:s584","start":28143,"end":28180,"text":"for (int j = 0; j < QK8_0 / 2; ++j) {"}
+{"sid":"S4:s585","start":28189,"end":28238,"text":"a[j] = E::make(d * qs[2 * j], d * qs[2 * j + 1]);"}
+{"sid":"S4:s586","start":28243,"end":28244,"text":"}"}
+{"sid":"S4:s587","start":28245,"end":28246,"text":"}"}
+{"sid":"S4:s588","start":28248,"end":28302,"text":"// same unpack as get_scale_min_k4() in dequantize.hpp"}
+{"sid":"S4:s589","start":28303,"end":28419,"text":"static __dpct_inline__ void fg_scale_min_k4(const int j, const uint8_t * __restrict__ q, uint8_t & d, uint8_t & m) {"}
+{"sid":"S4:s590","start":28424,"end":28436,"text":"if (j < 4) {"}
+{"sid":"S4:s591","start":28445,"end":28459,"text":"d = q[j] & 63;"}
+{"sid":"S4:s592","start":28468,"end":28486,"text":"m = q[j + 4] & 63;"}
+{"sid":"S4:s593","start":28491,"end":28499,"text":"} else {"}
+{"sid":"S4:s594","start":28508,"end":28554,"text":"d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);"}
+{"sid":"S4:s595","start":28563,"end":28608,"text":"m = (q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4);"}
+{"sid":"S4:s596","start":28613,"end":28614,"text":"}"}
+{"sid":"S4:s597","start":28615,"end":28616,"text":"}"}
+{"sid":"S4:s598","start":28618,"end":28718,"text":"// q4_K sub-block ib (0..7) uses scale/min pair ib and the low (even ib) or high (odd ib) nibbles of"}
+{"sid":"S4:s599","start":28719,"end":28770,"text":"// qs[32 * (ib / 2) ...], as in dequantize_row_q4_K"}
+{"sid":"S4:s600","start":28771,"end":28792,"text":"template <typename E>"}
+{"sid":"S4:s601","start":28793,"end":28905,"text":"static __dpct_inline__ void fg_decode_q4_K(const uint8_t * __restrict__ qs, const uint8_t * __restrict__ scales,"}
+{"sid":"S4:s602","start":28949,"end":29008,"text":"const sycl::half2 dm, const int ib, typename E::pair * a) {"}
+{"sid":"S4:s603","start":29013,"end":29028,"text":"uint8_t sc, mb;"}
+{"sid":"S4:s604","start":29033,"end":29069,"text":"fg_scale_min_k4(ib, scales, sc, mb);"}
+{"sid":"S4:s605","start":29074,"end":29117,"text":"const float     d     = (float) dm[0] * sc;"}
+{"sid":"S4:s606","start":29122,"end":29165,"text":"const float     m     = (float) dm[1] * mb;"}
+{"sid":"S4:s607","start":29170,"end":29213,"text":"const uint8_t * q     = qs + 32 * (ib / 2);"}
+{"sid":"S4:s608","start":29218,"end":29255,"text":"const int       shift = 4 * (ib % 2);"}
+{"sid":"S4:s609","start":29256,"end":29270,"text":"#pragma unroll"}
+{"sid":"S4:s610","start":29275,"end":29305,"text":"for (int j = 0; j < 16; ++j) {"}
+{"sid":"S4:s611","start":29314,"end":29407,"text":"a[j] = E::make(d * ((q[2 * j] >> shift) & 0xF) - m, d * ((q[2 * j + 1] >> shift) & 0xF) - m);"}
+{"sid":"S4:s612","start":29412,"end":29413,"text":"}"}
+{"sid":"S4:s613","start":29414,"end":29415,"text":"}"}
+{"sid":"S4:s614","start":29417,"end":29475,"text":"// q5_K: q4_K plus one high bit per value, bit ib of qh[l]"}
+{"sid":"S4:s615","start":29476,"end":29497,"text":"template <typename E>"}
+{"sid":"S4:s616","start":29498,"end":29606,"text":"static __dpct_inline__ void fg_decode_q5_K(const uint8_t * __restrict__ qs, const uint8_t * __restrict__ qh,"}
+{"sid":"S4:s617","start":29650,"end":29722,"text":"const uint8_t * __restrict__ scales, const sycl::half2 dm, const int ib,"}
+{"sid":"S4:s618","start":29766,"end":29789,"text":"typename E::pair * a) {"}
+{"sid":"S4:s619","start":29794,"end":29809,"text":"uint8_t sc, mb;"}
+{"sid":"S4:s620","start":29814,"end":29850,"text":"fg_scale_min_k4(ib, scales, sc, mb);"}
+{"sid":"S4:s621","start":29855,"end":29898,"text":"const float     d     = (float) dm[0] * sc;"}
+{"sid":"S4:s622","start":29903,"end":29946,"text":"const float     m     = (float) dm[1] * mb;"}
+{"sid":"S4:s623","start":29951,"end":29994,"text":"const uint8_t * q     = qs + 32 * (ib / 2);"}
+{"sid":"S4:s624","start":29999,"end":30036,"text":"const int       shift = 4 * (ib % 2);"}
+{"sid":"S4:s625","start":30037,"end":30051,"text":"#pragma unroll"}
+{"sid":"S4:s626","start":30056,"end":30086,"text":"for (int j = 0; j < 16; ++j) {"}
+{"sid":"S4:s627","start":30095,"end":30115,"text":"const int l = 2 * j;"}
+{"sid":"S4:s628","start":30124,"end":30202,"text":"a[j] = E::make(d * (((q[l] >> shift) & 0xF) | (((qh[l] >> ib) & 1) << 4)) - m,"}
+{"sid":"S4:s629","start":30226,"end":30298,"text":"d * (((q[l + 1] >> shift) & 0xF) | (((qh[l + 1] >> ib) & 1) << 4)) - m);"}
+{"sid":"S4:s630","start":30303,"end":30304,"text":"}"}
+{"sid":"S4:s631","start":30305,"end":30306,"text":"}"}
+{"sid":"S4:s632","start":30308,"end":30371,"text":"// q6_K: sub-block ib is quarter r = ib % 4 of half h = ib / 4."}
+{"sid":"S4:s633","start":30372,"end":30407,"text":"The half selects ql + 64h, qh + 32h"}
+{"sid":"S4:s634","start":30408,"end":30506,"text":"// and scales + 8h; the quarter selects ql + 32(r & 1), the ql nibble r / 2, the qh bit pair r and"}
+{"sid":"S4:s635","start":30507,"end":30549,"text":"// scales + 2r, as in dequantize_row_q6_K."}
+{"sid":"S4:s636","start":30550,"end":30597,"text":"The scale changes at value 16 of the sub-block."}
+{"sid":"S4:s637","start":30598,"end":30619,"text":"template <typename E>"}
+{"sid":"S4:s638","start":30620,"end":30728,"text":"static __dpct_inline__ void fg_decode_q6_K(const uint8_t * __restrict__ ql, const uint8_t * __restrict__ qh,"}
+{"sid":"S4:s639","start":30772,"end":30836,"text":"const int8_t * __restrict__ scales, const float d, const int ib,"}
+{"sid":"S4:s640","start":30880,"end":30903,"text":"typename E::pair * a) {"}
+{"sid":"S4:s641","start":30908,"end":30936,"text":"const int       h  = ib / 4;"}
+{"sid":"S4:s642","start":30941,"end":30969,"text":"const int       r  = ib % 4;"}
+{"sid":"S4:s643","start":30974,"end":31022,"text":"const uint8_t * q  = ql + 64 * h + 32 * (r & 1);"}
+{"sid":"S4:s644","start":31027,"end":31060,"text":"const uint8_t * hb = qh + 32 * h;"}
+{"sid":"S4:s645","start":31065,"end":31109,"text":"const int8_t *  sc = scales + 8 * h + 2 * r;"}
+{"sid":"S4:s646","start":31110,"end":31124,"text":"#pragma unroll"}
+{"sid":"S4:s647","start":31129,"end":31159,"text":"for (int j = 0; j < 16; ++j) {"}
+{"sid":"S4:s648","start":31168,"end":31191,"text":"const int   l  = 2 * j;"}
+{"sid":"S4:s649","start":31200,"end":31231,"text":"const float dl = d * sc[j / 8];"}
+{"sid":"S4:s650","start":31240,"end":31330,"text":"const int   q0 = (((q[l] >> (4 * (r / 2))) & 0xF) | (((hb[l] >> (2 * r)) & 3) << 4)) - 32;"}
+{"sid":"S4:s651","start":31339,"end":31437,"text":"const int   q1 = (((q[l + 1] >> (4 * (r / 2))) & 0xF) | (((hb[l + 1] >> (2 * r)) & 3) << 4)) - 32;"}
+{"sid":"S4:s652","start":31446,"end":31479,"text":"a[j] = E::make(dl * q0, dl * q1);"}
+{"sid":"S4:s653","start":31484,"end":31485,"text":"}"}
+{"sid":"S4:s654","start":31486,"end":31487,"text":"}"}
+{"sid":"S4:s655","start":31489,"end":31510,"text":"template <typename E>"}
+{"sid":"S4:s656","start":31511,"end":31625,"text":"static __dpct_inline__ void fg_stage_a(const block_q8_0 * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s657","start":31630,"end":31684,"text":"fg_decode_q8_0<E>(xrow[kb].qs, (float) xrow[kb].d, a);"}
+{"sid":"S4:s658","start":31685,"end":31686,"text":"}"}
+{"sid":"S4:s659","start":31688,"end":31709,"text":"template <typename E>"}
+{"sid":"S4:s660","start":31710,"end":31824,"text":"static __dpct_inline__ void fg_stage_a(const block_q4_K * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s661","start":31829,"end":31855,"text":"FG_SUPERBLOCK(block_q4_K);"}
+{"sid":"S4:s662","start":31860,"end":31916,"text":"fg_decode_q4_K<E>(blk->qs, blk->scales, blk->dm, ib, a);"}
+{"sid":"S4:s663","start":31917,"end":31918,"text":"}"}
+{"sid":"S4:s664","start":31920,"end":31941,"text":"template <typename E>"}
+{"sid":"S4:s665","start":31942,"end":32056,"text":"static __dpct_inline__ void fg_stage_a(const block_q5_K * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s666","start":32061,"end":32087,"text":"FG_SUPERBLOCK(block_q5_K);"}
+{"sid":"S4:s667","start":32092,"end":32157,"text":"fg_decode_q5_K<E>(blk->qs, blk->qh, blk->scales, blk->dm, ib, a);"}
+{"sid":"S4:s668","start":32158,"end":32159,"text":"}"}
+{"sid":"S4:s669","start":32161,"end":32182,"text":"template <typename E>"}
+{"sid":"S4:s670","start":32183,"end":32297,"text":"static __dpct_inline__ void fg_stage_a(const block_q6_K * __restrict__ xrow, const int kb, typename E::pair * a) {"}
+{"sid":"S4:s671","start":32302,"end":32328,"text":"FG_SUPERBLOCK(block_q6_K);"}
+{"sid":"S4:s672","start":32333,"end":32405,"text":"fg_decode_q6_K<E>(blk->ql, blk->qh, blk->scales, (float) blk->d, ib, a);"}
+{"sid":"S4:s673","start":32406,"end":32407,"text":"}"}
+{"sid":"S4:s674","start":32409,"end":32510,"text":"// Reorder (SoA) layout: each block field is one stream over the nblocks of the matrix (of the expert"}
+{"sid":"S4:s675","start":32511,"end":32575,"text":"// slice for MUL_MAT_ID), in the order reorder_qw() writes them."}
+{"sid":"S4:s676","start":32576,"end":32601,"text":"Block ib holds k step kb."}
+{"sid":"S4:s677","start":32602,"end":32647,"text":"template <typename block_q_t> struct fg_soa {"}
+{"sid":"S4:s678","start":32652,"end":32692,"text":"static constexpr bool supported = false;"}
+{"sid":"S4:s679","start":32693,"end":32695,"text":"};"}
+{"sid":"S4:s680","start":32697,"end":32736,"text":"template <> struct fg_soa<block_q8_0> {"}
+{"sid":"S4:s681","start":32741,"end":32780,"text":"static constexpr bool supported = true;"}
+{"sid":"S4:s682","start":32785,"end":32795,"text":"// [qs][d]"}
+{"sid":"S4:s683","start":32800,"end":32821,"text":"template <typename E>"}
+{"sid":"S4:s684","start":32826,"end":32928,"text":"static __dpct_inline__ void stage(const uint8_t * x, const size_t nblocks, const size_t ib, const int,"}
+{"sid":"S4:s685","start":32967,"end":32990,"text":"typename E::pair * a) {"}
+{"sid":"S4:s686","start":32999,"end":33072,"text":"const float d = (float) ((const sycl::half *) (x + nblocks * QK8_0))[ib];"}
+{"sid":"S4:s687","start":33081,"end":33138,"text":"fg_decode_q8_0<E>((const int8_t *) x + ib * QK8_0, d, a);"}
+{"sid":"S4:s688","start":33143,"end":33144,"text":"}"}
+{"sid":"S4:s689","start":33145,"end":33147,"text":"};"}
+{"sid":"S4:s690","start":33149,"end":33188,"text":"template <> struct fg_soa<block_q4_K> {"}
+{"sid":"S4:s691","start":33193,"end":33232,"text":"static constexpr bool supported = true;"}
+{"sid":"S4:s692","start":33237,"end":33256,"text":"// [qs][scales][dm]"}
+{"sid":"S4:s693","start":33261,"end":33282,"text":"template <typename E>"}
+{"sid":"S4:s694","start":33287,"end":33392,"text":"static __dpct_inline__ void stage(const uint8_t * x, const size_t nblocks, const size_t ib, const int kb,"}
+{"sid":"S4:s695","start":33431,"end":33454,"text":"typename E::pair * a) {"}
+{"sid":"S4:s696","start":33463,"end":33515,"text":"const uint8_t *   scales = x + nblocks * (QK_K / 2);"}
+{"sid":"S4:s697","start":33524,"end":33613,"text":"const sycl::half2 dm     = ((const sycl::half2 *) (scales + nblocks * K_SCALE_SIZE))[ib];"}
+{"sid":"S4:s698","start":33622,"end":33714,"text":"fg_decode_q4_K<E>(x + ib * (QK_K / 2), scales + ib * K_SCALE_SIZE, dm, kb % (QK_K / 32), a);"}
+{"sid":"S4:s699","start":33719,"end":33720,"text":"}"}
+{"sid":"S4:s700","start":33721,"end":33723,"text":"};"}
+{"sid":"S4:s701","start":33725,"end":33764,"text":"template <> struct fg_soa<block_q5_K> {"}
+{"sid":"S4:s702","start":33769,"end":33808,"text":"static constexpr bool supported = true;"}
+{"sid":"S4:s703","start":33813,"end":33836,"text":"// [qs][qh][scales][dm]"}
+{"sid":"S4:s704","start":33841,"end":33862,"text":"template <typename E>"}
+{"sid":"S4:s705","start":33867,"end":33972,"text":"static __dpct_inline__ void stage(const uint8_t * x, const size_t nblocks, const size_t ib, const int kb,"}
+{"sid":"S4:s706","start":34011,"end":34034,"text":"typename E::pair * a) {"}
+{"sid":"S4:s707","start":34043,"end":34095,"text":"const uint8_t *   qh     = x + nblocks * (QK_K / 2);"}
+{"sid":"S4:s708","start":34104,"end":34157,"text":"const uint8_t *   scales = qh + nblocks * (QK_K / 8);"}
+{"sid":"S4:s709","start":34166,"end":34255,"text":"const sycl::half2 dm     = ((const sycl::half2 *) (scales + nblocks * K_SCALE_SIZE))[ib];"}
+{"sid":"S4:s710","start":34264,"end":34356,"text":"fg_decode_q5_K<E>(x + ib * (QK_K / 2), qh + ib * (QK_K / 8), scales + ib * K_SCALE_SIZE, dm,"}
+{"sid":"S4:s711","start":34383,"end":34404,"text":"kb % (QK_K / 32), a);"}
+{"sid":"S4:s712","start":34409,"end":34410,"text":"}"}
+{"sid":"S4:s713","start":34411,"end":34413,"text":"};"}
+{"sid":"S4:s714","start":34415,"end":34454,"text":"template <> struct fg_soa<block_q6_K> {"}
+{"sid":"S4:s715","start":34459,"end":34498,"text":"static constexpr bool supported = true;"}
+{"sid":"S4:s716","start":34503,"end":34525,"text":"// [ql][qh][scales][d]"}
+{"sid":"S4:s717","start":34530,"end":34551,"text":"template <typename E>"}
+{"sid":"S4:s718","start":34556,"end":34661,"text":"static __dpct_inline__ void stage(const uint8_t * x, const size_t nblocks, const size_t ib, const int kb,"}
+{"sid":"S4:s719","start":34700,"end":34723,"text":"typename E::pair * a) {"}
+{"sid":"S4:s720","start":34732,"end":34782,"text":"const uint8_t * qh     = x + nblocks * (QK_K / 2);"}
+{"sid":"S4:s721","start":34791,"end":34842,"text":"const uint8_t * scales = qh + nblocks * (QK_K / 4);"}
+{"sid":"S4:s722","start":34851,"end":34944,"text":"const float     d      = (float) ((const sycl::half *) (scales + nblocks * (QK_K / 16)))[ib];"}
+{"sid":"S4:s723","start":34953,"end":35060,"text":"fg_decode_q6_K<E>(x + ib * (QK_K / 2), qh + ib * (QK_K / 4), (const int8_t *) scales + ib * (QK_K / 16), d,"}
+{"sid":"S4:s724","start":35087,"end":35108,"text":"kb % (QK_K / 32), a);"}
+{"sid":"S4:s725","start":35113,"end":35114,"text":"}"}
+{"sid":"S4:s726","start":35115,"end":35117,"text":"};"}
+{"sid":"S4:s727","start":35120,"end":35216,"text":"// one SG_ROWS x BN output tile: B columns [b0, b0 + BN) of packed_b go to dst columns [n0, n1),"}
+{"sid":"S4:s728","start":35217,"end":35233,"text":"// n1 - n0 <= BN"}
+{"sid":"S4:s729","start":35234,"end":35291,"text":"template <typename S, typename block_q_t, bool reordered>"}
+{"sid":"S4:s730","start":35292,"end":35328,"text":"static void fused_dequant_gemm_tile("}
+{"sid":"S4:s731","start":35333,"end":35366,"text":"const block_q_t * __restrict__ x,"}
+{"sid":"S4:s732","start":35371,"end":35417,"text":"const typename S::tsb * __restrict__ packed_b,"}
+{"sid":"S4:s733","start":35422,"end":35447,"text":"float * __restrict__ dst,"}
+{"sid":"S4:s734","start":35452,"end":35508,"text":"const int M, const int Npad, const int K, const int ldd,"}
+{"sid":"S4:s735","start":35513,"end":35554,"text":"const int b0, const int n0, const int n1,"}
+{"sid":"S4:s736","start":35559,"end":35607,"text":"sycl::local_accessor<typename S::tsa, 1> tile_a,"}
+{"sid":"S4:s737","start":35612,"end":35650,"text":"sycl::local_accessor<float, 1> tile_c,"}
+{"sid":"S4:s738","start":35655,"end":35687,"text":"const sycl::nd_item<2> & item) {"}
+{"sid":"S4:s739","start":35692,"end":35726,"text":"if constexpr (fg_built<S::SG>()) {"}
+{"sid":"S4:s740","start":35735,"end":35761,"text":"using EA = typename S::EA;"}
+{"sid":"S4:s741","start":35770,"end":35796,"text":"using TA = typename S::ta;"}
+{"sid":"S4:s742","start":35805,"end":35831,"text":"using TB = typename S::tb;"}
+{"sid":"S4:s743","start":35840,"end":35881,"text":"const auto sg     = item.get_sub_group();"}
+{"sid":"S4:s744","start":35890,"end":35931,"text":"const int  sg_id  = sg.get_group_id()[0];"}
+{"sid":"S4:s745","start":35940,"end":35981,"text":"const int  lane   = sg.get_local_id()[0];"}
+{"sid":"S4:s746","start":35990,"end":36041,"text":"const int  m0     = item.get_group(1) * S::SG_ROWS;"}
+{"sid":"S4:s747","start":36050,"end":36080,"text":"const int  nstep  = K / FG_BK;"}
+{"sid":"S4:s748","start":36089,"end":36136,"text":"const int  a_base = sg_id * S::SG_ROWS * FG_BK;"}
+{"sid":"S4:s749","start":36145,"end":36192,"text":"const int  c_base = sg_id * S::SG_ROWS * S::BN;"}
+{"sid":"S4:s750","start":36202,"end":36297,"text":"mx::joint_matrix<sycl::sub_group, float, mx::use::accumulator, S::TM, S::TN> acc[S::MT][S::NT];"}
+{"sid":"S4:s751","start":36298,"end":36312,"text":"#pragma unroll"}
+{"sid":"S4:s752","start":36321,"end":36357,"text":"for (int mt = 0; mt < S::MT; ++mt) {"}
+{"sid":"S4:s753","start":36358,"end":36372,"text":"#pragma unroll"}
+{"sid":"S4:s754","start":36385,"end":36421,"text":"for (int nt = 0; nt < S::NT; ++nt) {"}
+{"sid":"S4:s755","start":36438,"end":36483,"text":"mx::joint_matrix_fill(sg, acc[mt][nt], 0.0f);"}
+{"sid":"S4:s756","start":36496,"end":36497,"text":"}"}
+{"sid":"S4:s757","start":36506,"end":36507,"text":"}"}
+{"sid":"S4:s758","start":36517,"end":36558,"text":"// lane decodes rows lane, lane + SG, ..."}
+{"sid":"S4:s759","start":36559,"end":36585,"text":"of the sub-group's SG_ROWS"}
+{"sid":"S4:s760","start":36594,"end":36686,"text":"constexpr int         KPB     = fg_block_traits<block_q_t>::qk / FG_BK; // k steps per block"}
+{"sid":"S4:s761","start":36695,"end":36762,"text":"const size_t          bpr     = K / fg_block_traits<block_q_t>::qk;"}
+{"sid":"S4:s762","start":36771,"end":36820,"text":"const size_t          nblocks = (size_t) M * bpr;"}
+{"sid":"S4:s763","start":36829,"end":36867,"text":"size_t                row_blk[S::RPL];"}
+{"sid":"S4:s764","start":36876,"end":36913,"text":"bool                  row_ok[S::RPL];"}
+{"sid":"S4:s765","start":36922,"end":36954,"text":"typename EA::pair *   a[S::RPL];"}
+{"sid":"S4:s766","start":36955,"end":36969,"text":"#pragma unroll"}
+{"sid":"S4:s767","start":36978,"end":37012,"text":"for (int r = 0; r < S::RPL; ++r) {"}
+{"sid":"S4:s768","start":37025,"end":37063,"text":"const int row = m0 + r * S::SG + lane;"}
+{"sid":"S4:s769","start":37076,"end":37097,"text":"row_ok[r]  = row < M;"}
+{"sid":"S4:s770","start":37110,"end":37144,"text":"row_blk[r] = (size_t) (row_ok[r] ?"}
+{"sid":"S4:s771","start":37145,"end":37160,"text":"row : 0) * bpr;"}
+{"sid":"S4:s772","start":37173,"end":37253,"text":"a[r]       = (typename EA::pair *) &tile_a[a_base + (r * S::SG + lane) * FG_BK];"}
+{"sid":"S4:s773","start":37262,"end":37263,"text":"}"}
+{"sid":"S4:s774","start":37273,"end":37359,"text":"const auto b_ptr = sycl::address_space_cast<sycl::access::address_space::global_space,"}
+{"sid":"S4:s775","start":37412,"end":37451,"text":"sycl::access::decorated::no>(packed_b);"}
+{"sid":"S4:s776","start":37460,"end":37496,"text":"const int b_stride = Npad * S::VNNI;"}
+{"sid":"S4:s777","start":37506,"end":37555,"text":"const int kb_begin = (sg_id * nstep) / FG_KSPLIT;"}
+{"sid":"S4:s778","start":37564,"end":37619,"text":"const int kb_end   = ((sg_id + 1) * nstep) / FG_KSPLIT;"}
+{"sid":"S4:s779","start":37628,"end":37672,"text":"for (int kb = kb_begin; kb < kb_end; ++kb) {"}
+{"sid":"S4:s780","start":37673,"end":37687,"text":"#pragma unroll"}
+{"sid":"S4:s781","start":37700,"end":37734,"text":"for (int r = 0; r < S::RPL; ++r) {"}
+{"sid":"S4:s782","start":37751,"end":37767,"text":"if (row_ok[r]) {"}
+{"sid":"S4:s783","start":37788,"end":37814,"text":"if constexpr (reordered) {"}
+{"sid":"S4:s784","start":37839,"end":37933,"text":"fg_soa<block_q_t>::template stage<EA>((const uint8_t *) x, nblocks, row_blk[r] + kb / KPB, kb,"}
+{"sid":"S4:s785","start":37996,"end":38002,"text":"a[r]);"}
+{"sid":"S4:s786","start":38023,"end":38031,"text":"} else {"}
+{"sid":"S4:s787","start":38056,"end":38097,"text":"fg_stage_a<EA>(x + row_blk[r], kb, a[r]);"}
+{"sid":"S4:s788","start":38118,"end":38119,"text":"}"}
+{"sid":"S4:s789","start":38136,"end":38144,"text":"} else {"}
+{"sid":"S4:s790","start":38145,"end":38159,"text":"#pragma unroll"}
+{"sid":"S4:s791","start":38180,"end":38217,"text":"for (int j = 0; j < FG_BK / 2; ++j) {"}
+{"sid":"S4:s792","start":38242,"end":38273,"text":"a[r][j] = EA::make(0.0f, 0.0f);"}
+{"sid":"S4:s793","start":38294,"end":38295,"text":"}"}
+{"sid":"S4:s794","start":38312,"end":38313,"text":"}"}
+{"sid":"S4:s795","start":38326,"end":38327,"text":"}"}
+{"sid":"S4:s796","start":38340,"end":38364,"text":"sycl::group_barrier(sg);"}
+{"sid":"S4:s797","start":38366,"end":38380,"text":"#pragma unroll"}
+{"sid":"S4:s798","start":38393,"end":38437,"text":"for (int kt = 0; kt < FG_BK / S::TK; ++kt) {"}
+{"sid":"S4:s799","start":38454,"end":38506,"text":"const int kq0 = (kb * FG_BK + kt * S::TK) / S::VNNI;"}
+{"sid":"S4:s800","start":38523,"end":38613,"text":"mx::joint_matrix<sycl::sub_group, TB, mx::use::b, S::TK, S::TN, S::b_layout> sub_b[S::NT];"}
+{"sid":"S4:s801","start":38614,"end":38628,"text":"#pragma unroll"}
+{"sid":"S4:s802","start":38645,"end":38681,"text":"for (int nt = 0; nt < S::NT; ++nt) {"}
+{"sid":"S4:s803","start":38702,"end":38812,"text":"mx::joint_matrix_load(sg, sub_b[nt], b_ptr + (size_t) kq0 * b_stride + (b0 + nt * S::TN) * S::VNNI, b_stride);"}
+{"sid":"S4:s804","start":38829,"end":38830,"text":"}"}
+{"sid":"S4:s805","start":38831,"end":38845,"text":"#pragma unroll"}
+{"sid":"S4:s806","start":38862,"end":38898,"text":"for (int mt = 0; mt < S::MT; ++mt) {"}
+{"sid":"S4:s807","start":38919,"end":39012,"text":"mx::joint_matrix<sycl::sub_group, TA, mx::use::a, S::TM, S::TK, mx::layout::row_major> sub_a;"}
+{"sid":"S4:s808","start":39033,"end":39065,"text":"mx::joint_matrix_load(sg, sub_a,"}
+{"sid":"S4:s809","start":39090,"end":39196,"text":"tile_a.template get_multi_ptr<sycl::access::decorated::no>() + a_base + (mt * S::TM) * FG_BK + kt * S::TK,"}
+{"sid":"S4:s810","start":39221,"end":39228,"text":"FG_BK);"}
+{"sid":"S4:s811","start":39229,"end":39243,"text":"#pragma unroll"}
+{"sid":"S4:s812","start":39264,"end":39300,"text":"for (int nt = 0; nt < S::NT; ++nt) {"}
+{"sid":"S4:s813","start":39325,"end":39394,"text":"mx::joint_matrix_mad(sg, acc[mt][nt], sub_a, sub_b[nt], acc[mt][nt]);"}
+{"sid":"S4:s814","start":39415,"end":39416,"text":"}"}
+{"sid":"S4:s815","start":39433,"end":39434,"text":"}"}
+{"sid":"S4:s816","start":39447,"end":39448,"text":"}"}
+{"sid":"S4:s817","start":39461,"end":39495,"text":"// the next step overwrites tile_a"}
+{"sid":"S4:s818","start":39508,"end":39532,"text":"sycl::group_barrier(sg);"}
+{"sid":"S4:s819","start":39541,"end":39542,"text":"}"}
+{"sid":"S4:s820","start":39544,"end":39558,"text":"#pragma unroll"}
+{"sid":"S4:s821","start":39567,"end":39603,"text":"for (int mt = 0; mt < S::MT; ++mt) {"}
+{"sid":"S4:s822","start":39604,"end":39618,"text":"#pragma unroll"}
+{"sid":"S4:s823","start":39631,"end":39667,"text":"for (int nt = 0; nt < S::NT; ++nt) {"}
+{"sid":"S4:s824","start":39684,"end":39723,"text":"mx::joint_matrix_store(sg, acc[mt][nt],"}
+{"sid":"S4:s825","start":39744,"end":39850,"text":"tile_c.template get_multi_ptr<sycl::access::decorated::no>() + c_base + (mt * S::TM) * S::BN + nt * S::TN,"}
+{"sid":"S4:s826","start":39871,"end":39901,"text":"S::BN, mx::layout::row_major);"}
+{"sid":"S4:s827","start":39914,"end":39915,"text":"}"}
+{"sid":"S4:s828","start":39924,"end":39925,"text":"}"}
+{"sid":"S4:s829","start":39934,"end":39972,"text":"sycl::group_barrier(item.get_group());"}
+{"sid":"S4:s830","start":39982,"end":40061,"text":"// sum the K splits; consecutive lanes write consecutive rows of one dst column"}
+{"sid":"S4:s831","start":40070,"end":40159,"text":"for (int idx = item.get_local_linear_id(); idx < S::SG_ROWS * S::BN; idx += S::WG_SIZE) {"}
+{"sid":"S4:s832","start":40172,"end":40203,"text":"const int r = idx % S::SG_ROWS;"}
+{"sid":"S4:s833","start":40216,"end":40247,"text":"const int c = idx / S::SG_ROWS;"}
+{"sid":"S4:s834","start":40260,"end":40281,"text":"const int m = m0 + r;"}
+{"sid":"S4:s835","start":40294,"end":40315,"text":"const int n = n0 + c;"}
+{"sid":"S4:s836","start":40328,"end":40350,"text":"if (m < M && n < n1) {"}
+{"sid":"S4:s837","start":40367,"end":40384,"text":"float sum = 0.0f;"}
+{"sid":"S4:s838","start":40385,"end":40399,"text":"#pragma unroll"}
+{"sid":"S4:s839","start":40416,"end":40453,"text":"for (int s = 0; s < FG_KSPLIT; ++s) {"}
+{"sid":"S4:s840","start":40474,"end":40528,"text":"sum += tile_c[s * S::SG_ROWS * S::BN + r * S::BN + c];"}
+{"sid":"S4:s841","start":40545,"end":40546,"text":"}"}
+{"sid":"S4:s842","start":40563,"end":40595,"text":"dst[(size_t) n * ldd + m] = sum;"}
+{"sid":"S4:s843","start":40608,"end":40609,"text":"}"}
+{"sid":"S4:s844","start":40618,"end":40619,"text":"}"}
+{"sid":"S4:s845","start":40624,"end":40625,"text":"}"}
+{"sid":"S4:s846","start":40626,"end":40627,"text":"}"}
+{"sid":"S4:s847","start":40629,"end":40694,"text":"template <typename S, typename block_q_t, bool reordered = false>"}
+{"sid":"S4:s848","start":40695,"end":40809,"text":"static void fused_dequant_gemm_launch(const void * src0, const typename S::tsb * packed, float * dst, const int M,"}
+{"sid":"S4:s849","start":40848,"end":40904,"text":"const int N, const int Npad, const int K, const int ldd,"}
+{"sid":"S4:s850","start":40943,"end":41016,"text":"const int64_t groups_n, const int64_t groups_m, dpct::queue_ptr stream) {"}
+{"sid":"S4:s851","start":41021,"end":41062,"text":"stream->submit([&](sycl::handler & cgh) {"}
+{"sid":"S4:s852","start":41071,"end":41156,"text":"sycl::local_accessor<typename S::tsa, 1> tile_a(FG_KSPLIT * S::SG_ROWS * FG_BK, cgh);"}
+{"sid":"S4:s853","start":41165,"end":41249,"text":"sycl::local_accessor<float, 1>          tile_c(FG_KSPLIT * S::SG_ROWS * S::BN, cgh);"}
+{"sid":"S4:s854","start":41258,"end":41275,"text":"cgh.parallel_for("}
+{"sid":"S4:s855","start":41288,"end":41386,"text":"sycl::nd_range<2>(sycl::range<2>(groups_n, groups_m * S::WG_SIZE), sycl::range<2>(1, S::WG_SIZE)),"}
+{"sid":"S4:s856","start":41399,"end":41464,"text":"[=](sycl::nd_item<2> item) [[sycl::reqd_sub_group_size(S::SG)]] {"}
+{"sid":"S4:s857","start":41481,"end":41522,"text":"const int n0 = item.get_group(0) * S::BN;"}
+{"sid":"S4:s858","start":41539,"end":41638,"text":"fused_dequant_gemm_tile<S, block_q_t, reordered>((const block_q_t *) src0, packed, dst, M, Npad, K,"}
+{"sid":"S4:s859","start":41693,"end":41731,"text":"ldd, n0, n0, N, tile_a, tile_c, item);"}
+{"sid":"S4:s860","start":41744,"end":41747,"text":"});"}
+{"sid":"S4:s861","start":41752,"end":41755,"text":"});"}
+{"sid":"S4:s862","start":41756,"end":41757,"text":"}"}
+{"sid":"S4:s863","start":41759,"end":41844,"text":"// grouped: work-group (t, mt) is tile t of the schedule; its B columns sit at t * BN"}
+{"sid":"S4:s864","start":41845,"end":41902,"text":"template <typename S, typename block_q_t, bool reordered>"}
+{"sid":"S4:s865","start":41903,"end":41992,"text":"static void grouped_dequant_gemm_launch(const char * src0_dd, const size_t expert_stride,"}
+{"sid":"S4:s866","start":42033,"end":42114,"text":"const ggml_sycl_gg_tile * tiles_ptr, const typename S::tsb * packed, float * dst,"}
+{"sid":"S4:s867","start":42155,"end":42219,"text":"const int M, const int Npad, const int K, const int64_t n_tiles,"}
+{"sid":"S4:s868","start":42260,"end":42309,"text":"const int64_t groups_m, dpct::queue_ptr stream) {"}
+{"sid":"S4:s869","start":42314,"end":42355,"text":"stream->submit([&](sycl::handler & cgh) {"}
+{"sid":"S4:s870","start":42364,"end":42449,"text":"sycl::local_accessor<typename S::tsa, 1> tile_a(FG_KSPLIT * S::SG_ROWS * FG_BK, cgh);"}
+{"sid":"S4:s871","start":42458,"end":42542,"text":"sycl::local_accessor<float, 1>          tile_c(FG_KSPLIT * S::SG_ROWS * S::BN, cgh);"}
+{"sid":"S4:s872","start":42551,"end":42568,"text":"cgh.parallel_for("}
+{"sid":"S4:s873","start":42581,"end":42678,"text":"sycl::nd_range<2>(sycl::range<2>(n_tiles, groups_m * S::WG_SIZE), sycl::range<2>(1, S::WG_SIZE)),"}
+{"sid":"S4:s874","start":42691,"end":42756,"text":"[=](sycl::nd_item<2> item) [[sycl::reqd_sub_group_size(S::SG)]] {"}
+{"sid":"S4:s875","start":42773,"end":42822,"text":"const int               t    = item.get_group(0);"}
+{"sid":"S4:s876","start":42839,"end":42883,"text":"const ggml_sycl_gg_tile tile = tiles_ptr[t];"}
+{"sid":"S4:s877","start":42900,"end":43000,"text":"const block_q_t *       x    = (const block_q_t *) (src0_dd + (size_t) tile.expert * expert_stride);"}
+{"sid":"S4:s878","start":43017,"end":43116,"text":"fused_dequant_gemm_tile<S, block_q_t, reordered>(x, packed, dst, M, Npad, K, M, t * S::BN, tile.n0,"}
+{"sid":"S4:s879","start":43182,"end":43213,"text":"tile.n1, tile_a, tile_c, item);"}
+{"sid":"S4:s880","start":43226,"end":43229,"text":"});"}
+{"sid":"S4:s881","start":43234,"end":43237,"text":"});"}
+{"sid":"S4:s882","start":43238,"end":43239,"text":"}"}
+{"sid":"S4:s883","start":43241,"end":43339,"text":"// src1 f32 rows -> packed [K/V][n_tiles*BN][V], tile t holds its rows [n0, n1) at columns t*BN..,"}
+{"sid":"S4:s884","start":43340,"end":43356,"text":"// zero past n1."}
+{"sid":"S4:s885","start":43357,"end":43422,"text":"The column runs fastest so a sub-group writes one contiguous run."}
+{"sid":"S4:s886","start":43423,"end":43444,"text":"template <typename S>"}
+{"sid":"S4:s887","start":43445,"end":43562,"text":"static void grouped_gemm_pack_b(const float * y, typename S::tsb * packed, const ggml_sycl_gg_tile * tiles, int Npad,"}
+{"sid":"S4:s888","start":43595,"end":43627,"text":"int K, dpct::queue_ptr stream) {"}
+{"sid":"S4:s889","start":43632,"end":43664,"text":"using E        = typename S::EB;"}
+{"sid":"S4:s890","start":43669,"end":43695,"text":"constexpr int V = S::VNNI;"}
+{"sid":"S4:s891","start":43700,"end":43724,"text":"const int kqs   = K / V;"}
+{"sid":"S4:s892","start":43729,"end":43808,"text":"stream->parallel_for(sycl::range<1>((size_t) Npad * kqs), [=](sycl::id<1> id) {"}
+{"sid":"S4:s893","start":43817,"end":43842,"text":"const size_t idx = id[0];"}
+{"sid":"S4:s894","start":43851,"end":43881,"text":"const int    kq  = idx / Npad;"}
+{"sid":"S4:s895","start":43890,"end":43934,"text":"const int    n   = idx - (size_t) kq * Npad;"}
+{"sid":"S4:s896","start":43943,"end":43991,"text":"const ggml_sycl_gg_tile tile = tiles[n / S::BN];"}
+{"sid":"S4:s897","start":44000,"end":44039,"text":"const int    row = tile.n0 + n % S::BN;"}
+{"sid":"S4:s898","start":44048,"end":44130,"text":"// one guarded load run per work-item, as a per-element select costs ~1.5% prefill"}
+{"sid":"S4:s899","start":44139,"end":44168,"text":"typename S::tsb vals[V] = {};"}
+{"sid":"S4:s900","start":44177,"end":44197,"text":"if (row < tile.n1) {"}
+{"sid":"S4:s901","start":44210,"end":44260,"text":"const float * src = y + (size_t) row * K + V * kq;"}
+{"sid":"S4:s902","start":44261,"end":44275,"text":"#pragma unroll"}
+{"sid":"S4:s903","start":44288,"end":44317,"text":"for (int v = 0; v < V; ++v) {"}
+{"sid":"S4:s904","start":44334,"end":44359,"text":"vals[v] = E::cvt(src[v]);"}
+{"sid":"S4:s905","start":44372,"end":44373,"text":"}"}
+{"sid":"S4:s906","start":44382,"end":44383,"text":"}"}
+{"sid":"S4:s907","start":44392,"end":44454,"text":"typename S::tsb * out = packed + ((size_t) kq * Npad + n) * V;"}
+{"sid":"S4:s908","start":44455,"end":44469,"text":"#pragma unroll"}
+{"sid":"S4:s909","start":44478,"end":44507,"text":"for (int v = 0; v < V; ++v) {"}
+{"sid":"S4:s910","start":44520,"end":44537,"text":"out[v] = vals[v];"}
+{"sid":"S4:s911","start":44546,"end":44547,"text":"}"}
+{"sid":"S4:s912","start":44552,"end":44555,"text":"});"}
+{"sid":"S4:s913","start":44556,"end":44557,"text":"}"}
+{"sid":"S4:s914","start":44559,"end":44611,"text":"// q8_0 and the k-quants take only the grouped path."}
+{"sid":"S4:s915","start":44612,"end":44665,"text":"The plain kernel decodes A again for every BN columns"}
+{"sid":"S4:s916","start":44666,"end":44773,"text":"// of a dense batch, and for these formats that costs more than the one dequantization of the library GEMM."}
+{"sid":"S4:s917","start":44774,"end":44833,"text":"template <typename T> static constexpr bool fg_plain_ok() {"}
+{"sid":"S4:s918","start":44838,"end":44946,"text":"return !std::is_same_v<T, block_q8_0> && !std::is_same_v<T, block_q4_K> && !std::is_same_v<T, block_q5_K> &&"}
+{"sid":"S4:s919","start":44958,"end":44989,"text":"!std::is_same_v<T, block_q6_K>;"}
+{"sid":"S4:s920","start":44990,"end":44991,"text":"}"}
+{"sid":"S4:s921","start":44993,"end":45038,"text":"template <typename T, bool R> struct fg_tag {"}
+{"sid":"S4:s922","start":45043,"end":45078,"text":"using type                     = T;"}
+{"sid":"S4:s923","start":45083,"end":45119,"text":"static constexpr bool reordered = R;"}
+{"sid":"S4:s924","start":45120,"end":45122,"text":"};"}
+{"sid":"S4:s925","start":45124,"end":45227,"text":"// calls f(fg_tag<block_q_t, reordered>{}) for the weight format and layout; false if it has no A stage"}
+{"sid":"S4:s926","start":45228,"end":45315,"text":"template <typename T, typename F> static bool fg_visit_layout(bool reordered, F && f) {"}
+{"sid":"S4:s927","start":45320,"end":45337,"text":"if (!reordered) {"}
+{"sid":"S4:s928","start":45346,"end":45368,"text":"f(fg_tag<T, false>{});"}
+{"sid":"S4:s929","start":45377,"end":45389,"text":"return true;"}
+{"sid":"S4:s930","start":45394,"end":45395,"text":"}"}
+{"sid":"S4:s931","start":45400,"end":45437,"text":"if constexpr (fg_soa<T>::supported) {"}
+{"sid":"S4:s932","start":45446,"end":45467,"text":"f(fg_tag<T, true>{});"}
+{"sid":"S4:s933","start":45476,"end":45488,"text":"return true;"}
+{"sid":"S4:s934","start":45493,"end":45494,"text":"}"}
+{"sid":"S4:s935","start":45499,"end":45512,"text":"return false;"}
+{"sid":"S4:s936","start":45513,"end":45514,"text":"}"}
+{"sid":"S4:s937","start":45516,"end":45605,"text":"template <typename F> static bool fg_visit_type(ggml_type type, bool reordered, F && f) {"}
+{"sid":"S4:s938","start":45610,"end":45625,"text":"switch (type) {"}
+{"sid":"S4:s939","start":45634,"end":45709,"text":"case GGML_TYPE_IQ4_NL:  return fg_visit_layout<block_iq4_nl>(reordered, f);"}
+{"sid":"S4:s940","start":45718,"end":45792,"text":"case GGML_TYPE_IQ3_S:   return fg_visit_layout<block_iq3_s>(reordered, f);"}
+{"sid":"S4:s941","start":45801,"end":45876,"text":"case GGML_TYPE_IQ4_XS:  return fg_visit_layout<block_iq4_xs>(reordered, f);"}
+{"sid":"S4:s942","start":45885,"end":45961,"text":"case GGML_TYPE_IQ3_XXS: return fg_visit_layout<block_iq3_xxs>(reordered, f);"}
+{"sid":"S4:s943","start":45970,"end":46046,"text":"case GGML_TYPE_IQ2_XXS: return fg_visit_layout<block_iq2_xxs>(reordered, f);"}
+{"sid":"S4:s944","start":46055,"end":46130,"text":"case GGML_TYPE_IQ2_XS:  return fg_visit_layout<block_iq2_xs>(reordered, f);"}
+{"sid":"S4:s945","start":46139,"end":46213,"text":"case GGML_TYPE_IQ2_S:   return fg_visit_layout<block_iq2_s>(reordered, f);"}
+{"sid":"S4:s946","start":46222,"end":46296,"text":"case GGML_TYPE_IQ1_S:   return fg_visit_layout<block_iq1_s>(reordered, f);"}
+{"sid":"S4:s947","start":46305,"end":46379,"text":"case GGML_TYPE_IQ1_M:   return fg_visit_layout<block_iq1_m>(reordered, f);"}
+{"sid":"S4:s948","start":46388,"end":46461,"text":"case GGML_TYPE_Q8_0:    return fg_visit_layout<block_q8_0>(reordered, f);"}
+{"sid":"S4:s949","start":46470,"end":46543,"text":"case GGML_TYPE_Q4_K:    return fg_visit_layout<block_q4_K>(reordered, f);"}
+{"sid":"S4:s950","start":46552,"end":46625,"text":"case GGML_TYPE_Q5_K:    return fg_visit_layout<block_q5_K>(reordered, f);"}
+{"sid":"S4:s951","start":46634,"end":46707,"text":"case GGML_TYPE_Q6_K:    return fg_visit_layout<block_q6_K>(reordered, f);"}
+{"sid":"S4:s952","start":46716,"end":46753,"text":"default:                return false;"}
+{"sid":"S4:s953","start":46758,"end":46759,"text":"}"}
+{"sid":"S4:s954","start":46760,"end":46761,"text":"}"}
+{"sid":"S4:s955","start":46763,"end":46784,"text":"template <typename S>"}
+{"sid":"S4:s956","start":46785,"end":46910,"text":"static bool fg_fused_run(ggml_type src0_type, bool src0_reordered, const void * src0, const void * src1, ggml_type src1_type,"}
+{"sid":"S4:s957","start":46936,"end":47017,"text":"float * dst, int64_t M, int64_t N, int64_t K, int64_t ldd, ggml_sycl_pool & pool,"}
+{"sid":"S4:s958","start":47043,"end":47068,"text":"dpct::queue_ptr stream) {"}
+{"sid":"S4:s959","start":47073,"end":47122,"text":"const int64_t groups_n = (N + S::BN - 1) / S::BN;"}
+{"sid":"S4:s960","start":47127,"end":47186,"text":"const int64_t groups_m = (M + S::SG_ROWS - 1) / S::SG_ROWS;"}
+{"sid":"S4:s961","start":47191,"end":47241,"text":"const int     Npad     = (int) (groups_n * S::BN);"}
+{"sid":"S4:s962","start":47247,"end":47330,"text":"// src1 is read in its own type: one pass, converted in registers only if B differs"}
+{"sid":"S4:s963","start":47335,"end":47407,"text":"ggml_sycl_pool_alloc<typename S::tsb> packed_b(pool, (size_t) K * Npad);"}
+{"sid":"S4:s964","start":47412,"end":47445,"text":"if (src1_type == GGML_TYPE_F16) {"}
+{"sid":"S4:s965","start":47454,"end":47563,"text":"fused_gemm_pack_b<typename S::EB>((const sycl::half *) src1, packed_b.get(), (int) N, Npad, (int) K, stream);"}
+{"sid":"S4:s966","start":47568,"end":47609,"text":"} else if (src1_type == GGML_TYPE_BF16) {"}
+{"sid":"S4:s967","start":47618,"end":47724,"text":"fused_gemm_pack_b<typename S::EB>((const fg_bf16 *) src1, packed_b.get(), (int) N, Npad, (int) K, stream);"}
+{"sid":"S4:s968","start":47729,"end":47737,"text":"} else {"}
+{"sid":"S4:s969","start":47746,"end":47850,"text":"fused_gemm_pack_b<typename S::EB>((const float *) src1, packed_b.get(), (int) N, Npad, (int) K, stream);"}
+{"sid":"S4:s970","start":47855,"end":47856,"text":"}"}
+{"sid":"S4:s971","start":47862,"end":47910,"text":"const typename S::tsb * packed = packed_b.get();"}
+{"sid":"S4:s972","start":47915,"end":47978,"text":"return fg_visit_type(src0_type, src0_reordered, [&](auto tag) {"}
+{"sid":"S4:s973","start":47987,"end":48034,"text":"using block_q_t = typename decltype(tag)::type;"}
+{"sid":"S4:s974","start":48043,"end":48084,"text":"if constexpr (fg_plain_ok<block_q_t>()) {"}
+{"sid":"S4:s975","start":48097,"end":48199,"text":"fused_dequant_gemm_launch<S, block_q_t, decltype(tag)::reordered>(src0, packed, dst, (int) M, (int) N,"}
+{"sid":"S4:s976","start":48278,"end":48313,"text":"Npad, (int) K, (int) ldd, groups_n,"}
+{"sid":"S4:s977","start":48392,"end":48410,"text":"groups_m, stream);"}
+{"sid":"S4:s978","start":48419,"end":48420,"text":"}"}
+{"sid":"S4:s979","start":48425,"end":48428,"text":"});"}
+{"sid":"S4:s980","start":48429,"end":48430,"text":"}"}
+{"sid":"S4:s981","start":48432,"end":48566,"text":"bool ggml_sycl_fused_dequant_gemm(ggml_type src0_type, bool src0_reordered, const void * src0, const void * src1, ggml_type src1_type,"}
+{"sid":"S4:s982","start":48601,"end":48678,"text":"int32_t src1_prec, float * dst, int64_t M, int64_t N, int64_t K, int64_t ldd,"}
+{"sid":"S4:s983","start":48713,"end":48761,"text":"ggml_sycl_pool & pool, dpct::queue_ptr stream) {"}
+{"sid":"S4:s984","start":48766,"end":48844,"text":"// every BN columns dequantize A again, so wide N is left to the library GEMM."}
+{"sid":"S4:s985","start":48849,"end":48929,"text":"// src0_reordered: the persistent weight reorder may have been installed on this"}
+{"sid":"S4:s986","start":48934,"end":49013,"text":"// tensor by an earlier small-batch mul_mat; the A stage then has to decode the"}
+{"sid":"S4:s987","start":49018,"end":49032,"text":"// SoA layout."}
+{"sid":"S4:s988","start":49033,"end":49091,"text":"Types without an SoA stage (fg_soa<T>::supported == false)"}
+{"sid":"S4:s989","start":49096,"end":49162,"text":"// decline via fg_visit_layout and the caller falls through to the"}
+{"sid":"S4:s990","start":49167,"end":49201,"text":"// reorder-aware conversion route."}
+{"sid":"S4:s991","start":49206,"end":49228,"text":"bool plain_ok = false;"}
+{"sid":"S4:s992","start":49233,"end":49349,"text":"fg_visit_type(src0_type, src0_reordered, [&](auto tag) { plain_ok = fg_plain_ok<typename decltype(tag)::type>(); });"}
+{"sid":"S4:s993","start":49354,"end":49425,"text":"if (g_ggml_sycl_dynamic_precision == GGML_SYCL_DYNAMIC_PRECISION_F32 ||"}
+{"sid":"S4:s994","start":49434,"end":49495,"text":"!ggml_sycl_xmx_gather_type_enabled(src0_type) || !plain_ok) {"}
+{"sid":"S4:s995","start":49504,"end":49517,"text":"return false;"}
+{"sid":"S4:s996","start":49522,"end":49523,"text":"}"}
+{"sid":"S4:s997","start":49528,"end":49622,"text":"if (src1_type != GGML_TYPE_F32 && src1_type != GGML_TYPE_F16 && src1_type != GGML_TYPE_BF16) {"}
+{"sid":"S4:s998","start":49631,"end":49644,"text":"return false;"}
+{"sid":"S4:s999","start":49649,"end":49650,"text":"}"}
+{"sid":"S4:s1000","start":49655,"end":49725,"text":"if (!ggml_sycl_fused_dequant_gemm_shape_ok(src0_type, M, N, K, ldd)) {"}
+{"sid":"S4:s1001","start":49734,"end":49747,"text":"return false;"}
+{"sid":"S4:s1002","start":49752,"end":49753,"text":"}"}
+{"sid":"S4:s1003","start":49758,"end":49820,"text":"const int combo = fg_pick_combo(stream, src1_type, src1_prec);"}
+{"sid":"S4:s1004","start":49825,"end":49841,"text":"if (combo < 0) {"}
+{"sid":"S4:s1005","start":49850,"end":49863,"text":"return false;"}
+{"sid":"S4:s1006","start":49868,"end":49869,"text":"}"}
+{"sid":"S4:s1007","start":49874,"end":49896,"text":"bool launched = false;"}
+{"sid":"S4:s1008","start":49901,"end":49936,"text":"fg_visit_combo(combo, [&](auto s) {"}
+{"sid":"S4:s1009","start":49945,"end":50065,"text":"launched = fg_fused_run<decltype(s)>(src0_type, src0_reordered, src0, src1, src1_type, dst, M, N, K, ldd, pool, stream);"}
+{"sid":"S4:s1010","start":50070,"end":50073,"text":"});"}
+{"sid":"S4:s1011","start":50078,"end":50094,"text":"return launched;"}
+{"sid":"S4:s1012","start":50095,"end":50096,"text":"}"}
+{"sid":"S4:s1013","start":50098,"end":50119,"text":"template <typename S>"}
+{"sid":"S4:s1014","start":50120,"end":50229,"text":"static bool fg_grouped_run(ggml_type src0_type, bool reordered, const void * src0_base, size_t expert_stride,"}
+{"sid":"S4:s1015","start":50257,"end":50350,"text":"const float * src1, float * dst, const int64_t * expert_row_offsets, int64_t n_as, int64_t M,"}
+{"sid":"S4:s1016","start":50378,"end":50451,"text":"int64_t K, std::vector<ggml_sycl_gg_tile> & tiles, ggml_sycl_pool & pool,"}
+{"sid":"S4:s1017","start":50479,"end":50504,"text":"dpct::queue_ptr stream) {"}
+{"sid":"S4:s1018","start":50509,"end":50595,"text":"// the host knows every slice, so it lays out the work-groups: no search on the device"}
+{"sid":"S4:s1019","start":50600,"end":50614,"text":"tiles.clear();"}
+{"sid":"S4:s1020","start":50619,"end":50655,"text":"for (int64_t e = 0; e < n_as; ++e) {"}
+{"sid":"S4:s1021","start":50664,"end":50710,"text":"const int64_t end = expert_row_offsets[e + 1];"}
+{"sid":"S4:s1022","start":50719,"end":50784,"text":"for (int64_t n0 = expert_row_offsets[e]; n0 < end; n0 += S::BN) {"}
+{"sid":"S4:s1023","start":50797,"end":50890,"text":"tiles.push_back({ (int32_t) e, (int32_t) n0, (int32_t) std::min<int64_t>(n0 + S::BN, end) });"}
+{"sid":"S4:s1024","start":50899,"end":50900,"text":"}"}
+{"sid":"S4:s1025","start":50905,"end":50906,"text":"}"}
+{"sid":"S4:s1026","start":50911,"end":50949,"text":"const int64_t n_tiles  = tiles.size();"}
+{"sid":"S4:s1027","start":50954,"end":51013,"text":"const int64_t groups_m = (M + S::SG_ROWS - 1) / S::SG_ROWS;"}
+{"sid":"S4:s1028","start":51018,"end":51067,"text":"const int     Npad     = (int) (n_tiles * S::BN);"}
+{"sid":"S4:s1029","start":51073,"end":51161,"text":"const int64_t max_tiles = grouped_gemm_max_tiles(expert_row_offsets[n_as], n_as, S::BN);"}
+{"sid":"S4:s1030","start":51166,"end":51200,"text":"GGML_ASSERT(n_tiles <= max_tiles);"}
+{"sid":"S4:s1031","start":51205,"end":51272,"text":"ggml_sycl_pool_alloc<ggml_sycl_gg_tile> tiles_dev(pool, max_tiles);"}
+{"sid":"S4:s1032","start":51277,"end":51389,"text":"SYCL_CHECK(CHECK_TRY_ERROR(stream->memcpy(tiles_dev.get(), tiles.data(), n_tiles * sizeof(ggml_sycl_gg_tile))));"}
+{"sid":"S4:s1033","start":51395,"end":51480,"text":"ggml_sycl_pool_alloc<typename S::tsb> packed_b(pool, (size_t) K * max_tiles * S::BN);"}
+{"sid":"S4:s1034","start":51485,"end":51570,"text":"grouped_gemm_pack_b<S>(src1, packed_b.get(), tiles_dev.get(), Npad, (int) K, stream);"}
+{"sid":"S4:s1035","start":51576,"end":51629,"text":"const typename S::tsb *   packed    = packed_b.get();"}
+{"sid":"S4:s1036","start":51634,"end":51688,"text":"const ggml_sycl_gg_tile * tiles_ptr = tiles_dev.get();"}
+{"sid":"S4:s1037","start":51693,"end":51756,"text":"const char *              src0_dd   = (const char *) src0_base;"}
+{"sid":"S4:s1038","start":51761,"end":51819,"text":"return fg_visit_type(src0_type, reordered, [&](auto tag) {"}
+{"sid":"S4:s1039","start":51828,"end":51852,"text":"using T = decltype(tag);"}
+{"sid":"S4:s1040","start":51861,"end":51971,"text":"grouped_dequant_gemm_launch<S, typename T::type, T::reordered>(src0_dd, expert_stride, tiles_ptr, packed, dst,"}
+{"sid":"S4:s1041","start":52043,"end":52085,"text":"(int) M, Npad, (int) K, n_tiles, groups_m,"}
+{"sid":"S4:s1042","start":52157,"end":52165,"text":"stream);"}
+{"sid":"S4:s1043","start":52170,"end":52173,"text":"});"}
+{"sid":"S4:s1044","start":52174,"end":52175,"text":"}"}
+{"sid":"S4:s1045","start":52177,"end":52295,"text":"bool ggml_sycl_grouped_dequant_gemm(ggml_type src0_type, bool reordered, const void * src0_base, size_t expert_stride,"}
+{"sid":"S4:s1046","start":52332,"end":52383,"text":"const float * src1, int32_t src1_prec, float * dst,"}
+{"sid":"S4:s1047","start":52420,"end":52491,"text":"const int64_t * expert_row_offsets, int64_t n_as, int64_t M, int64_t K,"}
+{"sid":"S4:s1048","start":52528,"end":52587,"text":"int64_t total_rows, std::vector<ggml_sycl_gg_tile> & tiles,"}
+{"sid":"S4:s1049","start":52624,"end":52672,"text":"ggml_sycl_pool & pool, dpct::queue_ptr stream) {"}
+{"sid":"S4:s1050","start":52677,"end":52698,"text":"int64_t n_active = 0;"}
+{"sid":"S4:s1051","start":52703,"end":52739,"text":"for (int64_t e = 0; e < n_as; ++e) {"}
+{"sid":"S4:s1052","start":52748,"end":52810,"text":"n_active += expert_row_offsets[e + 1] > expert_row_offsets[e];"}
+{"sid":"S4:s1053","start":52815,"end":52816,"text":"}"}
+{"sid":"S4:s1054","start":52821,"end":52892,"text":"if (g_ggml_sycl_dynamic_precision == GGML_SYCL_DYNAMIC_PRECISION_F32 ||"}
+{"sid":"S4:s1055","start":52901,"end":53002,"text":"!ggml_sycl_xmx_gather_type_enabled(src0_type) || !fg_visit_type(src0_type, reordered, [](auto) {})) {"}
+{"sid":"S4:s1056","start":53011,"end":53024,"text":"return false;"}
+{"sid":"S4:s1057","start":53029,"end":53030,"text":"}"}
+{"sid":"S4:s1058","start":53035,"end":53121,"text":"if (!ggml_sycl_grouped_dequant_gemm_shape_ok(src0_type, M, K, total_rows, n_active)) {"}
+{"sid":"S4:s1059","start":53130,"end":53143,"text":"return false;"}
+{"sid":"S4:s1060","start":53148,"end":53149,"text":"}"}
+{"sid":"S4:s1061","start":53154,"end":53220,"text":"const int combo = fg_pick_combo(stream, GGML_TYPE_F32, src1_prec);"}
+{"sid":"S4:s1062","start":53225,"end":53241,"text":"if (combo < 0) {"}
+{"sid":"S4:s1063","start":53250,"end":53263,"text":"return false;"}
+{"sid":"S4:s1064","start":53268,"end":53269,"text":"}"}
+{"sid":"S4:s1065","start":53274,"end":53296,"text":"bool launched = false;"}
+{"sid":"S4:s1066","start":53301,"end":53336,"text":"fg_visit_combo(combo, [&](auto s) {"}
+{"sid":"S4:s1067","start":53345,"end":53442,"text":"launched = fg_grouped_run<decltype(s)>(src0_type, reordered, src0_base, expert_stride, src1, dst,"}
+{"sid":"S4:s1068","start":53490,"end":53543,"text":"expert_row_offsets, n_as, M, K, tiles, pool, stream);"}
+{"sid":"S4:s1069","start":53548,"end":53551,"text":"});"}
+{"sid":"S4:s1070","start":53556,"end":53572,"text":"return launched;"}
+{"sid":"S4:s1071","start":53573,"end":53574,"text":"}"}

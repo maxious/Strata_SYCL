@@ -1,0 +1,3 @@
+The following tests FAILED:
+	 55 - isa_guard_check (Failed)
+Errors while running CTest

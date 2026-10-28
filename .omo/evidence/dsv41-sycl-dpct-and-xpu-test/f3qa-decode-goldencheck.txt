@@ -1,0 +1,10 @@
+=== decode tooling golden check: f3_decode.py vs prior lane w8/ids1.txt + decoded1.txt ===
+batch1 ids: 671 6102 294 8760 344 2619 51119 42499 1
+batch1 first_id: 671
+batch1 type3_ids: [(1, 3)]
+batch1 decoded: The capital of France is **Paris**.<｜end▁of▁sentence｜>
+GOLDEN_DIFF_RC=0 (0 = decode tool reproduces the prior lane's known output byte-identically)
+=== prior repeat claim verification: w8/ids1..ids4 byte-identity ===
+ids2 DIFF_RC=0
+ids3 DIFF_RC=0
+ids4 DIFF_RC=0

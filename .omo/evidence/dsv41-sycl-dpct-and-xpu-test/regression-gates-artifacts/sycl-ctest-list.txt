@@ -1,0 +1,5 @@
+Test project /home/maxious/Strata/build-sycl-dsv41
+  Test #1: ds4_parity
+  Test #2: ds4_blas_parity
+
+Total Tests: 2

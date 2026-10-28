@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "source_id": "S3",
+  "snapshot_sha256": "218da456fdd3a6aa8512a680a33cce6c578e63a025dd66539f75581cd408e217",
+  "entries": [
+    {
+      "acronym": "PASS",
+      "expansion": "Python verification",
+      "sentence_id": "S3:s172",
+      "span": [
+        8667,
+        8693
+      ]
+    }
+  ]
+}

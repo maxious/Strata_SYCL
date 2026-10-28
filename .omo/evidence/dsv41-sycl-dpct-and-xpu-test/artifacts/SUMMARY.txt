@@ -1,0 +1,25 @@
+DSV41 SYCL Two-Card Test - Evidence Summary
+============================================
+
+Test Date: 2026-10-27 03:07-03:26 AEDT
+Branch: sycl/dsv41-sycl-support @ ce6218ee
+Hardware: 2x Intel Arc A770 (devices 0,1)
+
+Build: SUCCESS (37MB executable, fresh /tmp/f3tc_build)
+One-card: PASS (7.92 tok/s prompt, 1.65 tok/s decode)
+Two-card run 1: PASS (19.88 tok/s prompt, 2.44 tok/s decode, both devices)
+Two-card run 2: PASS (38.09 tok/s prompt, 12.08 tok/s decode, improved)
+GPU resets: NONE (verified via journalctl on 0000:11:00.0)
+Loud-spin control: PARTIAL (messages present, exit 0 vs expected 1)
+Cleanup: VERIFIED (Python os.path.exists === False)
+
+Performance gain over one-card:
+- Prompt: 2.5x (run 1) to 4.8x (run 2)
+- Decode: 1.5x (run 1) to 7.3x (run 2)
+
+Output correctness: Both two-card runs produced identical, correct answer containing "Paris"
+
+DISCREPANCIES:
+- STRATA_SPIN_MAX=1 test: exit code 0 instead of expected 1 (error messages present)
+
+Overall: PASS with 1 noted discrepancy

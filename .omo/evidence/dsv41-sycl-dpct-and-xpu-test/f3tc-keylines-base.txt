@@ -1,0 +1,7 @@
+7:ds4: CUDA0 layers [0, 39] + head: weights 5.86 GB, experts 14.86 GB (1684 of 15360 in VRAM), caches 0.00 GB, 600 MiB free
+9:prompt: 10 tokens in 278 ms (36.01 tok/s, windows of 8192)
+10:ds4: the card's waits for the answer (device 0): 0 waits (the token path 0, the window path 0), the most reads 0, the last value read 0, 0 hit the bound
+11:ds4: the hand-off's waits (device 0): 0 waits, the most reads 0, the last value read 0
+13:671,6102,294,8760,344,2619,51119,42499,ds4: the card's waits for the answer (device 0): 64 waits (the token path 64, the window path 0), the most reads 1000000, the last value read 255, 24 hit the bound
+14:ds4: the hand-off's waits (device 0): 0 waits, the most reads 0, the last value read 0
+17:decode: 8 tokens in 2683 ms (2.61 tok/s); CPU lane: 112 of 1680 experts; the cache moved 2 (2 in all)

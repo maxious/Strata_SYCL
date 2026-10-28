@@ -1,0 +1,3 @@
+{"header":true,"schemaVersion":1,"promotion":{"code":"meaning_drift_confirmed","to":"integrity","min_runs":20,"max_disputed_to_confirmed":0.1,"false_block_window":20,"max_report_false_blocks_in_window":2},"note":"starting values; change them only with evidence"}
+{"run":true,"run_id":"jm-gemv-meaning-01","pairs_sha256":"9ab2255399d9beca9c8962239b02f3f868a1ce9a93c25a94f4c7b53a78d644eb","flagged":0}
+{"run":true,"run_id":"jm-gemv-meaning-02","pairs_sha256":"9ab2255399d9beca9c8962239b02f3f868a1ce9a93c25a94f4c7b53a78d644eb","flagged":0}

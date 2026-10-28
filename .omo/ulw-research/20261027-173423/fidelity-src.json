@@ -1,0 +1,486 @@
+{
+  "record_kind": "fidelity",
+  "artifact_sha256": "c99eff75283c74c0a046a4e5d6148fc0e83a059c93f7ce5d879916c004d31a7b",
+  "report": "/home/maxious/Strata/.omo/ulw-research/20261027-173423/report.src.html",
+  "written_at": "2026-10-27T07:08:54.442Z",
+  "defects": [
+    {
+      "code": "quote_not_verbatim",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "\"<q data-fact=\"Q4\" data-quote-sel=\"full\">The crash is decided by one variable onl\" is not the full selection of Q4: \"The crash is decided by one variable only: the (DPC++ runtime) version.\"",
+      "hint": "Re-insert the quote through its {{Q<n>}} placeholder; after a second failure the sentence is replaced by the quote."
+    },
+    {
+      "code": "quote_not_verbatim",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "\"<q data-fact=\"Q3\" data-quote-sel=\"full\">On Qwen3.6-35B-A3B (GPTQ int4 experts), \" is not the full selection of Q3: \"On Qwen3.6-35B-A3B (GPTQ int4 experts), the 8 active experts of a layer are 13 M\"",
+      "hint": "Re-insert the quote through its {{Q<n>}} placeholder; after a second failure the sentence is replaced by the quote."
+    },
+    {
+      "code": "quote_not_verbatim",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "\"<q data-fact=\"Q1\" data-quote-sel=\"full\">- artifact-one-card-1: Full execution lo\" is not the full selection of Q1: \"- artifact-one-card-1: Full execution log showing prompt 7.92 tok/s, decode 1.65\"",
+      "hint": "Re-insert the quote through its {{Q<n>}} placeholder; after a second failure the sentence is replaced by the quote."
+    },
+    {
+      "code": "quote_not_verbatim",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "\"<q data-fact=\"Q2\" data-quote-sel=\"full\">- artifact-two-card-2-2: Improved perfor\" is not the full selection of Q2: \"- artifact-two-card-2-2: Improved performance (prompt 38.09 tok/s, decode 12.08 \"",
+      "hint": "Re-insert the quote through its {{Q<n>}} placeholder; after a second failure the sentence is replaced by the quote."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"22.2\" data-fact=\"F1\" data-lineage=\"MEASURED\">22.2</dat\" of F1 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"11.2\" data-fact=\"F4\" data-lineage=\"MEASURED\">11.2</dat\" of F4 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"69.4\" data-fact=\"F20\" data-lineage=\"MEASURED\">69.4</da\" of F20 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"34.0\" data-fact=\"F21\" data-lineage=\"MEASURED\">34.0</da\" of F21 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"52.0\" data-fact=\"F22\" data-lineage=\"MEASURED\">52.0</da\" of F22 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"22.2\" data-fact=\"F1\" data-lineage=\"MEASURED\">22.2</dat\" of F1 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"11.1\" data-fact=\"F16\" data-lineage=\"MEASURED\">11.1</da\" of F16 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"17.9\" data-fact=\"F17\" data-lineage=\"MEASURED\">17.9</da\" of F17 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"11.2\" data-fact=\"F4\" data-lineage=\"MEASURED\">11.2</dat\" of F4 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"5.9\" data-fact=\"F18\" data-lineage=\"MEASURED\">5.9</data\" of F18 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"9.2\" data-fact=\"F19\" data-lineage=\"MEASURED\">9.2</data\" of F19 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"69.4\" data-fact=\"F20\" data-lineage=\"MEASURED\">69.4</da\" of F20 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"34.0\" data-fact=\"F21\" data-lineage=\"MEASURED\">34.0</da\" of F21 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"52.0\" data-fact=\"F22\" data-lineage=\"MEASURED\">52.0</da\" of F22 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"34.2\" data-fact=\"F23\" data-lineage=\"MEASURED\">34.2</da\" of F23 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"17.7\" data-fact=\"F24\" data-lineage=\"MEASURED\">17.7</da\" of F24 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"26.7\" data-fact=\"F25\" data-lineage=\"MEASURED\">26.7</da\" of F25 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"22.2\" data-fact=\"F1\" data-lineage=\"MEASURED\">22.2</dat\" of F1 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"11.1\" data-fact=\"F16\" data-lineage=\"MEASURED\">11.1</da\" of F16 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"17.9\" data-fact=\"F17\" data-lineage=\"MEASURED\">17.9</da\" of F17 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"69.4\" data-fact=\"F20\" data-lineage=\"MEASURED\">69.4</da\" of F20 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"34.0\" data-fact=\"F21\" data-lineage=\"MEASURED\">34.0</da\" of F21 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"52.0\" data-fact=\"F22\" data-lineage=\"MEASURED\">52.0</da\" of F22 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"3\" data-fact=\"F27\" data-lineage=\"MEASURED\">3</data>\" of F27 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"4\" data-fact=\"F15\" data-lineage=\"MEASURED\">4</data>\" of F15 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"64\" data-fact=\"F26\" data-lineage=\"MEASURED\">64</data>\" of F26 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"7.92\" data-fact=\"F13\" data-lineage=\"MEASURED\">7.92</da\" of F13 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "value_mismatch",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body",
+      "line": 31,
+      "message": "filled text \"<data class=\"fact\" value=\"38.09\" data-fact=\"F14\" data-lineage=\"MEASURED\">38.09</\" of F14 is no longer in the report",
+      "hint": "Re-run fact fill; never edit a filled value by hand."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > div:nth-of-type(2) > p",
+      "line": 38,
+      "message": "leftover placeholder: \"{{F1:decode-f16-gateup-m1}} us/expert on gate+up and {{F4:decode-f16-down-m1}} u\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > div:nth-of-type(3) > p:nth-of-type(1)",
+      "line": 43,
+      "message": "leftover placeholder: \"{{Q4:libsycl-decider-q}}\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(2) > td:nth-of-type(3)",
+      "line": 50,
+      "message": "leftover placeholder: \"{{F1:decode-f16-gateup-m1}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(2) > td:nth-of-type(4)",
+      "line": 50,
+      "message": "leftover placeholder: \"{{F16:decode-i8-gateup-m1-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(2) > td:nth-of-type(5)",
+      "line": 50,
+      "message": "leftover placeholder: \"{{F17:decode-i8blk-gateup-m1-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(3) > td:nth-of-type(3)",
+      "line": 51,
+      "message": "leftover placeholder: \"{{F4:decode-f16-down-m1}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(3) > td:nth-of-type(4)",
+      "line": 51,
+      "message": "leftover placeholder: \"{{F18:decode-i8-down-m1-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(3) > td:nth-of-type(5)",
+      "line": 51,
+      "message": "leftover placeholder: \"{{F19:decode-i8blk-down-m1-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(4) > td:nth-of-type(3)",
+      "line": 52,
+      "message": "leftover placeholder: \"{{F20:batch-f16-gateup-m160-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(4) > td:nth-of-type(4)",
+      "line": 52,
+      "message": "leftover placeholder: \"{{F21:batch-i8-gateup-m160-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(4) > td:nth-of-type(5)",
+      "line": 52,
+      "message": "leftover placeholder: \"{{F22:batch-i8blk-gateup-m160-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(5) > td:nth-of-type(3)",
+      "line": 53,
+      "message": "leftover placeholder: \"{{F23:batch-f16-down-m160-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(5) > td:nth-of-type(4)",
+      "line": 53,
+      "message": "leftover placeholder: \"{{F24:batch-i8-down-m160-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > table > tr:nth-of-type(5) > td:nth-of-type(5)",
+      "line": 53,
+      "message": "leftover placeholder: \"{{F25:batch-i8blk-down-m160-v2}} us\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > p:nth-of-type(2)",
+      "line": 98,
+      "message": "leftover placeholder: \"{{F13:strata-prompt-one-card}} tok/s on one card and {{F14:strata-prompt-two-car\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > p:nth-of-type(3)",
+      "line": 99,
+      "message": "leftover placeholder: \"{{Q1:strata-decode-one-card-q}}\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    },
+    {
+      "code": "unresolved_placeholder",
+      "severity": "blocker",
+      "integrity": true,
+      "selector": "body > main > p:nth-of-type(4)",
+      "line": 100,
+      "message": "leftover placeholder: \"{{Q2:strata-decode-two-card-q}}\"",
+      "hint": "Register the fact with fact add or remove the sentence; a placeholder is never filled with a guess."
+    }
+  ],
+  "command": "fact verify",
+  "status": "fail",
+  "exitCode": 1,
+  "format": "html",
+  "counts": {
+    "blocker": 49,
+    "major": 0,
+    "minor": 0,
+    "total": 49
+  },
+  "gatesRun": [
+    "fidelity_interview_incomplete",
+    "unresolved_placeholder",
+    "value_mismatch",
+    "unit_mismatch",
+    "quote_not_verbatim",
+    "quote_unbound",
+    "claim_status_invalid",
+    "snapshot_hash_mismatch",
+    "chart_value_untraceable",
+    "untraceable_number",
+    "unsupported_verification",
+    "conflicting_readings",
+    "hedge_dropped",
+    "direction_flipped",
+    "causality_added",
+    "qualifier_dropped",
+    "unbound_sentence",
+    "snapshot_mismatch",
+    "join_integrity_fail",
+    "quote_stale_version",
+    "quote_fuzzy_match",
+    "name_outside_quote",
+    "scope_widened_warn",
+    "claim_kind_mismatch",
+    "verification_claim_unmarked"
+  ]
+}

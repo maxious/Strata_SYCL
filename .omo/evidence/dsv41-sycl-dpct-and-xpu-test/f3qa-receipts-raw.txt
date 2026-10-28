@@ -1,0 +1,374 @@
+=== F3 QA receipts (task st_01a1789d, manual QA executor) ===
+SYCL_PHASE_START 2026-10-27T01:41:12+11:00
+DEFAULT_PHASE_START 2026-10-27T01:41:12+11:00
+CMD: cmake -S /home/maxious/Strata -B /tmp/f3_default_build -G Ninja -DSTRATA_BUILD_TESTS=ON > /tmp/dpct_run/f3_def_configure.txt 2>&1
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake -S /home/maxious/Strata -B /tmp/f3_sycl_build -G Ninja -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_DSV41=ON -DCMAKE_CXX_COMPILER=icpx > /tmp/dpct_run/f3_configure.txt 2>&1'
+DEF_CONFIGURE_RC=0
+CMD: cmake --build /tmp/f3_default_build > /tmp/dpct_run/f3_def_build.txt 2>&1
+CFG_RC=0
+CMD: cmake --build /tmp/f3_sycl_build > /tmp/dpct_run/f3_build.txt 2>&1
+DEF_BUILD_RC=0
+DEFAULT_PHASE_DONE 2026-10-27T01:41:58+11:00
+BUILD_RC=1
+CMD: grep -c strata-dsv41 /tmp/f3_sycl_build/build.ninja > /tmp/dpct_run/f3_exe_grep_pre.txt 2>&1
+EXE_TARGET_PRE_GREP_RC=1
+0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake -S /home/maxious/Strata -B /tmp/f3_sycl_build -G Ninja -DSTRATA_ENABLE_SYCL=ON -DSTRATA_SYCL_DSV41=ON -DSTRATA_SYCL_DSV41_EXE=ON -DCMAKE_CXX_COMPILER=icpx > /tmp/dpct_run/f3_configure_exe.txt 2>&1'
+CFG_EXE_RC=0
+CMD: grep -c strata-dsv41 /tmp/f3_sycl_build/build.ninja > /tmp/dpct_run/f3_exe_grep_post.txt 2>&1
+EXE_TARGET_POST_GREP_RC=0
+84
+CMD: cmake --build /tmp/f3_sycl_build > /tmp/dpct_run/f3_build_exe.txt 2>&1
+BUILD_EXE_RC=1
+SYCL_PHASE_DONE 2026-10-27T01:44:41+11:00
+CMD: timeout 1200 bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; cmake --build /tmp/f3_sycl_build > /tmp/dpct_run/f3_build2.txt 2>&1'
+BUILD2_RC=0
+BUILD2_PHASE_DONE 2026-10-27T01:50:50+11:00
+CMD: bun -e node:fs existsSync+statSize of /tmp/f3_sycl_build/sycl/strata-dsv41 > /tmp/dpct_run/f3_exe_receipt.txt 2>&1
+SYCL_EXE_RC=0 (0 = binary present at the real path sycl/strata-dsv41)
+EXISTS=true
+SIZE=37896656
+MTIME=2026-10-26T14:49:29.857Z
+CMD: git -C /home/maxious/Strata rev-parse HEAD > /tmp/dpct_run/f3_build_identity.txt 2>&1
+GIT_HEAD_RC=0
+28bd2aaac8300a2d3952284c1559c4d3bf35529d
+BUILD_FLAGS=STRATA_ENABLE_SYCL=ON STRATA_SYCL_DSV41=ON STRATA_SYCL_DSV41_EXE=ON CMAKE_CXX_COMPILER=icpx (JIT, no STRATA_SYCL_AOT)
+PACK=/home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 CARD=--gpus 0 DATE=2026-10-27T01:52:33+11:00
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run1.txt 2>&1
+PGREP_RUN1_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_RUN1_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_n8.log 2>&1'
+RUN_RC=0
+RUN1_DONE 2026-10-27T01:53:28+11:00
+CMD: xpu-smi --query-gpu=memory.used --id=0 > /tmp/dpct_run/f3_smi_one_during.txt 2>&1
+XPU_ONE_RC=0 (0 = one device line + used-memory figure)
+memory.used (MiB)
+254.578125
+CMD: xpu-smi --query-gpu=memory.used --id=1 >> /tmp/dpct_run/f3_smi_one_during.txt 2>&1
+XPU_DEV1_DURING_RC=0
+memory.used (MiB)
+254.578125
+memory.used (MiB)
+246.140625
+RUN1_PID=
+RUN1_PID_MISSING
+CMD: xpu-smi --query-gpu=memory.used --id=0 > /tmp/dpct_run/f3_smi_one_after.txt 2>&1
+XPU_ONE_AFTER_RC=0
+memory.used (MiB)
+254.578125
+CMD: xpu-smi > /tmp/dpct_run/f3_smi_table_after.txt 2>&1
+XPU_TABLE_AFTER_RC=0
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run2.txt 2>&1
+PGREP_RUN2_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_RUN2_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_n8_r2.log 2>&1'
+RUN2_RC=0
+RUN2_DONE 2026-10-27T01:54:47+11:00
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run3.txt 2>&1
+PGREP_RUN3_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_RUN3_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_n8_r3.log 2>&1'
+RUN3_RC=0
+RUN3_DONE 2026-10-27T01:55:03+11:00
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_neg.txt 2>&1
+PGREP_NEG_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_NEG_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_garbage.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_neg.log 2>&1'
+NEG_IDS_RC=0
+NEG_DONE 2026-10-27T01:55:25+11:00
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_neg2.txt 2>&1
+PGREP_NEG2_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_NEG2_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_badid.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_neg2.log 2>&1'
+NEG2_RC=1
+NEG2_DONE 2026-10-27T01:55:39+11:00
+BATCH_DONE 2026-10-27T01:55:39+11:00
+CMD: pgrep -c strata-dsv41 > /tmp/dpct_run/f3_pgrep_pre_run4.txt 2>&1
+PGREP_RUN4_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_RUN4_READBACK=0
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; ZES_ENABLE_SYSMAN=1 SYCL_BE=PI_LEVEL_ZERO /tmp/f3_sycl_build/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 --verbose > /tmp/dpct_run/f3_n8_r4.log 2>&1'
+RUN4_RC=0
+RUN4_DONE 2026-10-27T01:56:57+11:00
+=== ANALYSIS_START 2026-10-27T01:58:57+11:00 ===
+CMD: grep -n '^prompt: ' /tmp/dpct_run/f3_n8.log > /tmp/dpct_run/f3_prompt_lines_RUN1.txt
+PROMPT_LINE_RUN1_RC=0
+24:prompt: 10 tokens in 470 ms (21.27 tok/s, windows of 8192)
+CMD: grep -n '^decode' /tmp/dpct_run/f3_n8.log > /tmp/dpct_run/f3_decode_lines_RUN1.txt
+DECODE_LINE_RUN1_RC=0
+32:decode: 8 tokens in 3139 ms (2.23 tok/s); CPU lane: 112 of 1680 experts; the cache moved 5 (5 in all)
+33:decode per token: layers 52.28 ms (of it: routing waits 0.00, CPU lane 23.26, the rest host launches), head wait 395.15, Engram reads 0.10
+35:decode reads from the disk: 11.2 MB a token
+CMD: grep -n 'CPU lane:' /tmp/dpct_run/f3_n8.log > /tmp/dpct_run/f3_cpulane_lines_RUN1.txt
+CPULANE_RUN1_RC=0
+10:ds4: CPU lane: 8 threads, MXFP4 rows avx2 ()
+32:decode: 8 tokens in 3139 ms (2.23 tok/s); CPU lane: 112 of 1680 experts; the cache moved 5 (5 in all)
+CMD: /tmp/tokvenv/bin/python /tmp/dpct_run/f3_decode.py --log /tmp/dpct_run/f3_n8.log > /tmp/dpct_run/f3_decode_RUN1.txt
+DECODE_IDS_RUN1_RC=0
+batch1 ids: 671 6102 294 8760 344 2619 51119 42499
+batch1 first_id: 671
+batch1 type3_ids: none
+batch1 decoded: The capital of France is **Paris**.
+CMD: sed -n 's/^batch1 decoded: //p' /tmp/dpct_run/f3_decode_RUN1.txt > /tmp/dpct_run/f3_answer_RUN1.txt
+ANSWER_RUN1_RC=0
+CMD: grep -ci paris /tmp/dpct_run/f3_answer_RUN1.txt > /tmp/dpct_run/f3_paris_RUN1.txt
+PARIS_RUN1_RC=0
+1
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' /tmp/dpct_run/f3_n8.log > /tmp/dpct_run/f3_reset_RUN1.txt
+RESET_RUN1_RC=1 (1 = zero matches = no GPU reset)
+0
+CMD: grep -c 'ds4: CUDA0' /tmp/dpct_run/f3_n8.log > /tmp/dpct_run/f3_dev0_RUN1.txt
+DEV0_RUN1_RC=0
+2
+CMD: grep -c 'ds4: CUDA1' /tmp/dpct_run/f3_n8.log > /tmp/dpct_run/f3_dev1_RUN1.txt
+DEV1_RUN1_RC=1 (1 = zero matches = no second device)
+0
+CMD: grep -n '^prompt: ' /tmp/dpct_run/f3_n8_r2.log > /tmp/dpct_run/f3_prompt_lines_RUN2.txt
+PROMPT_LINE_RUN2_RC=0
+24:prompt: 10 tokens in 444 ms (22.50 tok/s, windows of 8192)
+CMD: grep -n '^decode' /tmp/dpct_run/f3_n8_r2.log > /tmp/dpct_run/f3_decode_lines_RUN2.txt
+DECODE_LINE_RUN2_RC=0
+32:decode: 8 tokens in 2876 ms (2.43 tok/s); CPU lane: 108 of 1680 experts; the cache moved 5 (5 in all)
+33:decode per token: layers 46.54 ms (of it: routing waits 0.00, CPU lane 12.90, the rest host launches), head wait 363.96, Engram reads 0.08
+35:decode reads from the disk: 10.2 MB a token
+CMD: grep -n 'CPU lane:' /tmp/dpct_run/f3_n8_r2.log > /tmp/dpct_run/f3_cpulane_lines_RUN2.txt
+CPULANE_RUN2_RC=0
+10:ds4: CPU lane: 8 threads, MXFP4 rows avx2 ()
+32:decode: 8 tokens in 2876 ms (2.43 tok/s); CPU lane: 108 of 1680 experts; the cache moved 5 (5 in all)
+CMD: /tmp/tokvenv/bin/python /tmp/dpct_run/f3_decode.py --log /tmp/dpct_run/f3_n8_r2.log > /tmp/dpct_run/f3_decode_RUN2.txt
+DECODE_IDS_RUN2_RC=0
+batch1 ids: 671 6102 294 8760 344 2619 51119 42499
+batch1 first_id: 671
+batch1 type3_ids: none
+batch1 decoded: The capital of France is **Paris**.
+CMD: sed -n 's/^batch1 decoded: //p' /tmp/dpct_run/f3_decode_RUN2.txt > /tmp/dpct_run/f3_answer_RUN2.txt
+ANSWER_RUN2_RC=0
+CMD: grep -ci paris /tmp/dpct_run/f3_answer_RUN2.txt > /tmp/dpct_run/f3_paris_RUN2.txt
+PARIS_RUN2_RC=0
+1
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' /tmp/dpct_run/f3_n8_r2.log > /tmp/dpct_run/f3_reset_RUN2.txt
+RESET_RUN2_RC=1 (1 = zero matches = no GPU reset)
+0
+CMD: grep -c 'ds4: CUDA0' /tmp/dpct_run/f3_n8_r2.log > /tmp/dpct_run/f3_dev0_RUN2.txt
+DEV0_RUN2_RC=0
+2
+CMD: grep -c 'ds4: CUDA1' /tmp/dpct_run/f3_n8_r2.log > /tmp/dpct_run/f3_dev1_RUN2.txt
+DEV1_RUN2_RC=1 (1 = zero matches = no second device)
+0
+CMD: grep -n '^prompt: ' /tmp/dpct_run/f3_n8_r3.log > /tmp/dpct_run/f3_prompt_lines_RUN3.txt
+PROMPT_LINE_RUN3_RC=0
+24:prompt: 10 tokens in 388 ms (25.76 tok/s, windows of 8192)
+CMD: grep -n '^decode' /tmp/dpct_run/f3_n8_r3.log > /tmp/dpct_run/f3_decode_lines_RUN3.txt
+DECODE_LINE_RUN3_RC=0
+32:decode: 8 tokens in 2817 ms (2.48 tok/s); CPU lane: 110 of 1680 experts; the cache moved 4 (4 in all)
+33:decode per token: layers 47.59 ms (of it: routing waits 0.00, CPU lane 14.78, the rest host launches), head wait 354.36, Engram reads 0.09
+35:decode reads from the disk: 4.0 MB a token
+CMD: grep -n 'CPU lane:' /tmp/dpct_run/f3_n8_r3.log > /tmp/dpct_run/f3_cpulane_lines_RUN3.txt
+CPULANE_RUN3_RC=0
+10:ds4: CPU lane: 8 threads, MXFP4 rows avx2 ()
+32:decode: 8 tokens in 2817 ms (2.48 tok/s); CPU lane: 110 of 1680 experts; the cache moved 4 (4 in all)
+CMD: /tmp/tokvenv/bin/python /tmp/dpct_run/f3_decode.py --log /tmp/dpct_run/f3_n8_r3.log > /tmp/dpct_run/f3_decode_RUN3.txt
+DECODE_IDS_RUN3_RC=0
+batch1 ids: 671 6102 294 8760 344 2619 51119 42499
+batch1 first_id: 671
+batch1 type3_ids: none
+batch1 decoded: The capital of France is **Paris**.
+CMD: sed -n 's/^batch1 decoded: //p' /tmp/dpct_run/f3_decode_RUN3.txt > /tmp/dpct_run/f3_answer_RUN3.txt
+ANSWER_RUN3_RC=0
+CMD: grep -ci paris /tmp/dpct_run/f3_answer_RUN3.txt > /tmp/dpct_run/f3_paris_RUN3.txt
+PARIS_RUN3_RC=0
+1
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' /tmp/dpct_run/f3_n8_r3.log > /tmp/dpct_run/f3_reset_RUN3.txt
+RESET_RUN3_RC=1 (1 = zero matches = no GPU reset)
+0
+CMD: grep -c 'ds4: CUDA0' /tmp/dpct_run/f3_n8_r3.log > /tmp/dpct_run/f3_dev0_RUN3.txt
+DEV0_RUN3_RC=0
+2
+CMD: grep -c 'ds4: CUDA1' /tmp/dpct_run/f3_n8_r3.log > /tmp/dpct_run/f3_dev1_RUN3.txt
+DEV1_RUN3_RC=1 (1 = zero matches = no second device)
+0
+CMD: diff /tmp/dpct_run/f3_answer_RUN1.txt /tmp/dpct_run/f3_answer_RUN2.txt > /tmp/dpct_run/f3_repeat2_diff.txt 2>&1
+REPEAT2_RC=0 (0 = byte-identical)
+CMD: diff /tmp/dpct_run/f3_answer_RUN1.txt /tmp/dpct_run/f3_answer_RUN3.txt > /tmp/dpct_run/f3_repeat3_diff.txt 2>&1
+REPEAT3_RC=0 (0 = byte-identical)
+CMD: diff /tmp/dpct_run/f3_decode_RUN1.txt /tmp/dpct_run/f3_decode_RUN2.txt > /tmp/dpct_run/f3_ids2_diff.txt 2>&1
+IDS_REPEAT2_RC=0 (0 = byte-identical ids)
+CMD: diff /tmp/dpct_run/f3_decode_RUN1.txt /tmp/dpct_run/f3_decode_RUN3.txt > /tmp/dpct_run/f3_ids3_diff.txt 2>&1
+IDS_REPEAT3_RC=0 (0 = byte-identical ids)
+=== adversarial logs ===
+CMD: grep -n 'out of range\|parse\|error' /tmp/dpct_run/f3_neg.log > /tmp/dpct_run/f3_neg_err.txt
+NEG_ERR_GREP_RC=1 (1 = no parse error printed)
+CMD: grep -n 'out of range' /tmp/dpct_run/f3_neg2.log > /tmp/dpct_run/f3_neg2_err.txt
+NEG2_ERR_GREP_RC=0 (0 = offending token named)
+23:maya-ds4: token 999999999 out of range
+=== default build dsv41-source greps ===
+CMD: grep -c 'ds4_' /tmp/f3_default_build/build.ninja > /tmp/dpct_run/f3_off_grep.txt
+DSV41_OFF_GREP_RC=1 (1 = count 0 = default build lists no dsv41 sources)
+0
+CMD: grep -c 'ds4_' /tmp/f3_sycl_build/build.ninja > /tmp/dpct_run/f3_on_grep.txt
+DSV41_ON_GREP_RC=0 (0 = count > 0 = ON build lists dsv41 sources)
+71
+=== ANALYSIS_DONE 2026-10-27T01:58:57+11:00 ===
+=== ANALYSIS RUN4 ADDENDUM ===
+CMD: grep -n '^prompt: ' /tmp/dpct_run/f3_n8_r4.log > /tmp/dpct_run/f3_prompt_lines_RUN4.txt
+PROMPT_LINE_RUN4_RC=0
+24:prompt: 10 tokens in 439 ms (22.76 tok/s, windows of 8192)
+CMD: grep -n '^decode' /tmp/dpct_run/f3_n8_r4.log > /tmp/dpct_run/f3_decode_lines_RUN4.txt
+DECODE_LINE_RUN4_RC=0
+32:decode: 8 tokens in 2990 ms (2.34 tok/s); CPU lane: 114 of 1680 experts; the cache moved 3 (3 in all)
+33:decode per token: layers 48.42 ms (of it: routing waits 0.00, CPU lane 16.92, the rest host launches), head wait 377.54, Engram reads 0.08
+35:decode reads from the disk: 11.8 MB a token
+CMD: grep -n 'CPU lane:' /tmp/dpct_run/f3_n8_r4.log > /tmp/dpct_run/f3_cpulane_lines_RUN4.txt
+CPULANE_RUN4_RC=0
+10:ds4: CPU lane: 8 threads, MXFP4 rows avx2 ()
+32:decode: 8 tokens in 2990 ms (2.34 tok/s); CPU lane: 114 of 1680 experts; the cache moved 3 (3 in all)
+CMD: /tmp/tokvenv/bin/python /tmp/dpct_run/f3_decode.py --log /tmp/dpct_run/f3_n8_r4.log > /tmp/dpct_run/f3_decode_RUN4.txt
+DECODE_IDS_RUN4_RC=0
+batch1 ids: 671 6102 294 8760 344 2619 51119 42499
+batch1 first_id: 671
+batch1 type3_ids: none
+batch1 decoded: The capital of France is **Paris**.
+CMD: sed -n 's/^batch1 decoded: //p' /tmp/dpct_run/f3_decode_RUN4.txt > /tmp/dpct_run/f3_answer_RUN4.txt
+ANSWER_RUN4_RC=0
+CMD: diff /tmp/dpct_run/f3_answer_RUN1.txt /tmp/dpct_run/f3_answer_RUN4.txt > /tmp/dpct_run/f3_repeat4_diff.txt 2>&1
+REPEAT4_RC=0 (0 = byte-identical)
+CMD: diff /tmp/dpct_run/f3_decode_RUN1.txt /tmp/dpct_run/f3_decode_RUN4.txt > /tmp/dpct_run/f3_ids4_diff.txt 2>&1
+IDS_REPEAT4_RC=0 (0 = byte-identical ids)
+CMD: grep -icE 'gpu[ -]?reset|device[ -]?reset|engine[ -]?reset|gt[ -]?reset|xe[ -]?reset|page fault|reset occurred|resetting the (gpu|device|engine)' /tmp/dpct_run/f3_n8_r4.log > /tmp/dpct_run/f3_reset_RUN4.txt
+RESET_RUN4_RC=1 (1 = zero matches = no GPU reset)
+0
+CMD: grep -c 'ds4: CUDA1' /tmp/dpct_run/f3_n8_r4.log > /tmp/dpct_run/f3_dev1_RUN4.txt
+DEV1_RUN4_RC=1 (1 = zero matches = no second device)
+0
+=== ANALYSIS4_DONE 2026-10-27T01:58:57+11:00 ===
+CMD: ctest --test-dir /tmp/f3_default_build --output-on-failure > /tmp/dpct_run/f3_ctest.txt 2>&1
+CTEST_RC=8
+CMD: grep -n '% tests passed' /tmp/dpct_run/f3_ctest.txt > /tmp/dpct_run/f3_ctest_summary.txt
+CTEST_SUMMARY_RC=0
+120:98% tests passed, 1 tests failed out of 57
+CMD: grep -n 'Failed' /tmp/dpct_run/f3_ctest.txt > /tmp/dpct_run/f3_ctest_failed.txt
+CTEST_FAILED_NAMES_RC=0
+111:55/57 Test #55: isa_guard_check ..................***Failed    1.57 sec
+131:	 55 - isa_guard_check (Failed)
+CTEST_PHASE_DONE 2026-10-27T01:59:22+11:00
+=== CONTROL COMPARISONS 2026-10-27T02:02:51+11:00 ===
+CMD: grep -oE 'Test #[0-9]+: [a-zA-Z_0-9]+' /tmp/dpct_run/f3_ctest.txt > /tmp/dpct_run/f3_failed_names_raw.txt
+FAILED_NAMES_EXTRACT_RC=0
+FAILED_NAMES_SORT_RC=0
+Test #10: prefill_plan_test
+Test #11: share_rules_test
+Test #12: host_limits_test
+Test #13: arch_defaults_test
+Test #14: adapt_async_default_test
+Test #15: uma_cache_test
+Test #16: suffix_drafter_test
+Test #17: controller_test
+Test #18: draft_policy_test
+Test #19: spec_start_test
+Test #20: message_boundary_test
+Test #21: split_ring_test
+Test #22: conv_cache_test
+Test #23: draft_kv_plan_test
+Test #24: coupled_draft_test
+Test #25: spec_prob_test
+Test #26: draft_cap_test
+Test #27: bf16_bits_test
+Test #28: batch_rows_test
+Test #29: batch_groups_test
+Test #30: dequant_q5_1_test
+Test #31: pool_tasks_test
+Test #32: router_dot_parity
+Test #33: router_dot_parity_avx
+Test #34: iq512_gather_parity_scalar
+Test #35: iq512_gather_parity_gather
+Test #36: iq_avx2_parity
+Test #37: iq_avx2_parity_iq3s_mt1
+Test #38: iq_avx1_parity
+Test #39: q8k_quant_parity
+Test #40: q8k_quant_parity_avx
+Test #41: nvfp4_cpu_parity
+Test #42: pool_affinity_test
+Test #43: expert_multi_test
+Test #44: q2_bitplane_parity
+Test #45: native_hadamard_test
+Test #46: tq_cpu_parity
+Test #47: tq_cpu_parity_avx2
+Test #48: expert_parity
+Test #49: pool_test
+Test #50: pool_cores_test
+Test #51: pool_plan_test
+Test #52: numa_pool_test
+Test #53: warm_policy_test
+Test #54: pool_stress
+Test #55: isa_guard_check
+Test #56: direct_file_async_test
+Test #57: aux_cpus_test
+CMD: grep -oE 'Test #[0-9]+: [a-zA-Z_0-9]+' /tmp/dpct_w10_ctl_ctestout.log > /tmp/dpct_run/f3_ctl_names_raw.txt
+CTL_NAMES_EXTRACT_RC=0 (origin/main control log)
+CTL_NAMES_SORT_RC=0
+Test #10: prefill_plan_test
+Test #11: share_rules_test
+Test #12: host_limits_test
+Test #13: arch_defaults_test
+Test #14: adapt_async_default_test
+Test #15: uma_cache_test
+Test #16: suffix_drafter_test
+Test #17: controller_test
+Test #18: draft_policy_test
+Test #19: spec_start_test
+Test #20: message_boundary_test
+Test #21: split_ring_test
+Test #22: conv_cache_test
+Test #23: draft_kv_plan_test
+Test #24: coupled_draft_test
+Test #25: spec_prob_test
+Test #26: draft_cap_test
+Test #27: bf16_bits_test
+Test #28: batch_rows_test
+Test #29: batch_groups_test
+Test #30: dequant_q5_1_test
+Test #31: pool_tasks_test
+Test #32: router_dot_parity
+Test #33: router_dot_parity_avx
+Test #34: iq512_gather_parity_scalar
+Test #35: iq512_gather_parity_gather
+Test #36: iq_avx2_parity
+Test #37: iq_avx2_parity_iq3s_mt1
+Test #38: iq_avx1_parity
+Test #39: q8k_quant_parity
+Test #40: q8k_quant_parity_avx
+Test #41: nvfp4_cpu_parity
+Test #42: pool_affinity_test
+Test #43: expert_multi_test
+Test #44: q2_bitplane_parity
+Test #45: native_hadamard_test
+Test #46: tq_cpu_parity
+Test #47: tq_cpu_parity_avx2
+Test #48: expert_parity
+Test #49: pool_test
+Test #50: pool_cores_test
+Test #51: pool_plan_test
+Test #52: numa_pool_test
+Test #53: warm_policy_test
+Test #54: pool_stress
+Test #55: isa_guard_check
+Test #56: direct_file_async_test
+Test #57: aux_cpus_test
+CMD: diff /tmp/dpct_run/f3_failed_names.txt /tmp/dpct_run/f3_ctl_names.txt > /tmp/dpct_run/f3_faildiff.txt 2>&1
+FAILDIFF_RC=0 (0 = failing test names identical to origin/main control)
+CMD: grep -q 'first_id: 11111' /tmp/dpct_run/f3_decode_RUN1.txt
+FIRST_ID_RC=1 (1 = first id is NOT the plan-literal 11111)
+CMD: grep -c 'type3_ids: none' /tmp/dpct_run/f3_decode_RUN1.txt > /tmp/dpct_run/f3_control_count.txt
+CONTROL_RC=0 (0 = every run reports zero type-3 ids emitted)
+1
+CMD: grep -F '***Failed' /tmp/dpct_run/f3_ctest.txt > /tmp/dpct_run/f3_failed_lines.txt
+FAILED_LINES_RC=0 (note: FAILDIFF_RC=0 above compared full test lists, superseded by FAILDIFF2 below)
+CMD: grep -oE 'Test #[0-9]+: [a-zA-Z_0-9]+' /tmp/dpct_run/f3_failed_lines.txt > /tmp/dpct_run/f3_failed_only.txt
+FAILED_ONLY_EXTRACT_RC=0
+Test #55: isa_guard_check
+CMD: grep -F '***Failed' /tmp/dpct_w10_ctl_ctestout.log > /tmp/dpct_run/f3_ctl_failed_lines.txt
+CTL_FAILED_LINES_RC=0
+CMD: grep -oE 'Test #[0-9]+: [a-zA-Z_0-9]+' /tmp/dpct_run/f3_ctl_failed_lines.txt > /tmp/dpct_run/f3_ctl_failed_only.txt
+CTL_FAILED_ONLY_EXTRACT_RC=0
+Test #55: isa_guard_check
+CMD: diff /tmp/dpct_run/f3_failed_only.txt /tmp/dpct_run/f3_ctl_failed_only.txt > /tmp/dpct_run/f3_faildiff2.txt 2>&1
+FAILDIFF2_RC=0 (0 = the failing test names are identical to the origin/main control's)

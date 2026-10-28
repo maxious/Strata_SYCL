@@ -1,0 +1,56 @@
+=== F3 two-card manual QA: card-run phase (task st_01a178c4) ===
+binary: /tmp/f3tc_bld_aot/sycl/strata-dsv41 | pack: /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4
+every card launch below is preceded by its pgrep gate (readback must be 0)
+CMD: pgrep -c strata-dsv41 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-pgrep-BASE.txt 2>&1
+PGREP_BASE_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_BASE_READBACK=0
+PGREP_BASE_FINAL_READBACK=0 (waits=0)
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; SYCL_BE=PI_LEVEL_ZERO /tmp/f3tc_bld_aot/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0 --ids @/tmp/q_france.ids --n 8 --max-context 512 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-base.log 2>&1'
+RUN_BASE_RC=0
+RUN_BASE_DONE 2026-10-27T02:46:52+11:00
+CMD: pgrep -c strata-dsv41 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-pgrep-R1.txt 2>&1
+PGREP_R1_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_R1_READBACK=0
+PGREP_R1_FINAL_READBACK=0 (waits=0)
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; SYCL_BE=PI_LEVEL_ZERO /tmp/f3tc_bld_aot/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0,1 --ids @/tmp/q_france.ids --n 8 --max-context 512 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run1.log 2>&1'
+RUN1_RC=0
+RUN1_DONE 2026-10-27T02:48:53+11:00
+CMD: pgrep -c strata-dsv41 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-pgrep-R2.txt 2>&1
+PGREP_R2_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_R2_READBACK=0
+PGREP_R2_FINAL_READBACK=0 (waits=0)
+CMD: xpu-smi --query-gpu=index,memory.used,memory.total --loop=3 --count=30 -f /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-smi-loop.txt (backgrounded across RUN2)
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; SYCL_BE=PI_LEVEL_ZERO /tmp/f3tc_bld_aot/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0,1 --ids @/tmp/q_france.ids --n 8 --max-context 512 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run2.log 2>&1'
+RUN2_RC=0
+SMI_LOOP_RC=0
+RUN2_DONE 2026-10-27T02:50:21+11:00
+CMD: xpu-smi --query-gpu=index,memory.used,memory.total > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-smi-after.txt 2>&1
+SMI_AFTER_RC=0
+index, memory.used (MiB), memory.total (MiB)
+0, 254.578125, 24480
+1, 246.140625, 24480
+CMD: pgrep -c strata-dsv41 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-pgrep-SPIN.txt 2>&1
+PGREP_SPIN_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_SPIN_READBACK=0
+PGREP_SPIN_FINAL_READBACK=0 (waits=0)
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; SYCL_BE=PI_LEVEL_ZERO STRATA_SPIN_MAX=1 /tmp/f3tc_bld_aot/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0,1 --ids @/tmp/q_france.ids --n 8 --max-context 512 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-spin-max1.log 2>&1'
+SPIN_RUN_RC=1
+SPIN_RUN_DONE 2026-10-27T02:51:05+11:00
+CMD: pgrep -c strata-dsv41 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-pgrep-NEG2.txt 2>&1
+PGREP_NEG2_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_NEG2_READBACK=0
+PGREP_NEG2_FINAL_READBACK=0 (waits=0)
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; SYCL_BE=PI_LEVEL_ZERO /tmp/f3tc_bld_aot/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0,1 --ids @/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-ids-badid.ids --n 8 --max-context 512 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-neg-badid.log 2>&1'
+NEG2_RUN_RC=1
+NEG2_RUN_DONE 2026-10-27T02:51:47+11:00
+CMD: pgrep -c strata-dsv41 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-pgrep-NEG.txt 2>&1
+PGREP_NEG_RC=1 (pgrep exits 1 when the count is 0)
+PGREP_NEG_READBACK=0
+PGREP_NEG_FINAL_READBACK=0 (waits=0)
+CMD: bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; SYCL_BE=PI_LEVEL_ZERO /tmp/f3tc_bld_aot/sycl/strata-dsv41 --pack /home/maxious/Strata-data/models/DeepSeek-V4.1-Flash-1017-GSQ-RCO/maya-ds4 --gpus 0,1 --ids @/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-ids-garbage.ids --n 8 --max-context 512 > /home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-neg-garbage.log 2>&1'
+NEG_IDS_RUN_RC=0
+NEG_IDS_RUN_DONE 2026-10-27T02:53:00+11:00
+CMD: pgrep -c strata-dsv41 (post-run re-read)
+PGREP_POST_RC=1 (pgrep exits 1 when the count is 0)
+0
+RUN_PHASE_DONE 2026-10-27T02:53:00+11:00

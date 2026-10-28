@@ -1,0 +1,31 @@
+{
+  "record_kind": "meaning",
+  "artifact_sha256": "4c5b43e3b543c2c2ab779fb938da9e49abae4c73b03926a3814bdeaf364c6d7d",
+  "report": "/home/maxious/Strata/.omo/ulw-research/20261027-173423/report.html",
+  "written_at": "2026-10-27T07:10:01.988Z",
+  "defects": [],
+  "command": "fact meaning-check",
+  "status": "pass",
+  "exitCode": 0,
+  "run_id": "jm-gemv-meaning-02",
+  "pairs_sha256": "9ab2255399d9beca9c8962239b02f3f868a1ce9a93c25a94f4c7b53a78d644eb",
+  "counts": {
+    "blocker": 0,
+    "major": 0,
+    "minor": 0,
+    "total": 0
+  },
+  "dropped": [],
+  "unverified": [],
+  "calibration_path": "/home/maxious/Strata/.omo/ulw-research/20261027-173423/fidelity-calibration.jsonl",
+  "calibration_written": 0,
+  "calibration_replaced": false,
+  "promotion_eligibility": {
+    "runs": 2,
+    "confirmed": 0,
+    "disputed_confirmed": 0,
+    "disputed_to_confirmed": null,
+    "report_false_blocks_in_window": 0,
+    "eligible": false
+  }
+}

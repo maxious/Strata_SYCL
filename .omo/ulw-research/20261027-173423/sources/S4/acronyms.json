@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "source_id": "S4",
+  "snapshot_sha256": "353a07395282aff64e299dd7419acdfb7857f9cc78aaef2fd066089ae55483fa",
+  "entries": [
+    {
+      "acronym": "HPG",
+      "expansion": "Arc A",
+      "sentence_id": "S4:s137",
+      "span": [
+        6674,
+        6685
+      ]
+    },
+    {
+      "acronym": "HPG",
+      "expansion": "Arc A",
+      "sentence_id": "S4:s140",
+      "span": [
+        6994,
+        7005
+      ]
+    }
+  ]
+}

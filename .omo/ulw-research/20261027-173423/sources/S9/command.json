@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "grep",
+    "-c",
+    "gemv",
+    "/opt/intel/oneapi/mkl/latest/include/oneapi/mkl/blas/usm_decls.hpp"
+  ],
+  "cwd": "/opt/intel/oneapi",
+  "exit_status": 0,
+  "stdout_sha256": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

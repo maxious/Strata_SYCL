@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "format": "html",
+  "artifact": "/home/maxious/Strata/.omo/ulw-research/20261027-173423/report.html",
+  "artifact_sha256": "4c5b43e3b543c2c2ab779fb938da9e49abae4c73b03926a3814bdeaf364c6d7d",
+  "brief_sha256": "751cbc0c39dbfabd57723272b15de4eba4f3e2d8c538696df842465d11f740cd",
+  "entries": [
+    {
+      "token": "{{F1:decode-f16-gateup-m1}}",
+      "fact_id": "F1",
+      "start": 2547,
+      "end": 2629,
+      "rendered": "<data class=\"fact\" value=\"22.2\" data-fact=\"F1\" data-lineage=\"MEASURED\">22.2</data>"
+    },
+    {
+      "token": "{{F4:decode-f16-down-m1}}",
+      "fact_id": "F4",
+      "start": 2660,
+      "end": 2742,
+      "rendered": "<data class=\"fact\" value=\"11.2\" data-fact=\"F4\" data-lineage=\"MEASURED\">11.2</data>"
+    },
+    {
+      "token": "{{F20:batch-f16-gateup-m160-v2}}",
+      "fact_id": "F20",
+      "start": 2905,
+      "end": 2988,
+      "rendered": "<data class=\"fact\" value=\"69.4\" data-fact=\"F20\" data-lineage=\"MEASURED\">69.4</data>"
+    },
+    {
+      "token": "{{F21:batch-i8-gateup-m160-v2}}",
+      "fact_id": "F21",
+      "start": 3017,
+      "end": 3100,
+      "rendered": "<data class=\"fact\" value=\"34.0\" data-fact=\"F21\" data-lineage=\"MEASURED\">34.0</data>"
+    },
+    {
+      "token": "{{F22:batch-i8blk-gateup-m160-v2}}",
+      "fact_id": "F22",
+      "start": 3128,
+      "end": 3211,
+      "rendered": "<data class=\"fact\" value=\"52.0\" data-fact=\"F22\" data-lineage=\"MEASURED\">52.0</data>"
+    },
+    {
+      "token": "{{Q4:libsycl-decider-q}}",
+      "fact_id": "Q4",
+      "start": 3348,
+      "end": 3468,
+      "rendered": "<q data-fact=\"Q4\" data-quote-sel=\"full\">The crash is decided by one variable only: the (DPC++ runtime) version.</q> [S6]",
+      "selector": "full",
+      "quote_span": [
+        0,
+        71
+      ]
+    },
+    {
+      "token": "{{F1:decode-f16-gateup-m1}}",
+      "fact_id": "F1",
+      "start": 4187,
+      "end": 4269,
+      "rendered": "<data class=\"fact\" value=\"22.2\" data-fact=\"F1\" data-lineage=\"MEASURED\">22.2</data>"
+    },
+    {
+      "token": "{{F16:decode-i8-gateup-m1-v2}}",
+      "fact_id": "F16",
+      "start": 4291,
+      "end": 4374,
+      "rendered": "<data class=\"fact\" value=\"11.1\" data-fact=\"F16\" data-lineage=\"MEASURED\">11.1</data>"
+    },
+    {
+      "token": "{{F17:decode-i8blk-gateup-m1-v2}}",
+      "fact_id": "F17",
+      "start": 4396,
+      "end": 4479,
+      "rendered": "<data class=\"fact\" value=\"17.9\" data-fact=\"F17\" data-lineage=\"MEASURED\">17.9</data>"
+    },
+    {
+      "token": "{{F4:decode-f16-down-m1}}",
+      "fact_id": "F4",
+      "start": 4586,
+      "end": 4668,
+      "rendered": "<data class=\"fact\" value=\"11.2\" data-fact=\"F4\" data-lineage=\"MEASURED\">11.2</data>"
+    },
+    {
+      "token": "{{F18:decode-i8-down-m1-v2}}",
+      "fact_id": "F18",
+      "start": 4690,
+      "end": 4771,
+      "rendered": "<data class=\"fact\" value=\"5.9\" data-fact=\"F18\" data-lineage=\"MEASURED\">5.9</data>"
+    },
+    {
+      "token": "{{F19:decode-i8blk-down-m1-v2}}",
+      "fact_id": "F19",
+      "start": 4793,
+      "end": 4874,
+      "rendered": "<data class=\"fact\" value=\"9.2\" data-fact=\"F19\" data-lineage=\"MEASURED\">9.2</data>"
+    },
+    {
+      "token": "{{F20:batch-f16-gateup-m160-v2}}",
+      "fact_id": "F20",
+      "start": 4987,
+      "end": 5070,
+      "rendered": "<data class=\"fact\" value=\"69.4\" data-fact=\"F20\" data-lineage=\"MEASURED\">69.4</data>"
+    },
+    {
+      "token": "{{F21:batch-i8-gateup-m160-v2}}",
+      "fact_id": "F21",
+      "start": 5092,
+      "end": 5175,
+      "rendered": "<data class=\"fact\" value=\"34.0\" data-fact=\"F21\" data-lineage=\"MEASURED\">34.0</data>"
+    },
+    {
+      "token": "{{F22:batch-i8blk-gateup-m160-v2}}",
+      "fact_id": "F22",
+      "start": 5197,
+      "end": 5280,
+      "rendered": "<data class=\"fact\" value=\"52.0\" data-fact=\"F22\" data-lineage=\"MEASURED\">52.0</data>"
+    },
+    {
+      "token": "{{F23:batch-f16-down-m160-v2}}",
+      "fact_id": "F23",
+      "start": 5389,
+      "end": 5472,
+      "rendered": "<data class=\"fact\" value=\"34.2\" data-fact=\"F23\" data-lineage=\"MEASURED\">34.2</data>"
+    },
+    {
+      "token": "{{F24:batch-i8-down-m160-v2}}",
+      "fact_id": "F24",
+      "start": 5494,
+      "end": 5577,
+      "rendered": "<data class=\"fact\" value=\"17.7\" data-fact=\"F24\" data-lineage=\"MEASURED\">17.7</data>"
+    },
+    {
+      "token": "{{F25:batch-i8blk-down-m160-v2}}",
+      "fact_id": "F25",
+      "start": 5599,
+      "end": 5682,
+      "rendered": "<data class=\"fact\" value=\"26.7\" data-fact=\"F25\" data-lineage=\"MEASURED\">26.7</data>"
+    },
+    {
+      "token": "{{F1:decode-f16-gateup-m1}}",
+      "fact_id": "F1",
+      "start": 6366,
+      "end": 6448,
+      "rendered": "<data class=\"fact\" value=\"22.2\" data-fact=\"F1\" data-lineage=\"MEASURED\">22.2</data>"
+    },
+    {
+      "token": "{{F16:decode-i8-gateup-m1-v2}}",
+      "fact_id": "F16",
+      "start": 6545,
+      "end": 6628,
+      "rendered": "<data class=\"fact\" value=\"11.1\" data-fact=\"F16\" data-lineage=\"MEASURED\">11.1</data>"
+    },
+    {
+      "token": "{{F17:decode-i8blk-gateup-m1-v2}}",
+      "fact_id": "F17",
+      "start": 6725,
+      "end": 6808,
+      "rendered": "<data class=\"fact\" value=\"17.9\" data-fact=\"F17\" data-lineage=\"MEASURED\">17.9</data>"
+    },
+    {
+      "token": "{{F20:batch-f16-gateup-m160-v2}}",
+      "fact_id": "F20",
+      "start": 6945,
+      "end": 7028,
+      "rendered": "<data class=\"fact\" value=\"69.4\" data-fact=\"F20\" data-lineage=\"MEASURED\">69.4</data>"
+    },
+    {
+      "token": "{{F21:batch-i8-gateup-m160-v2}}",
+      "fact_id": "F21",
+      "start": 7127,
+      "end": 7210,
+      "rendered": "<data class=\"fact\" value=\"34.0\" data-fact=\"F21\" data-lineage=\"MEASURED\">34.0</data>"
+    },
+    {
+      "token": "{{F22:batch-i8blk-gateup-m160-v2}}",
+      "fact_id": "F22",
+      "start": 7309,
+      "end": 7392,
+      "rendered": "<data class=\"fact\" value=\"52.0\" data-fact=\"F22\" data-lineage=\"MEASURED\">52.0</data>"
+    },
+    {
+      "token": "{{F27:onemkl-gemv-decl-count}}",
+      "fact_id": "F27",
+      "start": 8077,
+      "end": 8154,
+      "rendered": "<data class=\"fact\" value=\"3\" data-fact=\"F27\" data-lineage=\"MEASURED\">3</data>"
+    },
+    {
+      "token": "{{Q3:b70-bandwidth-q}}",
+      "fact_id": "Q3",
+      "start": 8771,
+      "end": 9005,
+      "rendered": "<q data-fact=\"Q3\" data-quote-sel=\"full\">On Qwen3.6-35B-A3B (GPTQ int4 experts), the 8 active experts of a layer are 13 MB of weights, about 21 us at the B70's bandwidth, but a gate_up call takes ~56 us and a down call ~34 us.</q> [S5]",
+      "selector": "full",
+      "quote_span": [
+        0,
+        185
+      ]
+    },
+    {
+      "token": "{{F15:fg-ksplit}}",
+      "fact_id": "F15",
+      "start": 9435,
+      "end": 9512,
+      "rendered": "<data class=\"fact\" value=\"4\" data-fact=\"F15\" data-lineage=\"MEASURED\">4</data>"
+    },
+    {
+      "token": "{{F26:fg-max-n}}",
+      "fact_id": "F26",
+      "start": 9572,
+      "end": 9651,
+      "rendered": "<data class=\"fact\" value=\"64\" data-fact=\"F26\" data-lineage=\"MEASURED\">64</data>"
+    },
+    {
+      "token": "{{F13:strata-prompt-one-card}}",
+      "fact_id": "F13",
+      "start": 10652,
+      "end": 10735,
+      "rendered": "<data class=\"fact\" value=\"7.92\" data-fact=\"F13\" data-lineage=\"MEASURED\">7.92</data>"
+    },
+    {
+      "token": "{{F14:strata-prompt-two-card}}",
+      "fact_id": "F14",
+      "start": 10758,
+      "end": 10843,
+      "rendered": "<data class=\"fact\" value=\"38.09\" data-fact=\"F14\" data-lineage=\"MEASURED\">38.09</data>"
+    },
+    {
+      "token": "{{Q1:strata-decode-one-card-q}}",
+      "fact_id": "Q1",
+      "start": 10865,
+      "end": 11000,
+      "rendered": "<q data-fact=\"Q1\" data-quote-sel=\"full\">- artifact-one-card-1: Full execution log showing prompt 7.92 tok/s, decode 1.65 tok/s</q> [S3]",
+      "selector": "full",
+      "quote_span": [
+        0,
+        86
+      ]
+    },
+    {
+      "token": "{{Q2:strata-decode-two-card-q}}",
+      "fact_id": "Q2",
+      "start": 11008,
+      "end": 11143,
+      "rendered": "<q data-fact=\"Q2\" data-quote-sel=\"full\">- artifact-two-card-2-2: Improved performance (prompt 38.09 tok/s, decode 12.08 tok/s)</q> [S3]",
+      "selector": "full",
+      "quote_span": [
+        0,
+        86
+      ]
+    }
+  ]
+}

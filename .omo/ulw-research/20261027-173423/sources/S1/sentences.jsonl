@@ -1,0 +1,3 @@
+{"sid":"S1:s1","start":0,"end":71,"text":"device Intel(R) Arc(TM) Pro B60 Graphics, sub-group 16, M 1, 64 experts"}
+{"sid":"S1:s2","start":72,"end":202,"text":"gate+up  N 1280 K 2560: f16 22.2 us/expert (0.3 TFLOPs), i8 11.1 us (0.6 TOPS), i8blk 17.9 us (0.4 TOPS); i8blk max err 577 of 577"}
+{"sid":"S1:s3","start":203,"end":330,"text":"down     N 2560 K 640: f16 11.2 us/expert (0.3 TFLOPs), i8 5.9 us (0.6 TOPS), i8blk 9.2 us (0.4 TOPS); i8blk max err 241 of 241"}

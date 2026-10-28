@@ -1,0 +1,156 @@
+{"sid":"S5:s1","start":0,"end":15,"text":"Skip to content"}
+{"sid":"S5:s2","start":16,"end":31,"text":"Navigation Menu"}
+{"sid":"S5:s3","start":32,"end":39,"text":"Sign in"}
+{"sid":"S5:s4","start":40,"end":59,"text":"Appearance settings"}
+{"sid":"S5:s5","start":60,"end":633,"text":"Platform AI CODE CREATION GitHub CopilotWrite better code with AI GitHub Copilot appDirect agents from issue to merge MCP RegistryIntegrate external tools DEVELOPER WORKFLOWS ActionsAutomate any workflow CodespacesInstant dev environments IssuesPlan and track work Code ReviewManage code changes Code QualityEnforce quality at merge APPLICATION SECURITY GitHub Advanced SecurityFind and fix vulnerabilities Code securitySecure your code as you build Secret protectionStop leaks before they start EXPLORE Why GitHub Documentation Blog Changelog Marketplace View all features"}
+{"sid":"S5:s6","start":634,"end":891,"text":"Solutions BY COMPANY SIZE Enterprises Small and medium teams Startups Nonprofits BY USE CASE App Modernization DevSecOps DevOps CI/CD View all use cases BY INDUSTRY Healthcare Financial services Manufacturing Government See all industries View all solutions"}
+{"sid":"S5:s7","start":892,"end":1181,"text":"Resources EXPLORE BY TOPIC AI Software Development DevOps Security View all topics EXPLORE BY TYPE Customer stories Events & webinars Ebooks & reports Business insights GitHub Skills SUPPORT & SERVICES Documentation Customer support Community forum Trust center Partners View all resources"}
+{"sid":"S5:s8","start":1182,"end":1359,"text":"Open Source COMMUNITY GitHub SponsorsFund open source developers PROGRAMS Security Lab Maintainer Community GitHub Stars Archive Program REPOSITORIES Topics Trending Collections"}
+{"sid":"S5:s9","start":1360,"end":1611,"text":"Enterprise ENTERPRISE SOLUTIONS Enterprise platformAI-powered developer platform AVAILABLE ADD-ONS GitHub Advanced SecurityEnterprise-grade security features Copilot for BusinessEnterprise-grade AI features Premium SupportEnterprise-grade 24/7 support"}
+{"sid":"S5:s10","start":1612,"end":1619,"text":"Pricing"}
+{"sid":"S5:s11","start":1620,"end":1626,"text":"Search"}
+{"sid":"S5:s12","start":1627,"end":1634,"text":"Sign in"}
+{"sid":"S5:s13","start":1635,"end":1642,"text":"Sign up"}
+{"sid":"S5:s14","start":1643,"end":1662,"text":"Appearance settings"}
+{"sid":"S5:s15","start":1663,"end":1704,"text":"You signed in with another tab or window."}
+{"sid":"S5:s16","start":1705,"end":1736,"text":"Reload to refresh your session."}
+{"sid":"S5:s17","start":1737,"end":1777,"text":"You signed out in another tab or window."}
+{"sid":"S5:s18","start":1778,"end":1809,"text":"Reload to refresh your session."}
+{"sid":"S5:s19","start":1810,"end":1857,"text":"You switched accounts on another tab or window."}
+{"sid":"S5:s20","start":1858,"end":1889,"text":"Reload to refresh your session."}
+{"sid":"S5:s21","start":1890,"end":1903,"text":"Dismiss alert"}
+{"sid":"S5:s22","start":1904,"end":1916,"text":"vllm-project"}
+{"sid":"S5:s23","start":1917,"end":1933,"text":"vllm-xpu-kernels"}
+{"sid":"S5:s24","start":1934,"end":1955,"text":"Repository navigation"}
+{"sid":"S5:s25","start":1956,"end":1960,"text":"Code"}
+{"sid":"S5:s26","start":1961,"end":1974,"text":"Issues21 (21)"}
+{"sid":"S5:s27","start":1975,"end":1995,"text":"Pull requests82 (82)"}
+{"sid":"S5:s28","start":1996,"end":2003,"text":"Actions"}
+{"sid":"S5:s29","start":2004,"end":2012,"text":"Projects"}
+{"sid":"S5:s30","start":2013,"end":2033,"text":"Security and quality"}
+{"sid":"S5:s31","start":2034,"end":2042,"text":"Insights"}
+{"sid":"S5:s32","start":2043,"end":2053,"text":"More items"}
+{"sid":"S5:s33","start":2054,"end":2107,"text":"[MoE] Int4 GEMV for decode-sized grouped GEMMs - #644"}
+{"sid":"S5:s34","start":2108,"end":2112,"text":"#644"}
+{"sid":"S5:s35","start":2113,"end":2117,"text":"Open"}
+{"sid":"S5:s36","start":2118,"end":2159,"text":"riceharvest wants to merge 2 commits into"}
+{"sid":"S5:s37","start":2160,"end":2215,"text":"vllm-project:mainvllm-project/vllm-xpu-kernels:mainfrom"}
+{"sid":"S5:s38","start":2216,"end":2297,"text":"riceharvest:moe-int4-decode-gemvriceharvest/vllm-xpu-kernels:moe-int4-decode-gemv"}
+{"sid":"S5:s39","start":2298,"end":2332,"text":"Copy head branch name to clipboard"}
+{"sid":"S5:s40","start":2333,"end":2376,"text":"ConversationCommits2 (2)ChecksFiles changed"}
+{"sid":"S5:s41","start":2377,"end":2381,"text":"Open"}
+{"sid":"S5:s42","start":2382,"end":2646,"text":"[MoE] Int4 GEMV for decode-sized grouped GEMMs#644 riceharvest wants to merge 2 commits into vllm-project:mainvllm-project/vllm-xpu-kernels:mainfrom riceharvest:moe-int4-decode-gemvriceharvest/vllm-xpu-kernels:moe-int4-decode-gemvCopy head branch name to clipboard"}
+{"sid":"S5:s43","start":2647,"end":2659,"text":"Conversation"}
+{"sid":"S5:s44","start":2660,"end":2718,"text":"riceharvest commented Oct 15, 2026 • edited Loading Uh oh!"}
+{"sid":"S5:s45","start":2719,"end":2752,"text":"There was an error while loading."}
+{"sid":"S5:s46","start":2753,"end":2777,"text":"Please reload this page."}
+{"sid":"S5:s47","start":2778,"end":2787,"text":"Copy link"}
+{"sid":"S5:s48","start":2788,"end":2801,"text":"Copy Markdown"}
+{"sid":"S5:s49","start":2802,"end":2861,"text":"Essential Elements of an Effective PR Description Checklist"}
+{"sid":"S5:s50","start":2862,"end":2954,"text":"The purpose of the PR, such as \"Fix some issue (link existing issues this PR will resolve)\"."}
+{"sid":"S5:s51","start":2955,"end":3001,"text":"The test plan, such as providing test command."}
+{"sid":"S5:s52","start":3002,"end":3091,"text":"The test results, such as pasting the results comparison before and after, or e2e results"}
+{"sid":"S5:s53","start":3092,"end":3176,"text":"(Optional) The necessary documentation update, such as updating and for a new model."}
+{"sid":"S5:s54","start":3177,"end":3184,"text":"Purpose"}
+{"sid":"S5:s55","start":3185,"end":3261,"text":"Int4 MoE decode on Xe2 spends most of its expert time in the fixed cost of ."}
+{"sid":"S5:s56","start":3262,"end":3326,"text":"At one decode token with top-8 routing each expert sees one row."}
+{"sid":"S5:s57","start":3327,"end":3512,"text":"On Qwen3.6-35B-A3B (GPTQ int4 experts), the 8 active experts of a layer are 13 MB of weights, about 21 us at the B70's bandwidth, but a gate_up call takes ~56 us and a down call ~34 us."}
+{"sid":"S5:s58","start":3513,"end":3665,"text":"This PR adds , a SYCL GEMV for the int4 layout the grouped GEMM already uses (int8-packed signed 4-bit from , per-group scales in the activation dtype)."}
+{"sid":"S5:s59","start":3666,"end":3787,"text":"routes int4 calls with at most 8 rows to it (); larger calls (prefill, MTP verify, batched decode) keep the grouped GEMM."}
+{"sid":"S5:s60","start":3788,"end":3801,"text":"turns it off."}
+{"sid":"S5:s61","start":3802,"end":3857,"text":"Kernel: one work-group per (active expert, block of N)."}
+{"sid":"S5:s62","start":3858,"end":3955,"text":"The work-group finds its expert with a group scan over (no host sync, works under graph capture)."}
+{"sid":"S5:s63","start":3956,"end":4144,"text":"Each sub-group computes 4 output columns for up to 2 rows at a time, lanes split K in chunks of 32 int4 values (16-byte weight loads), fp32 accumulation, per-group scale applied per chunk."}
+{"sid":"S5:s64","start":4145,"end":4211,"text":"Related: #509 (fixed per-step MoE decode cost on the Arc Pro B70)."}
+{"sid":"S5:s65","start":4212,"end":4341,"text":"Related, not duplicates: #628 / #637 (fused routed + shared-expert decode for FP8 per-tensor weights) and #623 (FP8 decode GEMV)."}
+{"sid":"S5:s66","start":4342,"end":4416,"text":"This PR covers int4 experts in the existing path and does not touch those."}
+{"sid":"S5:s67","start":4417,"end":4426,"text":"Test Plan"}
+{"sid":"S5:s68","start":4427,"end":4653,"text":"checks the op against a dequantized fp32 reference and against on the same inputs: Qwen3.6-35B-A3B shapes (w13 1024x2048, w2 2048x512) and 5120x8192, 16 and 256 experts, 1-8 rows with one or two rows per expert, bf16 and fp16."}
+{"sid":"S5:s69","start":4654,"end":4815,"text":"E2E (vLLM main + this branch, one B70): (palmfuture), single request, decode tok/s with , plus a short accuracy eval (gsm8k via lm_eval, 250 questions) for both."}
+{"sid":"S5:s70","start":4816,"end":4827,"text":"Test Result"}
+{"sid":"S5:s71","start":4828,"end":4888,"text":"Measured 2026-10-15 on one Arc Pro B70 (b70 tab, testq 004)."}
+{"sid":"S5:s72","start":4889,"end":5133,"text":"Kernel source = this branch ( and from fad147a) applied to release/0.1.15.4, which is the vllm-xpu-kernels in the vLLM nightly XPU image used (vllm 0.32.0rc1.dev190+g3f1bcfd82); the op was built as an library fragment instead of a full rebuild."}
+{"sid":"S5:s73","start":5134,"end":5181,"text":"Not run: a full build of upstream main 6b30c9b."}
+{"sid":"S5:s74","start":5182,"end":5223,"text":"pytest (installed package + this branch):"}
+{"sid":"S5:s75","start":5224,"end":5236,"text":": 46 passed."}
+{"sid":"S5:s76","start":5237,"end":5382,"text":"6 more cases (n=5120, k=8192, e=256) ran out of memory in the test itself: it built the random int4 weights as int64 (~40 GiB) before converting."}
+{"sid":"S5:s77","start":5383,"end":5650,"text":"The test now generates them as uint8 and runs that shape with 16 experts only, like the existing cases for it (256 experts would still need ~10 GiB), so its 30 cases are exactly the shapes that passed above (the uint8 generation itself has not been run on a GPU yet)."}
+{"sid":"S5:s78","start":5651,"end":5714,"text":": 40 passed (m=1 and m=4 without bias go through the new path)."}
+{"sid":"S5:s79","start":5715,"end":5895,"text":"E2E, vLLM nightly 3f1bcfd8 + this branch, palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4, , fp8 KV, 4K context, XPU graphs, no MTP, 1 request, 512-token answers, decode tok/s (code / prose):"}
+{"sid":"S5:s80","start":5896,"end":5908,"text":"decode tok/s"}
+{"sid":"S5:s81","start":5909,"end":5960,"text":"gsm8k (first 100 test q, greedy, chat, no thinking)"}
+{"sid":"S5:s82","start":5961,"end":5985,"text":"0 (CUTLASS grouped GEMM)"}
+{"sid":"S5:s83","start":5986,"end":5997,"text":"75.8 / 76.3"}
+{"sid":"S5:s84","start":5998,"end":6004,"text":"97/100"}
+{"sid":"S5:s85","start":6005,"end":6016,"text":"1 (this PR)"}
+{"sid":"S5:s86","start":6017,"end":6035,"text":"86.6 / 87.2 (+14%)"}
+{"sid":"S5:s87","start":6036,"end":6042,"text":"97/100"}
+{"sid":"S5:s88","start":6043,"end":6137,"text":"With MTP (, 2K context) and the GEMV on: 157.3 / 118.7 tok/s, no GPU faults in the kernel log."}
+{"sid":"S5:s89","start":6138,"end":6198,"text":"Not tested: other Intel GPUs (PVC, Xe3), expert parallelism."}
+{"sid":"S5:s90","start":6199,"end":6552,"text":"Prior measurements of the same kernel, out of tree (vLLM v0.31.0 XPU image, kernel loaded as a separate extension and dispatched from , one Arc Pro B70, palmfuture/Qwen3.6-35B-A3B-GPTQ-Int4, 1 request, 16K context, 512-token code / prose answers, decode tok/s; source: https://github.com/riceharvest/b70-qwen38-cookbook README, \"Qwen3.6-35B-A3B (MoE)\"):"}
+{"sid":"S5:s91","start":6553,"end":6559,"text":"no MTP"}
+{"sid":"S5:s92","start":6560,"end":6567,"text":"MTP k=4"}
+{"sid":"S5:s93","start":6568,"end":6584,"text":"without the GEMV"}
+{"sid":"S5:s94","start":6585,"end":6596,"text":"78.7 / 79.1"}
+{"sid":"S5:s95","start":6597,"end":6610,"text":"183.9 / 134.3"}
+{"sid":"S5:s96","start":6611,"end":6624,"text":"with the GEMV"}
+{"sid":"S5:s97","start":6625,"end":6636,"text":"93.8 / 94.3"}
+{"sid":"S5:s98","start":6637,"end":6650,"text":"200.8 / 145.4"}
+{"sid":"S5:s99","start":6651,"end":6711,"text":"Per layer at 1 token: gate_up 56 -> 18 us, down 34 -> 14 us."}
+{"sid":"S5:s100","start":6712,"end":6851,"text":"Matches CUTLASS to 3e-4 relative error per call (stress test: 900 routings including outlier activations; 500 replays inside an XPU graph)."}
+{"sid":"S5:s101","start":6852,"end":6942,"text":"In serving, an eager cross-check of every decode call found 0 mismatches over 2,048 steps."}
+{"sid":"S5:s102","start":6943,"end":7068,"text":"Greedy GEMV vs CUTLASS per-step KL: p50 0.0001, p99 0.043, with divergences at near-ties, the same as CUTLASS graph vs eager."}
+{"sid":"S5:s103","start":7069,"end":7124,"text":"0/32 corrupted outputs with 8 concurrent long requests."}
+{"sid":"S5:s104","start":7125,"end":7156,"text":"(Optional) Documentation Update"}
+{"sid":"S5:s105","start":7157,"end":7222,"text":"None (no user-facing option besides the env var, documented in )."}
+{"sid":"S5:s106","start":7223,"end":7314,"text":"AI assistance was used: the kernel, dispatch and test were written with Claude (Anthropic)."}
+{"sid":"S5:s107","start":7315,"end":7388,"text":"I reviewed the change and ran the tests and measurements above on my B70."}
+{"sid":"S5:s108","start":7389,"end":7417,"text":"Sorry, something went wrong."}
+{"sid":"S5:s109","start":7418,"end":7424,"text":"Uh oh!"}
+{"sid":"S5:s110","start":7425,"end":7458,"text":"There was an error while loading."}
+{"sid":"S5:s111","start":7459,"end":7483,"text":"Please reload this page."}
+{"sid":"S5:s112","start":7484,"end":7497,"text":"All reactions"}
+{"sid":"S5:s113","start":7498,"end":7499,"text":"…"}
+{"sid":"S5:s114","start":7500,"end":7539,"text":"riceharvest mentioned this pull request"}
+{"sid":"S5:s115","start":7540,"end":7552,"text":"Oct 15, 2026"}
+{"sid":"S5:s116","start":7553,"end":7659,"text":"[Quantization] Allow online fp8 weight-only quantization of an unquantized lm_head vllm-project/vllm#61815"}
+{"sid":"S5:s117","start":7660,"end":7664,"text":"Open"}
+{"sid":"S5:s118","start":7665,"end":7677,"text":"6 tasks done"}
+{"sid":"S5:s119","start":7678,"end":7679,"text":"…"}
+{"sid":"S5:s120","start":7680,"end":7733,"text":"Sign up for free to join this conversation on GitHub."}
+{"sid":"S5:s121","start":7734,"end":7758,"text":"Already have an account?"}
+{"sid":"S5:s122","start":7759,"end":7777,"text":"Sign in to comment"}
+{"sid":"S5:s123","start":7778,"end":7787,"text":"Reviewers"}
+{"sid":"S5:s124","start":7788,"end":7798,"text":"No reviews"}
+{"sid":"S5:s125","start":7799,"end":7805,"text":"Uh oh!"}
+{"sid":"S5:s126","start":7806,"end":7839,"text":"There was an error while loading."}
+{"sid":"S5:s127","start":7840,"end":7864,"text":"Please reload this page."}
+{"sid":"S5:s128","start":7865,"end":7874,"text":"Assignees"}
+{"sid":"S5:s129","start":7875,"end":7890,"text":"No one assigned"}
+{"sid":"S5:s130","start":7891,"end":7897,"text":"Labels"}
+{"sid":"S5:s131","start":7898,"end":7906,"text":"None yet"}
+{"sid":"S5:s132","start":7907,"end":7915,"text":"Projects"}
+{"sid":"S5:s133","start":7916,"end":7924,"text":"None yet"}
+{"sid":"S5:s134","start":7925,"end":7934,"text":"Milestone"}
+{"sid":"S5:s135","start":7935,"end":7947,"text":"No milestone"}
+{"sid":"S5:s136","start":7948,"end":7959,"text":"Development"}
+{"sid":"S5:s137","start":7960,"end":8022,"text":"Successfully merging this pull request may close these issues."}
+{"sid":"S5:s138","start":8023,"end":8029,"text":"Uh oh!"}
+{"sid":"S5:s139","start":8030,"end":8063,"text":"There was an error while loading."}
+{"sid":"S5:s140","start":8064,"end":8088,"text":"Please reload this page."}
+{"sid":"S5:s141","start":8089,"end":8102,"text":"1 participant"}
+{"sid":"S5:s142","start":8103,"end":8939,"text":"Add this suggestion to a batch that can be applied as a single commit.This suggestion is invalid because no changes were made to the code.Suggestions cannot be applied while the pull request is closed.Suggestions cannot be applied while viewing a subset of changes.Only one suggestion per line can be applied in a batch.Add this suggestion to a batch that can be applied as a single commit.Applying suggestions on deleted lines is not supported.You must change the existing code in this line in order to create a valid suggestion.Outdated suggestions cannot be applied.This suggestion has been applied or marked resolved.Suggestions cannot be applied from pending reviews.Suggestions cannot be applied on multi-line comments.Suggestions cannot be applied while the pull request is queued to merge.Suggestion cannot be applied right now."}
+{"sid":"S5:s143","start":8940,"end":8964,"text":"Please check back later."}
+{"sid":"S5:s144","start":8965,"end":8971,"text":"Footer"}
+{"sid":"S5:s145","start":8972,"end":8991,"text":"© 2026 GitHub, Inc."}
+{"sid":"S5:s146","start":8992,"end":9009,"text":"Footer navigation"}
+{"sid":"S5:s147","start":9010,"end":9015,"text":"Terms"}
+{"sid":"S5:s148","start":9016,"end":9023,"text":"Privacy"}
+{"sid":"S5:s149","start":9024,"end":9032,"text":"Security"}
+{"sid":"S5:s150","start":9033,"end":9039,"text":"Status"}
+{"sid":"S5:s151","start":9040,"end":9049,"text":"Community"}
+{"sid":"S5:s152","start":9050,"end":9054,"text":"Docs"}
+{"sid":"S5:s153","start":9055,"end":9062,"text":"Contact"}
+{"sid":"S5:s154","start":9063,"end":9077,"text":"Manage cookies"}
+{"sid":"S5:s155","start":9078,"end":9114,"text":"Do not share my personal information"}
+{"sid":"S5:s156","start":9115,"end":9158,"text":"You can’t perform that action at this time."}

@@ -1,0 +1,3 @@
+# CMake generated Testfile for 
+# Source directory: /home/maxious/Strata
+# Build directory: /home/maxious/Strata/build

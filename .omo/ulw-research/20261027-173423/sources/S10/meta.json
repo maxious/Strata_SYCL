@@ -1,0 +1,10 @@
+{
+  "source_id": "S10",
+  "url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/d81d0d8fb95e52a66992bcfc212b1891b4d2f94a/ggml/src/ggml-sycl/fused-gemm.hpp",
+  "observed_at": "2026-10-27T06:55:02.303Z",
+  "sha256": "5edb23516b7f48f02c0ae7b71af70aec5401b9f1f691a88907a8eebea936a349",
+  "extractor": "tool:source-snapshot@1",
+  "revision": "d81d0d8f",
+  "kind": "document",
+  "provenance": "primary"
+}

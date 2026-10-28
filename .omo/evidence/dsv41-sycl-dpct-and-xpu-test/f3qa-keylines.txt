@@ -1,0 +1,29 @@
+=== verbatim prompt/decode/CPU-lane lines per run (origin: /tmp/dpct_run/f3_prompt_lines_*, f3_decode_lines_*, f3_cpulane_lines_*) ===
+--- RUN1 ---
+24:prompt: 10 tokens in 470 ms (21.27 tok/s, windows of 8192)
+32:decode: 8 tokens in 3139 ms (2.23 tok/s); CPU lane: 112 of 1680 experts; the cache moved 5 (5 in all)
+33:decode per token: layers 52.28 ms (of it: routing waits 0.00, CPU lane 23.26, the rest host launches), head wait 395.15, Engram reads 0.10
+35:decode reads from the disk: 11.2 MB a token
+10:ds4: CPU lane: 8 threads, MXFP4 rows avx2 ()
+32:decode: 8 tokens in 3139 ms (2.23 tok/s); CPU lane: 112 of 1680 experts; the cache moved 5 (5 in all)
+--- RUN2 ---
+24:prompt: 10 tokens in 444 ms (22.50 tok/s, windows of 8192)
+32:decode: 8 tokens in 2876 ms (2.43 tok/s); CPU lane: 108 of 1680 experts; the cache moved 5 (5 in all)
+33:decode per token: layers 46.54 ms (of it: routing waits 0.00, CPU lane 12.90, the rest host launches), head wait 363.96, Engram reads 0.08
+35:decode reads from the disk: 10.2 MB a token
+10:ds4: CPU lane: 8 threads, MXFP4 rows avx2 ()
+32:decode: 8 tokens in 2876 ms (2.43 tok/s); CPU lane: 108 of 1680 experts; the cache moved 5 (5 in all)
+--- RUN3 ---
+24:prompt: 10 tokens in 388 ms (25.76 tok/s, windows of 8192)
+32:decode: 8 tokens in 2817 ms (2.48 tok/s); CPU lane: 110 of 1680 experts; the cache moved 4 (4 in all)
+33:decode per token: layers 47.59 ms (of it: routing waits 0.00, CPU lane 14.78, the rest host launches), head wait 354.36, Engram reads 0.09
+35:decode reads from the disk: 4.0 MB a token
+10:ds4: CPU lane: 8 threads, MXFP4 rows avx2 ()
+32:decode: 8 tokens in 2817 ms (2.48 tok/s); CPU lane: 110 of 1680 experts; the cache moved 4 (4 in all)
+--- RUN4 ---
+24:prompt: 10 tokens in 439 ms (22.76 tok/s, windows of 8192)
+32:decode: 8 tokens in 2990 ms (2.34 tok/s); CPU lane: 114 of 1680 experts; the cache moved 3 (3 in all)
+33:decode per token: layers 48.42 ms (of it: routing waits 0.00, CPU lane 16.92, the rest host launches), head wait 377.54, Engram reads 0.08
+35:decode reads from the disk: 11.8 MB a token
+10:ds4: CPU lane: 8 threads, MXFP4 rows avx2 ()
+32:decode: 8 tokens in 2990 ms (2.34 tok/s); CPU lane: 114 of 1680 experts; the cache moved 3 (3 in all)

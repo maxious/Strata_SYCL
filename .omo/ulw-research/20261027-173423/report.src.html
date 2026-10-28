@@ -1,0 +1,109 @@
+<!doctype html>
+<!-- STATUS: draft -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>joint_matrix trellis GEMV for SYCL decode</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1d1d1f; --fg2: #6e6e73; --bg: #fafafa; --card: #ffffff; --line: #d6d6d9; --accent: #0a6b4f; --warn: #8a5a00; --bar1: #8fb6cf; --bar2: #0a6b4f; --bar3: #d9a441 }
+  @media (prefers-color-scheme: dark) { :root { --fg: #f5f5f7; --fg2: #98989d; --bg: #171719; --card: #232326; --line: #3a3a3d; --accent: #57b89a; --warn: #d9a441; --bar1: #5d7c93; --bar2: #57b89a; --bar3: #c08c3a } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 -apple-system, system-ui, "Segoe UI", sans-serif }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 20px 48px }
+  h1 { font-size: 26px; letter-spacing: -0.02em; margin: 0 0 6px }
+  h2 { font-size: 19px; margin: 34px 0 10px }
+  .sub { color: var(--fg2); font-size: 13px }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin: 12px 0 }
+  .verdict { border-left: 3px solid var(--accent) }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 10px 0 }
+  th, td { border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: left }
+  th { color: var(--fg2); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em }
+  td.n { font-variant-numeric: tabular-nums }
+  code { font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--card); border: 1px solid var(--line); border-radius: 5px; padding: 1px 5px }
+  ol, ul { padding-left: 20px; margin: 8px 0 }
+  li { margin: 4px 0 }
+  blockquote { margin: 8px 0; border-left: 3px solid var(--warn); padding-left: 12px; color: var(--fg2); font-size: 13px }
+  figure { margin: 16px 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px }
+  figcaption { color: var(--fg2); font-size: 13px; margin-top: 8px }
+  .foot { color: var(--fg2); font-size: 12px; margin-top: 36px }
+</style>
+</head>
+<body>
+<main>
+<h1>joint_matrix trellis GEMV for SYCL decode on <code>dsv41</code></h1>
+<div class="sub">Hardware: Intel Arc Pro <code>B60</code> (<code>BMG-G21</code>), oneAPI <code>2026.2</code>, <code>icpx 2026.2.0</code>, as of <code>2026-10-27</code>.</div>
+
+<h2>Verdict</h2>
+<div class="card verdict">
+<p>Decode is memory-bound, and XMX tiles do not beat it at <code>M=1</code> [S1]. The tile path measures {{F1:decode-f16-gateup-m1}}&nbsp;us/expert on gate+up and {{F4:decode-f16-down-m1}}&nbsp;us/expert on down, at the memory floor for these expert shapes. The port worth doing is the fused-gemm trellis for batched shapes, where tiles pay off [S4]: {{F20:batch-f16-gateup-m160-v2}}&nbsp;us (<code>f16</code>), {{F21:batch-i8-gateup-m160-v2}}&nbsp;us (<code>i8</code>), {{F22:batch-i8blk-gateup-m160-v2}}&nbsp;us (<code>i8-block</code>) for gate+up at <code>M=160</code> [S2].</p>
+</div>
+
+<h2>What decides support</h2>
+<div class="card">
+<p>{{Q4:libsycl-decider-q}}</p>
+<p>On Battlemage, joint_matrix availability is decided by the libsycl runtime, not the silicon [S6]: oneAPI <code>2025.3.2</code> (<code>.so.8</code>) reports unsupported, a <code>2026</code> build (<code>.so.9</code>) runs DPAS tiles with GPU, driver and IGC byte-identical [S6]. Strata builds against <code>2026.2</code>, so the tile path is available today; the repo already gates it behind <code>STRATA_XMX_SG16</code> [S2].</p>
+</div>
+
+<h2>Measured kernel timings, one <code>B60</code></h2>
+<table>
+<tr><th>Shape</th><th>M</th><th><code>f16</code></th><th><code>i8</code></th><th><code>i8-block</code></th></tr>
+<tr><td>gate+up <code>N1280 K2560</code> [S1]</td><td class="n"><code>1</code></td><td class="n">{{F1:decode-f16-gateup-m1}} us</td><td class="n">{{F16:decode-i8-gateup-m1-v2}} us</td><td class="n">{{F17:decode-i8blk-gateup-m1-v2}} us</td></tr>
+<tr><td>down <code>N2560 K640</code> [S1]</td><td class="n"><code>1</code></td><td class="n">{{F4:decode-f16-down-m1}} us</td><td class="n">{{F18:decode-i8-down-m1-v2}} us</td><td class="n">{{F19:decode-i8blk-down-m1-v2}} us</td></tr>
+<tr><td>gate+up <code>N1280 K2560</code> [S2]</td><td class="n"><code>160</code></td><td class="n">{{F20:batch-f16-gateup-m160-v2}} us</td><td class="n">{{F21:batch-i8-gateup-m160-v2}} us</td><td class="n">{{F22:batch-i8blk-gateup-m160-v2}} us</td></tr>
+<tr><td>down <code>N2560 K640</code> [S2]</td><td class="n"><code>160</code></td><td class="n">{{F23:batch-f16-down-m160-v2}} us</td><td class="n">{{F24:batch-i8-down-m160-v2}} us</td><td class="n">{{F25:batch-i8blk-down-m160-v2}} us</td></tr>
+</table>
+<p>Weights are streamed from <code>malloc_device</code> buffers across the distinct experts, not held in <code>L2</code>, so these runs are memory-bound [S1].</p>
+<figure data-chart-source="chart.csv">
+<svg viewBox="0 0 680 220" width="100%" role="img" aria-label="Bar chart of per-expert microseconds for the gate+up expert shape at single-token and batched sizes, in f16, i8, and i8-block">
+  <text x="8" y="18" font-size="12" fill="var(--fg2)">gate+up expert shape, per expert, us</text>
+  <g font-size="12" fill="var(--fg)">
+    <text x="8" y="46">single token</text>
+    <rect x="52" y="34" width="222" height="14" fill="var(--bar1)"/><text x="280" y="46">{{F1:decode-f16-gateup-m1}}</text>
+    <rect x="52" y="52" width="111" height="14" fill="var(--bar2)"/><text x="169" y="64">{{F16:decode-i8-gateup-m1-v2}}</text>
+    <rect x="52" y="70" width="179" height="14" fill="var(--bar3)"/><text x="237" y="82">{{F17:decode-i8blk-gateup-m1-v2}}</text>
+    <text x="8" y="110">batched</text>
+    <rect x="52" y="98" width="694" height="14" fill="var(--bar1)"/><text x="347" y="110">{{F20:batch-f16-gateup-m160-v2}}</text>
+    <rect x="52" y="116" width="340" height="14" fill="var(--bar2)"/><text x="196" y="128">{{F21:batch-i8-gateup-m160-v2}}</text>
+    <rect x="52" y="134" width="520" height="14" fill="var(--bar3)"/><text x="284" y="146">{{F22:batch-i8blk-gateup-m160-v2}}</text>
+  </g>
+  <g font-size="11" fill="var(--fg2)">
+    <rect x="52" y="168" width="12" height="8" fill="var(--bar1)"/><text x="70" y="176">float</text>
+    <rect x="110" y="168" width="12" height="8" fill="var(--bar2)"/><text x="128" y="176">int</text>
+    <rect x="160" y="168" width="12" height="8" fill="var(--bar3)"/><text x="178" y="176">block</text>
+  </g>
+</svg>
+<figcaption>Per-expert time for the gate+up expert shape on an Arc Pro card, sg build. Bars scale to the widest value; the labels are the ledger values.</figcaption>
+</figure>
+
+<h2>The seven sources, in brief order</h2>
+<ul>
+<li><strong>oneMKL [S7, S9]</strong> - GEMV exists only as dense float/double/complex, {{F27:onemkl-gemv-decl-count}} declarations in <code>usm_decls.hpp</code>. No quantized or skinny path; dead end for <code>dsv41</code> decode.</li>
+<li><strong>oneDNN [S6]</strong> - <code>v3.13</code> headers installed locally (no <code>dnnl_src</code> link); upstream <code>v3.14</code> adds an <code>M=1</code> no-copy bypass, gemmstone has no skinny logic. Reference, not drop-in.</li>
+<li><strong>valarauca llama.cpp <code>PR #1</code></strong> - legacy <code>joint_matrix</code> API, removed from current SYCL; pattern only [S6].</li>
+<li><strong>vllm-xpu-kernels PR #644 [S5]</strong> - dedicated MoE int4 GEMV kernel on <code>B70</code>: {{Q3:b70-bandwidth-q}}</li>
+<li><strong>dkhaldi/sycl_joint_matrix_kernels</strong> - joint_matrix load, mad, store and reduce patterns; the guessed raw path <code>404</code>s, the repo was read through the librarian lane [S6].</li>
+<li><strong>yiliu30 joint_matrix_debug.html [S6]</strong> - the libsycl root cause above.</li>
+<li><strong>llama.cpp PR #29245 [S4, S10]</strong> - the trellis design worth porting: XMX joint_matrix with <code>FG_KSPLIT={{F15:fg-ksplit}}</code> sub-groups per K range and <code>GGML_SYCL_FG_MAX_N={{F26:fg-max-n}}</code>, quant blocks decoded inside the A stage instead of repacked.</li>
+</ul>
+
+<h2>Implementation plan for Strata SYCL</h2>
+<ol>
+<li>Port the fused-gemm trellis into <code>sycl/src/dsv41</code> as a quant-block A stage for <code>ds4_gguf.dp.cpp</code>, reusing the existing <code>ext_intel_packed</code> tiles in <code>ds4_iq.dp.cpp</code> [S4].</li>
+<li>Keep <code>ds4_gemv.dp.cpp</code> (<code>gemv_f16</code>, <code>gemv_f32</code>) for <code>M=1</code>: the measured floor says tiles cannot beat it [S1].</li>
+<li>Adopt the SoA weight layout (<code>PR #29245</code> <code>reorder_qw</code> offsets) so the A stage decodes whole blocks per lane [S4].</li>
+<li>Gate behind <code>STRATA_XMX_SG16</code>; validate with the xmx bench harness at <code>M=160</code> and <code>M=1</code> before touching dispatch in <code>ds4_model.dp.cpp</code> [S2].</li>
+</ol>
+
+<h2>Limits</h2>
+<p>Batch numbers are kernel-level on one <code>B60</code>, not end-to-end [S1]. End-to-end on the repo build [S3]: prompt {{F13:strata-prompt-one-card}} tok/s on one card and {{F14:strata-prompt-two-card}} tok/s on two.</p>
+<p>{{Q1:strata-decode-one-card-q}}</p>
+<p>{{Q2:strata-decode-two-card-q}}</p>
+<p>Author numbers from <code>PR #644</code> are <code>B70</code> measurements and do not transfer directly to <code>B60</code> [S5].</p>
+
+<h2>How this report was made</h2>
+<p>Eight team members and seven research lanes read the seven named sources at pinned revisions, then the lead re-checked every number on this machine: the <code>sg16</code> bench builds and runs (build <code>rc 0</code>, run <code>rc 0</code>) [S2], timings come from the two run logs [S1], and the repo QA record carries the end-to-end tok/s [S3]. Every number and quote above resolves from the fact ledger through the fill map; the static, fidelity, layout, visual and proofread gates ran against this file. Sources not snapshotted are listed in sources-ledger.md.</p>
+
+<div class="foot">Fact ledger: sources <code>S1-S10</code> pinned, revisions in sources-ledger.md.</div>
+</main>
+</body>
+</html>

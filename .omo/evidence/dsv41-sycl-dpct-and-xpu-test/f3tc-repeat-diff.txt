@@ -1,0 +1,4 @@
+5c5
+< FileNotFoundError: [Errno 2] No such file or directory: '/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log'
+---
+> FileNotFoundError: [Errno 2] No such file or directory: '/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run2.log'

@@ -1,0 +1,10 @@
+{
+  "argv": [
+    "cat",
+    ".omo/evidence/dsv41-sycl-dpct-and-xpu-test/dsv41-sycl-dpct-and-xpu-test-manual-qa-two-card.md"
+  ],
+  "cwd": "/home/maxious/Strata",
+  "exit_status": 0,
+  "stdout_sha256": "218da456fdd3a6aa8512a680a33cce6c578e63a025dd66539f75581cd408e217",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

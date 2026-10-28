@@ -1,0 +1,4 @@
+ls: cannot access 'tests/CMakeLists.txt': No such file or directory
+bench/micro:
+cuda_callback_affinity.cpp
+fusions_parity.cu

@@ -1,0 +1,41 @@
+CMD: xpu-smi --query-gpu=memory.used --loop=3 --count=40 -f /tmp/dpct_run/f3_smi_during_r2.txt > /tmp/dpct_run/f3_smi_loop2_rc.txt 2>&1
+=== SMI RECEIPTS 2026-10-27T01:55:05+11:00 ===
+CMD: xpu-smi > /tmp/dpct_run/f3_smi_table_during2.txt 2>&1
+XPU_TABLE_DURING2_RC=0 (snapshot while repeat run 2 is active)
+CMD: xpu-smi --query-gpu=memory.used --id=0 > /tmp/dpct_run/f3_smi_one_during2.txt 2>&1
+XPU_ONE_DURING2_RC=0 (one device line + used-memory figure, during run)
+memory.used (MiB)
+2960.390625
+XPU_DEV1_DURING2_RC=0
+memory.used (MiB)
+2960.390625
+memory.used (MiB)
+505.296875
+PGREP_DURING2_RC=0 (readback below; >0 = engine process present = snapshot is during-run)
+1
+| Fan              Temp  Pwr:Usage/Cap         | Memory-Usage               |   GPU-Util  Compute M. |
+| N/A               47C  50W / 200W            | 1498MiB / 24480MiB         |      N/A       Default |
+| N/A               46C  32W / 200W            | 505MiB / 24480MiB          |      N/A       Default |
+=== SMI2 RECEIPTS 2026-10-27T01:56:39+11:00 (during literal-invocation repeat run 4) ===
+PGREP_DURING4_RC=1 (readback below; >0 = engine process present at snapshot)
+0
+CMD: xpu-smi --query-gpu=memory.used --id=0 > /tmp/dpct_run/f3_smi_one_during4.txt 2>&1
+XPU_ONE_DURING4_RC=0 (one device line + used-memory figure, during literal-invocation run)
+memory.used (MiB)
+440.9921875
+XPU_DEV1_DURING4_RC=0
+memory.used (MiB)
+440.9921875
+memory.used (MiB)
+432.5546875
+CMD: xpu-smi > /tmp/dpct_run/f3_smi_table_during4.txt 2>&1
+XPU_TABLE_DURING4_RC=0
+| Fan              Temp  Pwr:Usage/Cap         | Memory-Usage               |   GPU-Util  Compute M. |
+| N/A               46C  33W / 200W            | 441MiB / 24480MiB          |      N/A       Default |
+| N/A               45C  32W / 200W            | 433MiB / 24480MiB          |      N/A       Default |
+RUN4_PID=1770145
+RUN4_WAIT_RC=0
+CMD: xpu-smi --query-gpu=memory.used --id=0 > /tmp/dpct_run/f3_smi_one_after4.txt 2>&1
+XPU_ONE_AFTER4_RC=0
+memory.used (MiB)
+440.9921875

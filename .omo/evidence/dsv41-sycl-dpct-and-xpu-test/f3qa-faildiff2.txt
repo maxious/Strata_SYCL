@@ -1,0 +1,1 @@
+FAILDIFF2_EXIT=0 (0 = failing test names identical to the origin/main control)

@@ -1,0 +1,11 @@
+1,4c1,5
+< batch1 ids: 671 6102 294 8760 344 2619 51119 42499
+< batch1 first_id: 671
+< batch1 type3_ids: none
+< batch1 decoded: The capital of France is **Paris**.
+---
+> Traceback (most recent call last):
+>   File "/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3_decode.py", line 47, in <module>
+>     report(batches_from_log(open(sys.argv[2]).read()))
+>                             ~~~~^^^^^^^^^^^^^
+> FileNotFoundError: [Errno 2] No such file or directory: '/home/maxious/Strata/.omo/evidence/dsv41-sycl-dpct-and-xpu-test/f3tc-run-run1.log'

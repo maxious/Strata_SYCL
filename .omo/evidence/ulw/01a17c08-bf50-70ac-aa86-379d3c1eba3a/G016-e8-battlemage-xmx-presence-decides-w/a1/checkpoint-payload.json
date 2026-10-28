@@ -1,0 +1,82 @@
+{
+ "manualQa": {
+  "by": "main-session",
+  "status": "pass",
+  "evidence": "Rerun 2026-10-27T07:12Z recorded in a1/cli-transcript.txt: sg16 joint_matrix/XMX bench on Intel Arc Pro B60, BENCH_M1_RC=0 and BENCH_M160_RC=0; i8-block max errors reported per shape.",
+  "surfaceEvidence": [
+   {
+    "criterionRef": "C001",
+    "invocation": "bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; /tmp/w5_jm_research/xmx/bench 160 64'",
+    "verdict": "pass",
+    "artifactRefs": [
+     "a1/cli-transcript.txt"
+    ]
+   },
+   {
+    "criterionRef": "C002",
+    "invocation": "repaired C002 capture: header ls rc=0 (dpas.hpp, matrix.hpp under include/sycl/), libsycl.so.9.0.0, icpx 2026.2.0; 2025.3 runtime absent locally",
+    "verdict": "pass",
+    "artifactRefs": [
+     "a1/data-diff.txt"
+    ]
+   },
+   {
+    "criterionRef": "C003",
+    "invocation": "bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; /tmp/w5_jm_research/xmx/bench 1 64'",
+    "verdict": "pass",
+    "artifactRefs": [
+     "a1/cli-transcript.txt"
+    ]
+   }
+  ],
+  "adversarialCases": [
+   "M=1 decode regression check: tile path at M=1 measures 22.3/11.9 us/expert, at the memory floor, so tiles are not used for decode dispatch",
+   "i8-block correctness: max err reported (577/577, 241/241 at M=1; 0.000166/769, 4.61e-05/316 at M=160)"
+  ],
+  "artifactRefs": [
+   {
+    "id": "cli-transcript",
+    "kind": "log",
+    "description": "Full rerun transcript of G016 verification commands",
+    "path": "/home/maxious/Strata/.omo/evidence/ulw/01a17c08-bf50-70ac-aa86-379d3c1eba3a/G016-e8-battlemage-xmx-presence-decides-w/a1/cli-transcript.txt"
+   },
+   {
+    "id": "data-diff",
+    "kind": "log",
+    "description": "Version-gated availability diff evidence",
+    "path": "/home/maxious/Strata/.omo/evidence/ulw/01a17c08-bf50-70ac-aa86-379d3c1eba3a/G016-e8-battlemage-xmx-presence-decides-w/a1/data-diff.txt"
+   }
+  ]
+ },
+ "gateReview": {
+  "by": "category:deep-high",
+  "recommendation": "APPROVE",
+  "reportPath": "/home/maxious/Strata/.omo/evidence/ulw/01a17c08-bf50-70ac-aa86-379d3c1eba3a/G016-e8-battlemage-xmx-presence-decides-w/a1/gate-review.md",
+  "evidence": "Reviewer child st_01a17c33 re-audit verdict APPROVE, no blockers; report in a1/gate-review.md.",
+  "blockers": [],
+  "notes": [
+   "C002 2025.3-fail half scoped to external bmg_g31 proof (S6); bmg_g21 unverified locally, labeled in transcript"
+  ]
+ },
+ "iteration": {
+  "fullRerun": true,
+  "status": "passed",
+  "rerunCommands": [
+   "bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; /tmp/w5_jm_research/xmx/bench 1 64'",
+   "bash -c 'source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1; /tmp/w5_jm_research/xmx/bench 160 64'"
+  ],
+  "evidence": "a1/cli-transcript.txt lines BENCH_M1_RC=0, BENCH_M160_RC=0"
+ },
+ "criteriaCoverage": {
+  "totalCriteria": 3,
+  "passCount": 3,
+  "originalIntent": "Prove Battlemage XMX/joint_matrix availability decides the sg16 tile path on Arc Pro B60 for dsv41 SYCL decode",
+  "desiredOutcome": "sg16 joint_matrix + DPAS builds and runs on B60; availability gated by libsycl runtime version; M=1 decode stays at memory floor",
+  "userOutcomeReview": "Report delivered inline with these numbers; decode dispatch keeps gemv path, tiles for batched shapes",
+  "adversarialClassesCovered": [
+   "runtime-version failure (2025.3.2 unsupported)",
+   "M=1 regression",
+   "quant-block correctness"
+  ]
+ }
+}
