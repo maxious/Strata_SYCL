@@ -1039,6 +1039,21 @@ constexpr int kSetSmemGu = BM * kLdT * 2 + BN * kLdT * 2 + BN * kLdT * 2 + 2 * (
 constexpr int kSetSmemOutGu = BM * (BN + 4) * 4 + BM * (BN + 4) * 4;
 constexpr int kSetSmemDn = BM * kLdT * 2 + BN * kLdT * 2 + 1 * kLdT * 2 + (BN / 16) * 512 * 2 + 1 * 512 * 2;
 constexpr int kSetSmemOutDn = BM * (BN + 4) * 4 + 1 * (BN + 4) * 4;
+// the i8 A-stage tile's shape (todo 3): a 16 x 16 output tile (16 weight rows x 16 activation rows), the K range
+// split over four sub-groups, the A staging (half) and the Part planes (float) both live in the shared block
+constexpr int kStageAN = 16;          // the N tile: the weight rows a tile covers
+constexpr int kStageAM = 16;          // the M tile: the activation rows a tile covers
+constexpr int kStageASplit = 4;       // the sub-groups over the K range (the K split's parts)
+constexpr int kStageAThreads = kStageASplit * 16;   // the work-group: the split's sub-groups of 16
+constexpr int kStageABlk = 32;        // the values a weight block holds (deq8's 32-value blocks)
+constexpr int kStageALdA = kStageABlk;   // the A staging's K stride (a block a row)
+constexpr int kStageALdP = kStageAN + 4;   // the Part plane's row stride (the BN + 4 convention)
+constexpr int kSetSmemStageATilesGu = 2 * kStageASplit * kStageAN * kStageALdA * 2;
+constexpr int kSetSmemStageAOutGu = 2 * kStageASplit * kStageAN * kStageALdP * 4;
+constexpr int kSetSmemStageAGu = kSetSmemStageATilesGu + kSetSmemStageAOutGu;
+constexpr int kSetSmemStageATilesDn = 1 * kStageASplit * kStageAN * kStageALdA * 2;
+constexpr int kSetSmemStageAOutDn = 1 * kStageASplit * kStageAN * kStageALdP * 4;
+constexpr int kSetSmemStageADn = kSetSmemStageATilesDn + kSetSmemStageAOutDn;
 template <int T, bool GATE_UP>
 /*
 DPCT1110:11: The total declared local variable size in device function
@@ -1255,6 +1270,233 @@ struct set_tc_wrapper {
             a, smem.get_multi_ptr<sycl::access::decorated::no>().get(),
             tab.get_multi_ptr<sycl::access::decorated::no>().get(),
             src.get_multi_ptr<sycl::access::decorated::no>().get());
+    }
+};
+
+// ---------------------------------------------------------------- the i8 A-stage tile (todo 3)
+// The weights' blocks (Aq[N, K]) decoded straight into the XMX A fragments - no f16 shared round-trip - and the
+// activations read from global memory in the ext_intel_packed layout (the todo-1 probe's bijection): the plane's
+// element (k, m) at [(k / 2) * Mpad * 2 + 2 m + (k & 1)], the plane's ld Mpad * 2 halfs.
+// One work-group: one 16 x 16 output tile (16 weight rows x 16 activation rows), the K range split over the four
+// sub-groups (each its own whole blocks: kb_begin = (s * nblk) / 4, kb_end = ((s + 1) * nblk) / 4), the four
+// partials in the Part planes, the deterministic reduction ((p0 + p1) + p2) + p3 and the epilogue's transpose of
+// C[N, M] into Y[M, N].
+template <int T, bool GATE_UP>
+void set_tc_stageA_kernel(const StageAArgs a, unsigned char *smem, uint32_t *tab) {
+    auto item_ct1 = sycl::ext::oneapi::this_work_item::get_nd_item<3>();
+    struct Tiles {
+        // the A staging: every sub-group's own rows (the K range it owns) as F16, a block a row
+        sycl::half a[GATE_UP ? 2 : 1][kStageASplit][kStageAN][kStageALdA];
+    };
+    struct Out {
+        // the Part planes: every sub-group's partial (16 x 16, the row stride of the BN + 4 convention)
+        float part[GATE_UP ? 2 : 1][kStageASplit][kStageAN][kStageALdP];
+    };
+    // the shared block the launch passes holds the A staging and the Part planes at once
+    static_assert(sizeof(Tiles) == (GATE_UP ? kSetSmemStageATilesGu : kSetSmemStageATilesDn),
+                  "set_tc_stageA_kernel: Tiles drifted from the kSetSmemStageA* constants");
+    static_assert(sizeof(Out) == (GATE_UP ? kSetSmemStageAOutGu : kSetSmemStageAOutDn),
+                  "set_tc_stageA_kernel: Out drifted from the kSetSmemStageA* constants");
+    static_assert(sizeof(Tiles) + sizeof(Out) == (GATE_UP ? kSetSmemStageAGu : kSetSmemStageADn),
+                  "set_tc_stageA_kernel: the shared block drifted from the launch's size");
+
+    Tiles& Tl = *reinterpret_cast<Tiles*>(smem);
+    Out& O = *reinterpret_cast<Out*>(smem + sizeof(Tiles));
+    const int e = item_ct1.get_group(0);
+    const int lo = a.bounds[e] - a.row0, hi = a.bounds[e + 1] - a.row0;
+    const int nr = hi - lo;
+    const int n0 = item_ct1.get_group(1) * kStageAN;   // the tile's weight rows
+    const int m0 = item_ct1.get_group(2) * kStageAM;   // the tile's activation rows
+    if (nr <= 0 || m0 >= nr || n0 >= a.n_out) return;   // (uniform in the work-group: the barriers below)
+    load_tab<T>(tab);
+    // the codebook is in shared memory now (load_tab: tid < 4 writes it).  set_tc_kernel carries exactly this
+    // barrier between its load_tab and the first deq8 read; it was missing here, and a deq8 that ran before the
+    // codebook landed took a stale table - the down output moved between runs on both flavors.
+    item_ct1.barrier();
+    const int K = a.k;
+    const size_t rb = row_bytes_t<T>(K);
+    const uint8_t* blob = a.wbase + (size_t) e * a.stride;
+    const int ld = a.mpad * 2;   // the B plane's row stride (halfs)
+    const sycl::half* bpack = a.bpack + (size_t) e * a.bstride / sizeof(sycl::half);
+    const int tid = (int) item_ct1.get_local_id(2);
+#ifdef STRATA_XMX_SG16
+    const sycl::sub_group sg = item_ct1.get_sub_group();
+    const int s = (int) sg.get_group_id()[0];      // the sub-group: its K range
+    const int lane = (int) sg.get_local_id()[0];   // its lane: the tile's weight row
+#else
+    // the scalar stand-in: the device picks the sub-group size (the 16-lane requirement is an XMX-build one), so the
+    // split's groups come from the thread index: the same 16 threads the sub-groups hold in the XMX build
+    const int s = tid / 16, lane = tid % 16;
+#endif
+    const int nblk = K / kStageABlk;
+    const int kb0 = (s * nblk) / kStageASplit, kb1 = ((s + 1) * nblk) / kStageASplit;
+#ifdef STRATA_XMX_SG16
+    auto lptr = [](auto *p) {
+        return sycl::address_space_cast<sycl::access::address_space::local_space,
+                                        sycl::access::decorated::no>(p);
+    };
+    auto gptr = [](auto *p) {
+        return sycl::address_space_cast<sycl::access::address_space::global_space,
+                                        sycl::access::decorated::no>(p);
+    };
+    jm::joint_matrix<sycl::sub_group, float, jm::use::accumulator, 16, 16> fg, fu;
+    jm::joint_matrix_fill(sg, fg, 0.0f);
+    if (GATE_UP) jm::joint_matrix_fill(sg, fu, 0.0f);
+#else
+    // the scalar stand-in's accumulators (the XMX tiles take the other path): the lane's row, every M column
+    float acc[GATE_UP ? 2 : 1][kStageAM];
+#pragma unroll
+    for (int m = 0; m < kStageAM; ++m) acc[0][m] = 0.0f;
+    if constexpr (GATE_UP) {
+#pragma unroll
+        for (int m = 0; m < kStageAM; ++m) acc[1][m] = 0.0f;
+    }
+#endif
+    // every sub-group must reach the same barrier points: the K split's ranges have different lengths when
+    // nblk % kStageASplit != 0 (kb0 = (s * nblk) / 4), and the stand-in's work-group barriers used to see
+    // differing trip counts - the four-partial reduction then raced sub-group 3's partial store on the uneven
+    // splits.  The loop therefore runs the longest range uniformly and the tail steps hold the barriers without
+    // work.  The XMX path's semantics are unchanged: its sub-group barriers are per sub-group either way and a
+    // tail step only skips work that sub-group never had.
+    const int niter = (nblk + kStageASplit - 1) / kStageASplit;
+    for (int it = 0; it < niter; ++it) {
+#ifdef STRATA_XMX_SG16
+        const int kb = kb0 + it;
+        if (kb >= kb1) {   // the uneven split's tail: the same two barrier points, no work
+            sycl::group_barrier(sg);
+            sycl::group_barrier(sg);
+            continue;
+        }
+#else
+        // the uneven split's tail keeps this thread on the same single path as a working step: it re-stages
+        // a block its range already covered and adds nothing (sel), so the barriers, the staging and the
+        // partial store below stay uniform across the work-group's threads
+        const int raw = kb0 + it;
+        const int kb = raw < kb1 ? raw : kb1 - 1;
+        const float sel = raw < kb1 ? 1.0f : 0.0f;
+#endif
+        // stage this block's weights into the A fragments' rows: the lane's row (the tile's weight row), the
+        // block's four quarters - the same decode as set_tc_kernel stages its weights (deq8 verbatim)
+#pragma unroll
+        for (int m = 0; m < (GATE_UP ? 2 : 1); ++m) {
+#pragma unroll
+            for (int p = 0; p < 4; ++p) {
+                float w8[8];
+                deq8<T>(blob + a.tr[GATE_UP ? m : 2] + (size_t) (n0 + lane) * rb, kb, p, tab, w8);
+                sycl::half* dst = &Tl.a[m][s][lane][p * 8];
+#pragma unroll
+                for (int j = 0; j < 8; ++j)
+                    dst[j] = sycl::vec<float, 1>(w8[j])
+                                 .convert<sycl::half, sycl::rounding_mode::rte>()[0];
+            }
+        }
+        // the A tile is ready: every lane of the sub-group staged its own row
+#ifdef STRATA_XMX_SG16
+        sycl::group_barrier(sg);
+#else
+        /*
+        DPCT1065:1377: Consider replacing sycl::nd_item::barrier() with
+        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+        performance if there is no access to global memory.
+        */
+        // audit note: DPCT1065 accepted - the stand-in's split comes from the thread index (the device picks the sub-group size there), so a sub-group barrier would not cover the group that staged the rows the tile reads; the full barrier stays
+        item_ct1.barrier();
+#endif
+#ifdef STRATA_XMX_SG16
+#pragma unroll
+        for (int kk = 0; kk < kStageABlk; kk += 16) {
+            const int koff = kb * kStageABlk + kk;   // the tile's K offset
+            jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::a, 16, 16, jm::layout::row_major> fa;
+            jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::b, 16, 16, jm::layout::ext_intel_packed> fb;
+            jm::joint_matrix_load(sg, fa, lptr(&Tl.a[0][s][0][kk]), kStageALdA);
+            // the B plane's tile: the element (k, m) at (k / 2) * ld + 2 m + (k & 1) (the todo-1 probe's bijection)
+            jm::joint_matrix_load(sg, fb,
+                                  gptr(bpack + (size_t) (koff >> 1) * (size_t) ld + 2 * m0 + (koff & 1)), ld);
+            jm::joint_matrix_mad(sg, fg, fa, fb, fg);
+            if (GATE_UP) {
+                jm::joint_matrix_load(sg, fa, lptr(&Tl.a[1][s][0][kk]), kStageALdA);
+                jm::joint_matrix_mad(sg, fu, fa, fb, fu);
+            }
+        }
+#else
+        // the scalar stand-in: the same tile without the XMX (the lane's weight row, every M column)
+        for (int k = 0; k < kStageABlk; ++k) {
+            const int koff = kb * kStageABlk + k;
+            const size_t at = (size_t) (koff >> 1) * (size_t) ld + (koff & 1);
+            const float ag = (float) Tl.a[0][s][lane][k];
+            float au = 0.0f;
+            if constexpr (GATE_UP) au = (float) Tl.a[1][s][lane][k];
+            for (int m = 0; m < kStageAM; ++m) {
+                const float bv = (float) bpack[at + 2 * (m0 + m)];   // the plane's column: the tile's M row
+                acc[0][m] += ag * bv * sel;
+                if constexpr (GATE_UP) acc[1][m] += au * bv * sel;
+            }
+        }
+#endif
+        // the tile's loads are done: the next block may overwrite the staging
+#ifdef STRATA_XMX_SG16
+        sycl::group_barrier(sg);
+#else
+        /*
+        DPCT1065:1420: Consider replacing sycl::nd_item::barrier() with
+        sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+        performance if there is no access to global memory.
+        */
+        // audit note: DPCT1065 accepted - the same reason as the barrier above: the stand-in's groups are the thread index's, so the barrier must cover the whole work-group
+        item_ct1.barrier();
+#endif
+    }
+#ifdef STRATA_XMX_SG16
+    jm::joint_matrix_store(sg, fg, lptr(&O.part[0][s][0][0]), kStageALdP, jm::layout::row_major);
+    if (GATE_UP) jm::joint_matrix_store(sg, fu, lptr(&O.part[1][s][0][0]), kStageALdP, jm::layout::row_major);
+#else
+    for (int m = 0; m < kStageAM; ++m) {
+        O.part[0][s][lane][m] = acc[0][m];
+        if constexpr (GATE_UP) O.part[1][s][lane][m] = acc[1][m];
+    }
+#endif
+    // the four partials are ready
+    /*
+    DPCT1065:1439: Consider replacing sycl::nd_item::barrier() with
+    sycl::nd_item::barrier(sycl::access::fence_space::local_space) for better
+    performance if there is no access to global memory.
+    */
+    // audit note: DPCT1065 accepted - the four partials are written by the four sub-groups, so the barrier must be the work-group's; the note's local-only variant would not order the other sub-groups' stores
+    item_ct1.barrier();
+    // the reduction ((p0 + p1) + p2) + p3 and the transpose of C[N, M] into Y[M, N]
+    for (int i = tid; i < kStageAN * kStageAM; i += kStageAThreads) {
+        const int n = i / kStageAM, m = i % kStageAM;
+        if (m0 + m >= nr) continue;
+        const float g =
+            ((O.part[0][0][n][m] + O.part[0][1][n][m]) + O.part[0][2][n][m]) + O.part[0][3][n][m];
+        const size_t lr = (size_t) (lo + m0 + m);
+        if (GATE_UP) {
+            const float u =
+                ((O.part[1][0][n][m] + O.part[1][1][n][m]) + O.part[1][2][n][m]) + O.part[1][3][n][m];
+            a.h[lr * a.ldo + n0 + n] = sycl::bit_cast<unsigned short, sycl::half>(
+                sycl::vec<float, 1>(swiglu(g, u, a.limit))
+                    .convert<sycl::half, sycl::rounding_mode::rte>()[0]);
+        } else {
+            a.y[lr * a.ldo + n0 + n] = g;
+        }
+    }
+}
+
+// the kernel functor (as set_tc_wrapper): the sub-group 16 requirement belongs to the kernel's operator(), not to
+// the free function it calls - and only where the 16 x 16 x 16 tiles exist (STRATA_XMX_SG16: an AOT bmg / lnl
+// build; a JIT build runs the scalar stand-in above with whatever sub-group the device picks)
+template <int T, bool GATE_UP>
+struct set_tc_stageA_wrapper {
+    StageAArgs a;
+    sycl::local_accessor<unsigned char, 1> smem;
+    sycl::local_accessor<uint32_t, 1> tab;
+#ifdef STRATA_XMX_SG16
+    [[sycl::reqd_sub_group_size(16)]]
+#endif
+    void operator()(sycl::nd_item<3> item_ct1) const {
+        set_tc_stageA_kernel<T, GATE_UP>(
+            a, smem.get_multi_ptr<sycl::access::decorated::no>().get(),
+            tab.get_multi_ptr<sycl::access::decorated::no>().get());
     }
 };
 #endif
@@ -1831,6 +2073,22 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
             });
     });
 }
+// the i8 A-stage tile's launch (todo 3): the shared block holds the A staging and the Part planes at once
+template <int T, bool GATE_UP>
+void launch_stageA(const StageAArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
+    s->submit([&](sycl::handler &cgh) {
+        dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
+        sycl::local_accessor<unsigned char, 1> smem_acc_ct1(
+            sycl::range<1>(GATE_UP ? kSetSmemStageAGu : kSetSmemStageADn), cgh);
+        sycl::local_accessor<uint32_t, 1> tab_acc_ct1(
+            sycl::range<1>(Ty<T>::TAB > 0 ? Ty<T>::TAB : 1), cgh);
+        cgh.parallel_for<dpct_kernel_name<set_tc_stageA_wrapper<T, GATE_UP>>>(
+            sycl::nd_range<3>(grid * sycl::range<3>(1, 1, kStageAThreads),
+                              sycl::range<3>(1, 1, kStageAThreads)),
+            set_tc_stageA_wrapper<T, GATE_UP>{a, smem_acc_ct1, tab_acc_ct1});
+    });
+}
+
 // the light sets' int8 rows, per stream (kLightMaxExp kLightRows rows of k)
 struct LightBuf {
     int8_t* q = nullptr;
@@ -2260,6 +2518,35 @@ bool light_down(const SetArgs &a, dpct::queue_ptr s) {
     if (is_tq(a.td)) return false;
     if (a.n_exp > kLightMaxExp || !light_on() || a.n_embd % 256 != 0 || a.n_ff % 256 != 0) return false;
     return light_set(a, false, s);
+}
+
+// The i8 A-stage tile (todo 3): the weights' blocks decoded straight into the XMX A fragments and the activations
+// read from global memory in the ext_intel_packed layout.  The gates (the K a whole number of blocks, the K split's
+// parts, the M rows beyond one) and the launch; the dispatch arm (todo 4) calls it - the tile is opt-in.
+bool stageA_set(const StageAArgs &a, dpct::queue_ptr s) {
+    if (a.wbase == nullptr || a.bpack == nullptr || a.bounds == nullptr) return false;
+    if (a.n_exp < 1 || a.max_rows < 1) return false;
+    if (a.max_rows <= 1) return false;                      // (M = 1: the memory floor, not a tile)
+    if (a.k % kStageABlk != 0) return false;                 // (the K a whole number of blocks)
+    if (a.k / kStageABlk < kStageASplit) return false;        // (the K split's parts)
+    if (a.n_out % kStageAN != 0) return false;
+    if (a.mpad < (a.max_rows + kStageAM - 1) / kStageAM * kStageAM) return false;   // (the plane's rows)
+    if (a.gate_up ? a.h == nullptr : a.y == nullptr) return false;
+    // the grid (dpct::dim3's x is the fastest dimension - it converts to range<3>(z, y, x)): the m-tiles, the n-tiles,
+    // the experts - the same order as launch_set's grid, so the kernel's group(0) is the expert
+    const dpct::dim3 grid((unsigned) ((a.max_rows + kStageAM - 1) / kStageAM),
+                           (unsigned) (a.n_out / kStageAN),
+                           (unsigned) a.n_exp);
+    if (a.gate_up) {
+#define SA_GU_(T) launch_stageA<T, true>(a, grid, s)
+        DS4_IQ_SWITCH(a.tg, SA_GU_)
+#undef SA_GU_
+    } else {
+#define SA_DN_(T) launch_stageA<T, false>(a, grid, s)
+        DS4_IQ_SWITCH(a.tg, SA_DN_)
+#undef SA_DN_
+    }
+    return true;
 }
 
 bool set_gate_up(const SetArgs &a, dpct::queue_ptr s) {
