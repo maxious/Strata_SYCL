@@ -123,6 +123,7 @@ struct StageAArgs {
     int ldo = 0;
     int tg = 0;                         // the weights' type
     bool gate_up = false;               // the gate / up pair (the swiglu) vs the down matrix
+    int skip_le = 0;   // (the dispatch arm) the experts of at most this many rows are left out: the light kernels took them
 };
 /// The i8 A-stage tile: the weights' blocks decoded straight into the XMX A fragments, the activations read from
 /// global memory in the ext_intel_packed layout.  false: a shape the tile does not take (the caller falls back).
