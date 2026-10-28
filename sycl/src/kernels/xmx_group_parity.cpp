@@ -119,6 +119,7 @@ int main(int argc, char** argv) {
         for (int i = 0; i < n; ++i) { sycl::free(dg[i], *q); if (cs.gu) sycl::free(du[i], *q); }
         sycl::free(dx, *q); sycl::free(dw, *q); sycl::free(yr, *q); sycl::free(yx, *q);
     }
-    std::printf("%s\n", fails ? "FAILED" : "all OK");
+    std::printf("xmx_group_parity: %s\n",
+                fails ? "NO MATCH (a format is outside tolerance)" : "MATCH (every format within tolerance)");
     return fails ? 1 : 0;
 }

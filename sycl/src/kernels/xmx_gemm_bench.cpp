@@ -89,5 +89,7 @@ int main(int argc, char** argv) {
     const double flop = 2.0 * M * n_out * K;
     std::printf("dequant %.3f ms + mkl %.3f ms = %.3f ms (%.0f GFLOP/s on the GEMM)  |  xmx %.3f ms (%.0f GFLOP/s, %.2fx)\n", t_dq,
                 t_mkl, t_both, flop / t_mkl / 1e6, t_xmx, flop / t_xmx / 1e6, t_both / t_xmx);
-    return bad > r.size() / 1000 ? 1 : 0;
+    const bool ok = bad <= r.size() / 1000;   // under 0.1% of the elements outside 1% of the reference
+    std::printf("xmx_gemm_bench: %s (%zu of %zu elements outside 1%%)\n", ok ? "MATCH" : "NO MATCH", bad, r.size());
+    return ok ? 0 : 1;
 }

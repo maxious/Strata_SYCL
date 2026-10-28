@@ -18,6 +18,11 @@
 // --neg <decode row> flips one payload or scale byte of its input after the reference is computed and must exit 1;
 // --weird-scale feeds NaN / denormal scale blocks (deterministic output, run twice to see it).
 //
+// The iq4_nl stageA set rows (plan todo 5) drive the sg16 A-stage tile through the dispatch arm at M = 2 .. 160 with
+// the K and N tails, against a scalar reference written from the tile's F16-input contract (the four sub-groups'
+// whole-block ranges, the fixed partial order); --neg-stageA corrupts one scale byte after the reference, so the row
+// must report NO MATCH and exit 1 - a row that cannot fail is not evidence.
+//
 // Build (this PC, 2026-10-25, verified green): icpx -fsycl -std=c++20 -O2 -fsycl-default-sub-group-size=32
 //   -fsycl-device-code-split=per_kernel -fp-model=precise -I sycl/include -I include -I third_party/ggml
 //   -I sycl/include/compat -I include/strata/artifact -I sycl/src/dsv41 ds4_parity.cpp ds4_iq.dp.cpp
@@ -137,9 +142,9 @@ void ref_q6_K(const uint8_t* row, float* y) {
 // the device kernels carry.  The rows below use that shipped table - never a hand-transcribed copy; its values are
 // checked against dequant.hpp's own copy by the decode rows themselves.
 
-// The IQ4_NL rows (8 blocks of 18 bytes) and the IQ4_XS superblock, transcribed from the same header.
-void ref_iq4_nl(const uint8_t* row, float* y) {
-    for (int b = 0; b < kQK / 32; ++b) {
+// The IQ4_NL rows (blocks of 18 bytes) and the IQ4_XS superblock, transcribed from the same header.
+void ref_iq4_nl_blocks(const uint8_t* row, int nb, float* y) {
+    for (int b = 0; b < nb; ++b) {
         const uint8_t* block = row + 18 * b;
         const float d = fp16_to_f32(block);
         const uint8_t* qs = block + 2;
@@ -149,6 +154,8 @@ void ref_iq4_nl(const uint8_t* row, float* y) {
         }
     }
 }
+
+void ref_iq4_nl(const uint8_t* row, float* y) { ref_iq4_nl_blocks(row, kQK / 32, y); }
 
 void ref_iq4_xs(const uint8_t* row, float* y) {
     const float d = fp16_to_f32(row);
@@ -224,6 +231,28 @@ float bf16_ulp(float v) {
 // so the down comparison takes the larger of the relative ulp and this small absolute floor.  A wrong
 // weight or a stale strip moves a sum by ~10 or more, far above the floor, so the negative control still fails.
 constexpr float kDownAbsTol = 1e-3f;
+
+// One F32 ulp of a finite value, with the +-0 rule the reviewed stageA gate suite fixed: at a zero reference the
+// subnormal floor 2^-24, not ulp(0) = 0 (a sub-ulp residual at +-0 would otherwise read as outside).
+float ulp_f32(float v) {
+    if (!(v == v)) return 0.0f;
+    if (v == 0.0f) return 1.0f / 16777216.0f;   // 2^-24
+    const uint32_t bits = sycl::bit_cast<uint32_t>(std::fabs(v));
+    if ((bits >> 23) == 0) return 1.0f / 8388608.0f * 1.40129846e-45f;   // a denormal grid step: 2^-149
+    const int e = (int) ((bits >> 23) & 0xFF) - 127;
+    return std::ldexp(1.0f, e - 23);
+}
+
+// The element bound: one BF16 ulp floored at 2^-24 (the same +-0 rule).
+float elem_bound(float v) {
+    const float u = bf16_ulp(v);
+    return u > 0.0f ? u : 1.0f / 16777216.0f;
+}
+
+// The tile-sum bound of the plan: abs_err <= 32*2^-24*sum_abs + 4*ulp_f32(ref).
+double tile_bound(double sum_abs, float ref) {
+    return 32.0 * 5.960464477539063e-08 * sum_abs + 4.0 * (double) ulp_f32(ref);
+}
 
 // F16 bits of v rounded to nearest-even (the kernels' __float2half_rn / the device's convert<rte>).  Not
 // sycl::vec::convert on the host: oneAPI 2026.2's host path truncates tiny values instead of rounding them
@@ -1102,6 +1131,280 @@ void run_decode_row(sycl::queue& q, int fmt, const char* name, bool neg, Tally& 
     t.bad += diff;
 }
 
+// ---------------------------------------------------------------- the i8 A-stage set tiles (plan todo 5)
+//
+// The tiles this section drives are iq::set_gate_up / iq::set_down with IQ4_NL - the one type the dispatch arm (plan
+// todo 4) routes to set_tc_stageA_kernel: the arm packs the set's activation rows into the ext_intel_packed F16 plane
+// (stageA_pack_kernel) and the tile reads them from global memory.  The reference below is written from that
+// contract, not from the kernel: the weights are the shipped IQ4_NL codebook values (ref_iq4_nl_blocks) rounded to
+// F16 (rte, the A fragments' contract - deq8 decoded the same values bit-exactly in the plan's todo-3 gate suite),
+// the activations are the F16 bits the pack kernel stores (gate/up: the row idx[r] of xf rounded rte; down: the xh
+// row's bits), and the sums have the tile's own shape - the K range in the four sub-groups' whole-block ranges
+// (kb0 = (s*nblk)/4, kb1 = ((s+1)*nblk)/4), each partial summed in double over the F16 products in block order,
+// rounded to F32 and combined ((p0 + p1) + p2) + p3.  The gate/up output is the F16 (rte) clamped swiglu, accepted
+// within one BF16 ulp of the reference; the down output is the raw F32 sum, accepted within the plan's
+// 32*2^-24*sum_abs + 4*ulp_f32(ref) bound (or one BF16 ulp, which the reviewed gate suite's corrected +-0 rule also
+// allows where a sum cancels to near zero).
+//
+// The data are scale-sensitive as the legacy XS set row's: d = 0.002 a 32-value block and activations in +-[0, 0.05),
+// so the sums land where the clamped swiglu is not saturated and a wrong weight or plane slot moves an output.  The
+// shapes are the gate suite's M list (2, 15, 16, 17, 31, 32, 33, 160 at the model's 2560 x 640) plus the K and N
+// tails: 544 x 352 (17 and 11 blocks - the K split uneven, N not a multiple of the legacy BN = 64) and 128 x 128
+// (one block a sub-group: the split edge).  n_exp = 2 splits M in half, so M = 2 is one row an expert.
+
+struct StageAShape {
+    int M, n_embd, n_ff, n_exp;
+};
+
+// One slab's weight rows as the A fragments hold them: the shipped IQ4_NL decode rounded to F16 (rte).
+void stageA_w_plane(const uint8_t* slab, int rows, int K, std::vector<uint16_t>& w) {
+    const size_t bb = (size_t) strata::ds4::gguf::iq::block_bytes(strata::ds4::gguf::iq::kIQ4_NL);
+    w.assign((size_t) rows * (size_t) K, 0);
+    std::vector<float> v((size_t) K);
+    for (int n = 0; n < rows; ++n) {
+        ref_iq4_nl_blocks(slab + (size_t) n * (size_t) (K / 32) * bb, K / 32, v.data());
+        for (int k = 0; k < K; ++k) w[(size_t) n * (size_t) K + (size_t) k] = f16_rn(v[(size_t) k]);
+    }
+}
+
+// The tile's reduction of one output element: the four whole-block ranges of the K split, the partials the double
+// sums of the F16 products in block order, rounded to F32 and combined in the fixed ((p0 + p1) + p2) + p3 order;
+// *sum_abs: the double sum of |w*x| for the tile bound.
+float stageA_reduce(const uint16_t* w, const float* x, int K, double* sum_abs) {
+    const int nblk = K / 32;
+    float p[4];
+    double sa = 0.0;
+    for (int s = 0; s < 4; ++s) {
+        const int kb0 = (s * nblk) / 4, kb1 = ((s + 1) * nblk) / 4;
+        double acc = 0.0;
+        for (int k = kb0 * 32; k < kb1 * 32; ++k) {
+            const double pr = (double) static_cast<float>(sycl::bit_cast<sycl::half>(w[k])) * (double) x[k];
+            acc += pr;
+            if (sum_abs != nullptr) sa += std::fabs(pr);
+        }
+        p[s] = (float) acc;
+    }
+    if (sum_abs != nullptr) *sum_abs = sa;
+    return ((p[0] + p[1]) + p[2]) + p[3];
+}
+
+// One shape: the IQ4_NL blob, the reference from the clean blob, then the arm's set calls (gate/up, down) and the
+// comparison.  neg: one down scale byte flipped after the reference - the row must then leave the bounds.
+void run_stageA_row(sycl::queue& q, const StageAShape& sh, bool neg, Tally& t) {
+    const int M = sh.M, n_embd = sh.n_embd, n_ff = sh.n_ff, n_exp = sh.n_exp;
+    const int tt = strata::ds4::gguf::iq::kIQ4_NL;
+    const size_t bb = (size_t) strata::ds4::gguf::iq::block_bytes(tt);
+    const size_t rb_gu = (size_t) (n_embd / 32) * bb, rb_dn = (size_t) (n_ff / 32) * bb;
+    const size_t tr0 = 0, tr1 = (size_t) n_ff * rb_gu, tr2 = tr1 + (size_t) n_ff * rb_gu;
+    const size_t stride = tr2 + (size_t) n_embd * rb_dn;
+    Rng rng(0x5354414741ull + (unsigned long long) M * 7919ull + (unsigned long long) n_embd * 131ull);
+    std::vector<uint8_t> blob((size_t) n_exp * stride);
+    const uint16_t dbits = sycl::bit_cast<uint16_t>(sycl::half(0.002f));
+    for (int e = 0; e < n_exp; ++e) {
+        uint8_t* eb = blob.data() + (size_t) e * stride;
+        for (int part = 0; part < 3; ++part) {
+            uint8_t* base = eb + (part == 0 ? tr0 : part == 1 ? tr1 : tr2);
+            const int rows = part < 2 ? n_ff : n_embd;
+            const int K = part < 2 ? n_embd : n_ff;
+            const size_t rb = part < 2 ? rb_gu : rb_dn;
+            for (int r = 0; r < rows; ++r) {
+                uint8_t* row = base + (size_t) r * rb;
+                for (size_t i = 0; i < rb; ++i) row[i] = rng.next();
+                for (int kb = 0; kb < K / 32; ++kb) {   // a small scale a 32-value block keeps the sums sensitive
+                    row[(size_t) kb * bb + 0] = (uint8_t) (dbits & 0xFF);
+                    row[(size_t) kb * bb + 1] = (uint8_t) (dbits >> 8);
+                }
+            }
+        }
+    }
+    std::vector<float> xf((size_t) M * (size_t) n_embd);
+    for (size_t i = 0; i < xf.size(); ++i)   // +-[0, 1): d = 0.002 a block keeps the sums scale-sensitive, and a row
+        xf[i] = ((int) (rng.next() | (rng.next() << 8)) - 32768) / 32768.0f;   // wide enough that the F16 outputs stay distinct
+    std::vector<int> idx((size_t) M);   // a rotation: the pack reads xf[idx[local row]], the reference the same row
+    for (int r = 0; r < M; ++r) idx[(size_t) r] = (r + M / 2) % M;
+    std::vector<uint16_t> xh((size_t) M * (size_t) n_ff);
+    for (size_t i = 0; i < xh.size(); ++i)   // F16 rows in +-[0.5, 1): finite, away from zero (the XS set row's form)
+        xh[i] = (uint16_t) ((rng.next() | (rng.next() << 8)) & 0xBBFFu);
+    std::vector<int> bounds((size_t) n_exp + 1);
+    for (int e = 0; e <= n_exp; ++e) bounds[(size_t) e] = e * M / n_exp;
+    const float limit = 10.0f;
+    std::vector<uint16_t> h_ref((size_t) M * (size_t) n_ff);
+    std::vector<float> g_of(h_ref.size()), u_of(h_ref.size());   // the clamped gate / up sums, for the role check below
+    std::vector<float> y_ref((size_t) M * (size_t) n_embd);
+    std::vector<double> h_elem(h_ref.size()), y_elem(y_ref.size()), y_tile(y_ref.size());
+    std::vector<float> xrow((size_t) (n_embd > n_ff ? n_embd : n_ff));
+    int clamped = 0;
+    for (int e = 0; e < n_exp; ++e) {
+        const uint8_t* eb = blob.data() + (size_t) e * stride;
+        std::vector<uint16_t> wg, wu, wd;
+        stageA_w_plane(eb + tr0, n_ff, n_embd, wg);
+        stageA_w_plane(eb + tr1, n_ff, n_embd, wu);
+        stageA_w_plane(eb + tr2, n_embd, n_ff, wd);
+        for (int r = bounds[(size_t) e]; r < bounds[(size_t) e + 1]; ++r) {
+            for (int k = 0; k < n_embd; ++k)
+                xrow[(size_t) k] =
+                    static_cast<float>(sycl::bit_cast<sycl::half>(f16_rn(xf[(size_t) idx[(size_t) r] * (size_t) n_embd +
+                                                                       (size_t) k])));
+            for (int n = 0; n < n_ff; ++n) {
+                const float g = stageA_reduce(&wg[(size_t) n * (size_t) n_embd], xrow.data(), n_embd, nullptr);
+                const float u = stageA_reduce(&wu[(size_t) n * (size_t) n_embd], xrow.data(), n_embd, nullptr);
+                float gv = g, uv = u;
+                if (limit > 0.0f) {
+                    gv = std::fmin(gv, limit);
+                    uv = std::fmin(std::fmax(uv, -limit), limit);
+                    if (g > limit || std::fabs(u) > limit) ++clamped;
+                }
+                const float o = gv / (1.0f + std::exp(-gv)) * uv;
+                const size_t i = (size_t) r * (size_t) n_ff + (size_t) n;
+                g_of[i] = gv;
+                u_of[i] = uv;
+                h_ref[i] = f16_rn(o);
+                h_elem[i] = (double) elem_bound(o);
+            }
+            for (int k = 0; k < n_ff; ++k)
+                xrow[(size_t) k] = static_cast<float>(
+                    sycl::bit_cast<sycl::half>(xh[(size_t) r * (size_t) n_ff + (size_t) k]));
+            for (int n = 0; n < n_embd; ++n) {
+                double sa = 0.0;
+                const float v = stageA_reduce(&wd[(size_t) n * (size_t) n_ff], xrow.data(), n_ff, &sa);
+                const size_t i = (size_t) r * (size_t) n_embd + (size_t) n;
+                y_ref[i] = v;
+                y_elem[i] = (double) elem_bound(v);
+                y_tile[i] = tile_bound(sa, v);
+            }
+        }
+    }
+    {   // the non-vacuity guard: a row whose reference values collapse cannot tell a wrong tile from a right one
+        std::vector<uint16_t> hu = h_ref;
+        std::sort(hu.begin(), hu.end());
+        hu.erase(std::unique(hu.begin(), hu.end()), hu.end());
+        std::vector<float> yu = y_ref;
+        std::sort(yu.begin(), yu.end());
+        yu.erase(std::unique(yu.begin(), yu.end()), yu.end());
+        if ((double) hu.size() < 0.75 * (double) h_ref.size() ||
+            (double) yu.size() < 0.75 * (double) y_ref.size()) {
+            // a vacuous row is no verdict, not a failure: it prints and adds nothing to the tallies (the wide rows'
+            // F16 outputs cannot be 75% distinct however the tile is built, so counting them would make the row
+            // unable to pass - and the negative control below would "catch" the vacuity instead of a corruption,
+            // which the repair of task 5 found it doing: M=32 exited here before the scale byte was ever flipped)
+            printf("stageA set M=%d n_embd=%d n_ff=%d: VACUOUS (%zu/%zu distinct gate/up values, %zu/%zu down): the "
+                   "comparison could not distinguish a wrong tile\n", M, n_embd, n_ff, hu.size(), h_ref.size(),
+                   yu.size(), y_ref.size());
+            return;
+        }
+        if ((long) clamped * 10 > (long) h_ref.size()) {
+            printf("stageA set M=%d n_embd=%d n_ff=%d: VACUOUS (%d of %zu gate/up sums at the swiglu clamp): the data "
+                   "are not scale-sensitive\n", M, n_embd, n_ff, clamped, h_ref.size());
+            return;
+        }
+    }
+    if (neg) {
+        blob[tr2 + 0] ^= 0x40;   // expert 0, down weight row 0, block 0's d (the low byte); the reference is clean
+        printf("stageA set negative control: one wrong scale byte, blob[%zu] ^= 0x40 (down weight row 0, block 0); "
+               "the reference is from the clean blob\n", tr2);
+    }
+    uint8_t* w = (uint8_t*) sycl::malloc_device(blob.size(), q);
+    int* dbounds = (int*) sycl::malloc_device(bounds.size() * sizeof(int), q);
+    int* didx = (int*) sycl::malloc_device(idx.size() * sizeof(int), q);
+    float* dxf = (float*) sycl::malloc_device(xf.size() * sizeof(float), q);
+    uint16_t* dxh = (uint16_t*) sycl::malloc_device(xh.size() * sizeof(uint16_t), q);
+    uint16_t* dh = (uint16_t*) sycl::malloc_device(h_ref.size() * sizeof(uint16_t), q);
+    float* dy = (float*) sycl::malloc_device(y_ref.size() * sizeof(float), q);
+    q.memcpy(w, blob.data(), blob.size());
+    q.memcpy(dbounds, bounds.data(), bounds.size() * sizeof(int));
+    q.memcpy(didx, idx.data(), idx.size() * sizeof(int));
+    q.memcpy(dxf, xf.data(), xf.size() * sizeof(float));
+    q.memcpy(dxh, xh.data(), xh.size() * sizeof(uint16_t));
+    q.wait();
+    strata::ds4::gguf::iq::SetArgs sa{};
+    sa.wbase = w;
+    sa.stride = stride;
+    sa.tr[0] = tr0; sa.tr[1] = tr1; sa.tr[2] = tr2;
+    sa.bounds = dbounds;
+    sa.row0 = 0;
+    sa.max_rows = M;
+    sa.n_exp = n_exp;
+    sa.n_embd = n_embd;
+    sa.n_ff = n_ff;
+    sa.limit = limit;
+    sa.xf = dxf;
+    sa.idx = didx;
+    sa.ldx = n_embd;
+    sa.h = dh;
+    sa.ldo = n_ff;
+    sa.tg = tt;
+    sa.td = tt;
+    const bool ok_gu = strata::ds4::gguf::iq::set_gate_up(sa, &q);
+    strata::ds4::gguf::iq::SetArgs sd = sa;
+    sd.xf = nullptr;
+    sd.idx = nullptr;
+    sd.xh = dxh;
+    sd.ldx = n_ff;
+    sd.h = nullptr;
+    sd.y = dy;
+    sd.ldo = n_embd;
+    const bool ok_dn = strata::ds4::gguf::iq::set_down(sd, &q);
+    q.wait();
+    std::vector<uint16_t> hg(h_ref.size());
+    std::vector<float> yg(y_ref.size());
+    if (ok_gu) q.memcpy(hg.data(), dh, hg.size() * sizeof(uint16_t));
+    if (ok_dn) q.memcpy(yg.data(), dy, yg.size() * sizeof(float));
+    q.wait();
+    sycl::free(w, q); sycl::free(dbounds, q); sycl::free(didx, q); sycl::free(dxf, q); sycl::free(dxh, q);
+    sycl::free(dh, q); sycl::free(dy, q);
+    if (!ok_gu || !ok_dn) {
+        printf("stageA set M=%d n_embd=%d n_ff=%d: FAIL (the arm launched nothing: gate/up %s, down %s)\n", M, n_embd,
+               n_ff, ok_gu ? "ok" : "refused", ok_dn ? "ok" : "refused");
+        t.bad += 1;
+        return;
+    }
+    int g_exact = 0, g_near = 0, g_bad = 0, d_exact = 0, d_near = 0, d_bad = 0, g_swap = 0;
+    for (size_t i = 0; i < hg.size(); ++i) {
+        if (hg[i] == h_ref[i]) { ++g_exact; continue; }
+        const float a = static_cast<float>(sycl::bit_cast<sycl::half>(hg[i]));
+        const float b = static_cast<float>(sycl::bit_cast<sycl::half>(h_ref[i]));
+        const double diff = std::fabs((double) a - (double) b);
+        if (diff > (double) t.max_diff) t.max_diff = (float) diff;
+        if (diff <= h_elem[i]) ++g_near; else {
+            ++g_bad;
+            // does the device value instead follow the gate / up roles swapped (tr[1] as the gate)?
+            const float gs = u_of[i], us = g_of[i];
+            const float os = gs / (1.0f + std::exp(-gs)) * us;
+            if (std::fabs((double) a - (double) (float) sycl::bit_cast<sycl::half>(f16_rn(os))) <= h_elem[i]) ++g_swap;
+        }
+    }
+    for (size_t i = 0; i < yg.size(); ++i) {
+        if (yg[i] == y_ref[i]) { ++d_exact; continue; }
+        const double diff = std::fabs((double) yg[i] - (double) y_ref[i]);
+        if (diff > (double) t.max_diff) t.max_diff = (float) diff;
+        if (diff <= y_elem[i] || diff <= y_tile[i]) ++d_near; else ++d_bad;
+    }
+    printf("stageA set M=%d n_embd=%d n_ff=%d exp=%d: gate/up %d/%d fp16 bits exact, %d within one BF16 ulp, %d "
+           "outside; down %d/%d fp32 exact, %d within elem/tile bounds, %d outside\n", M, n_embd, n_ff, n_exp, g_exact,
+           (int) hg.size(), g_near, g_bad, d_exact, (int) yg.size(), d_near, d_bad);
+    if (g_bad) printf("  gate/up outside that follow the roles swapped (tr[1] as the gate): %d of %d\n", g_swap, g_bad);
+    for (size_t i = 0, shown = 0; i < hg.size() && shown < 4; ++i) {   // the first outside values, for the log
+        const double diff = std::fabs((double) (float) sycl::bit_cast<sycl::half>(hg[i]) - (double) (float) sycl::bit_cast<sycl::half>(h_ref[i]));
+        if (diff > h_elem[i]) {
+            printf("  gate/up outside: row %d col %d ref %04x (%.6f) device %04x (%.6f) bound %.3e\n",
+                   (int) (i / (size_t) n_ff), (int) (i % (size_t) n_ff), h_ref[i], (float) sycl::bit_cast<sycl::half>(h_ref[i]),
+                   hg[i], (float) sycl::bit_cast<sycl::half>(hg[i]), h_elem[i]);
+            ++shown;
+        }
+    }
+    for (size_t i = 0, shown = 0; i < yg.size() && shown < 4; ++i) {
+        const double diff = std::fabs((double) yg[i] - (double) y_ref[i]);
+        if (diff > y_elem[i] && diff > y_tile[i]) {
+            printf("  down outside: row %d col %d ref %.6f device %.6f bound %.3e\n", (int) (i / (size_t) n_embd),
+                   (int) (i % (size_t) n_embd), y_ref[i], yg[i], std::fmin(y_elem[i], y_tile[i]));
+            ++shown;
+        }
+    }
+    t.exact += g_exact + d_exact;
+    t.near += g_near + d_near;
+    t.bad += g_bad + d_bad;
+}
+
 const char* kFamilies[] = {"sparse_attn", "gemv_f32", "gemv_f16", "gemv_f16_rows",
                            "hc_pre_norm", "hc_mix_scale", "pred_proj_k", "softmax",
                            "decode_q8_0", "decode_iq4_nl", "decode_mxfp4"};
@@ -1128,7 +1431,7 @@ int main(int argc, char** argv) {
     const char* dump = nullptr;
     bool bad_scale_gu = false, bad_scale_dn = false;
     const char* only = nullptr;
-    bool neg = false;
+    bool neg = false, neg_stageA = false;
     for (int i = 1; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--bad-scale-gu")) bad_scale_gu = true;
         else if (!std::strcmp(argv[i], "--bad-scale")) bad_scale_dn = true;
@@ -1136,12 +1439,26 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--only") && i + 1 < argc) only = argv[++i];
         else if (!std::strcmp(argv[i], "--neg") && i + 1 < argc) only = argv[++i], neg = true;
         else if (!std::strcmp(argv[i], "--weird-scale")) g_weird_scale = true;
+        else if (!std::strcmp(argv[i], "--neg-stageA")) neg_stageA = true;
     }
     try {
         sycl::device dev(sycl::gpu_selector_v);
         sycl::queue q(dev);
         printf("device: %s\n", q.get_device().get_info<sycl::info::device::name>().c_str());
         dpct::queue_ptr s = &q;
+
+        if (neg_stageA) {   // the negative control alone: the reference from the clean blob, one scale byte flipped.
+            // M=17, a non-vacuous shape: the wide M=32 rows fall under the non-vacuity guard, which exits before the
+            // byte is flipped or anything launches - the control would report its own vacuity as a catch.
+            Tally tt;
+            run_stageA_row(q, StageAShape{17, 2560, 640, 2}, true, tt);
+            if (tt.bad == 0) {
+                printf("stageA negative control: NOT CAUGHT - the row failed to fail\n");
+                return 2;
+            }
+            printf("NO MATCH: %d stageA set values outside the bounds after one scale byte was corrupted\n", tt.bad);
+            return 1;
+        }
 
         if (only != nullptr) {
             Tally tt;
@@ -1481,6 +1798,24 @@ int main(int argc, char** argv) {
             near += tt.near;
             bad += tt.bad;
             if (tt.max_diff > max_diff) max_diff = tt.max_diff;
+        }
+
+        {   // The i8 A-stage set tiles (plan todo 5): the sg16 stage-A tile through the dispatch arm, IQ4_NL, at the gate
+            // suite's M list and the K / N tails.  Last in the run: the gate suite records that the legacy set kernels
+            // fault when they launch after the stageA tiles (level_zero error 20), so no legacy set launch follows.
+            const StageAShape shapes[] = {
+                {2, 2560, 640, 2}, {15, 2560, 640, 2}, {16, 2560, 640, 2}, {17, 2560, 640, 2},
+                {31, 2560, 640, 2}, {32, 2560, 640, 2}, {33, 2560, 640, 2}, {160, 2560, 640, 2},
+                {17, 544, 352, 2}, {160, 544, 352, 2}, {17, 128, 128, 2},
+            };
+            for (const StageAShape& sh : shapes) {
+                Tally tt;
+                run_stageA_row(q, sh, false, tt);
+                exact += tt.exact;
+                near += tt.near;
+                bad += tt.bad;
+                if (tt.max_diff > max_diff) max_diff = tt.max_diff;
+            }
         }
 
         if (bad == 0) {
