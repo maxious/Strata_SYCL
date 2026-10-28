@@ -127,7 +127,11 @@ struct StageAArgs {
 };
 /// The i8 A-stage tile: the weights' blocks decoded straight into the XMX A fragments, the activations read from
 /// global memory in the ext_intel_packed layout.  false: a shape the tile does not take (the caller falls back).
-bool stageA_set(const StageAArgs &a, dpct::queue_ptr s);
+/// dep: a command the tile's reads must wait for (the arm chains the tile on the pack that staged the plane);
+/// done: this launch's event, so the arm can chain the plane's next user on it.  Both default: the direct
+/// launches (the stageA gate suite) pass none.
+bool stageA_set(const StageAArgs &a, dpct::queue_ptr s, const sycl::event *dep = nullptr,
+                sycl::event *done = nullptr);
 
 /// GEMV jobs on such matrices (an expert's views on the host-routed path): y[c][r] = alpha (row r . x_c) + bias[r] for
 /// ncol activations, x as int8 rows (xq + c k, scales xd + c k / 32).

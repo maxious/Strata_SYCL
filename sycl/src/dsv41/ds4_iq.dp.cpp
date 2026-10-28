@@ -2073,10 +2073,15 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
             });
     });
 }
-// the i8 A-stage tile's launch (todo 3): the shared block holds the A staging and the Part planes at once
+// the i8 A-stage tile's launch (todo 3): the shared block holds the A staging and the Part planes at once.
+// dep: the command that staged the plane this tile reads - the arm's pack, or the scratch's previous user when
+// the caller launches it directly: the engine's own streams are in-order, but a caller's queue need not be, so
+// the tile never assumes the submission order ran.  done: this launch's event, for the arm's scratch bookkeeping.
 template <int T, bool GATE_UP>
-void launch_stageA(const StageAArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
-    s->submit([&](sycl::handler &cgh) {
+void launch_stageA(const StageAArgs &a, dpct::dim3 grid, dpct::queue_ptr s,
+                   const sycl::event *dep = nullptr, sycl::event *done = nullptr) {
+    sycl::event e = s->submit([&](sycl::handler &cgh) {
+        if (dep != nullptr) cgh.depends_on(*dep);
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
         sycl::local_accessor<unsigned char, 1> smem_acc_ct1(
             sycl::range<1>(GATE_UP ? kSetSmemStageAGu : kSetSmemStageADn), cgh);
@@ -2087,6 +2092,7 @@ void launch_stageA(const StageAArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
                               sycl::range<3>(1, 1, kStageAThreads)),
             set_tc_stageA_wrapper<T, GATE_UP>{a, smem_acc_ct1, tab_acc_ct1});
     });
+    if (done != nullptr) *done = e;
 }
 
 // ---------------------------------------------------------------- the dispatch arm (todo 4)
@@ -2111,15 +2117,20 @@ void stageA_pack_kernel(const StageAArgs a, const int* idx, const float* xf, con
     buf[(size_t) e * (a.bstride / sizeof(sycl::half)) + (size_t) (k >> 1) * (size_t) (a.mpad * 2) +
         (size_t) 2 * r + (k & 1)] = v;
 }
+// dep: the scratch's previous user - the pack overwrites the plane the previous launch's tile read, so on a
+// caller queue that is not in-order it must wait for that tile first.  done: this pack's event, for the tile.
 template <bool GATE_UP>
-void launch_stageA_pack(const StageAArgs &a, const SetArgs &t, sycl::half* buf, dpct::queue_ptr s) {
-    s->submit([&](sycl::handler &cgh) {
+void launch_stageA_pack(const StageAArgs &a, const SetArgs &t, sycl::half* buf, dpct::queue_ptr s,
+                        const sycl::event *dep = nullptr, sycl::event *done = nullptr) {
+    sycl::event e = s->submit([&](sycl::handler &cgh) {
+        if (dep != nullptr) cgh.depends_on(*dep);
         dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
         cgh.parallel_for(sycl::range<3>((size_t) a.n_exp, (size_t) a.mpad, (size_t) a.k),
                          [=](sycl::item<3> it) {
                              stageA_pack_kernel<GATE_UP>(a, t.idx, t.xf, t.xh, t.ldx, buf, it);
                          });
     });
+    if (done != nullptr) *done = e;
 }
 // the B planes' scratch, per stream (as the light sets' LightBuf below): one buffer a (device, queue), grown as
 // the sets need; kStageABufMax is the cap a set's plane may ask for - a bigger set stays on the legacy tiles
@@ -2127,17 +2138,26 @@ constexpr size_t kStageABufMax = (size_t) 512 << 20;   // bytes
 struct StageABuf {
     sycl::half* p = nullptr;
     size_t cap = 0;   // halfs
+    sycl::event last;   // the plane's newest user (a pack or a tile): the next pack overwrites what it reads
+    bool has_last = false;   // (a default sycl::event is empty: nothing may be depended on it)
 };
 std::mutex g_samu;
 std::map<std::pair<int, dpct::queue_ptr>, StageABuf> g_stageA;   // (device, queue): one queue handle per device
-StageABuf *stageA_buf(dpct::queue_ptr s, size_t need_halfs) {
+// the buffer comes back with its previous user's event (prev / has_prev): the caller's pack must depend on it.
+// One scratch a stream: the down set's pack overwrites the head of the plane the gate/up tile is still reading
+// unless it waits, so the route chains every launch on the one before it - the engine's own in-order streams
+// make the chain free, and a caller's out-of-order queue was the B60's run-to-run divergence (task 5).
+StageABuf *stageA_buf(dpct::queue_ptr s, size_t need_halfs, sycl::event *prev, bool *has_prev) {
     dpct::device_ext &dev_ct1 = dpct::get_current_device();
     sycl::queue &q_ct1 = dev_ct1.in_order_queue();
     std::lock_guard<std::mutex> lk(g_samu);
     int dev = dpct::get_current_device_id();
     StageABuf& b = g_stageA[{dev, s}];
     if (b.cap < need_halfs) {
-        if (b.p != nullptr) dpct::dpct_free(b.p, q_ct1);
+        if (b.p != nullptr) {
+            if (b.has_last) b.last.wait();   // the plane's last reader must be done before the free
+            dpct::dpct_free(b.p, q_ct1);
+        }
         b = StageABuf{};
         b.p = (sycl::half *) sycl::malloc_device(need_halfs * sizeof(sycl::half), q_ct1);
         if (b.p == nullptr) {
@@ -2146,7 +2166,14 @@ StageABuf *stageA_buf(dpct::queue_ptr s, size_t need_halfs) {
         }
         b.cap = need_halfs;
     }
+    *prev = b.last;
+    *has_prev = b.has_last;
     return &b;
+}
+void stageA_buf_touched(StageABuf *b, const sycl::event &e) {   // the plane's newest user, for the next pack
+    std::lock_guard<std::mutex> lk(g_samu);
+    b->last = e;
+    b->has_last = true;
 }
 
 // the light sets' int8 rows, per stream (kLightMaxExp kLightRows rows of k)
@@ -2583,7 +2610,7 @@ bool light_down(const SetArgs &a, dpct::queue_ptr s) {
 // The i8 A-stage tile (todo 3): the weights' blocks decoded straight into the XMX A fragments and the activations
 // read from global memory in the ext_intel_packed layout.  The gates (the K a whole number of blocks, the K split's
 // parts, the M rows beyond one) and the launch; the dispatch arm (todo 4) calls it - the tile is opt-in.
-bool stageA_set(const StageAArgs &a, dpct::queue_ptr s) {
+bool stageA_set(const StageAArgs &a, dpct::queue_ptr s, const sycl::event *dep, sycl::event *done) {
     if (a.wbase == nullptr || a.bpack == nullptr || a.bounds == nullptr) return false;
     if (a.n_exp < 1 || a.max_rows < 1) return false;
     if (a.max_rows <= 1) return false;                      // (M = 1: the memory floor, not a tile)
@@ -2598,11 +2625,11 @@ bool stageA_set(const StageAArgs &a, dpct::queue_ptr s) {
                            (unsigned) (a.n_out / kStageAN),
                            (unsigned) a.n_exp);
     if (a.gate_up) {
-#define SA_GU_(T) launch_stageA<T, true>(a, grid, s)
+#define SA_GU_(T) launch_stageA<T, true>(a, grid, s, dep, done)
         DS4_IQ_SWITCH(a.tg, SA_GU_)
 #undef SA_GU_
     } else {
-#define SA_DN_(T) launch_stageA<T, false>(a, grid, s)
+#define SA_DN_(T) launch_stageA<T, false>(a, grid, s, dep, done)
         DS4_IQ_SWITCH(a.tg, SA_DN_)
 #undef SA_DN_
     }
@@ -2666,12 +2693,16 @@ void stageA_log_route(int t) {   // the arm took the type but the route failed a
                   name(t));
     stageA_log_once(g_sa_log_route, line);
 }
-// the arm's route: pack the set's rows into the B plane, then the tile launch (both on the caller's stream, in
-// order).  false: the caller falls back to its legacy tiles (NL: it refuses, as before the arm).
+// the arm's route: pack the set's rows into the B plane, then the tile launch, both on the caller's stream.
+// The two are chained by event (the pack on the scratch's previous user, the tile on the pack): the order holds
+// on the engine's in-order streams either way, and a caller's out-of-order queue cannot interleave them over the
+// one scratch.  false: the caller falls back to its legacy tiles (NL: it refuses, as before the arm).
 bool stageA_route(bool gate_up, const SetArgs &t, dpct::queue_ptr s) {
     const int K = gate_up ? t.n_embd : t.n_ff;
     const int mpad = (t.max_rows + kStageAM - 1) / kStageAM * kStageAM;
-    StageABuf* b = stageA_buf(s, (size_t) t.n_exp * (size_t) K * (size_t) mpad);
+    sycl::event prev;   // the scratch's previous user: the pack must not overwrite a plane still being read
+    bool has_prev = false;
+    StageABuf* b = stageA_buf(s, (size_t) t.n_exp * (size_t) K * (size_t) mpad, &prev, &has_prev);
     if (b == nullptr) return false;
     StageAArgs a{};
     a.wbase = t.wbase; a.stride = t.stride;
@@ -2685,9 +2716,11 @@ bool stageA_route(bool gate_up, const SetArgs &t, dpct::queue_ptr s) {
     a.tg = gate_up ? t.tg : t.td;
     a.gate_up = gate_up;
     a.skip_le = t.skip_le;
-    if (gate_up) launch_stageA_pack<true>(a, t, b->p, s);
-    else launch_stageA_pack<false>(a, t, b->p, s);
-    if (!stageA_set(a, s)) return false;
+    sycl::event packed, done;   // the chain: the pack waits for the scratch's previous user, the tile for the pack
+    if (gate_up) launch_stageA_pack<true>(a, t, b->p, s, has_prev ? &prev : nullptr, &packed);
+    else launch_stageA_pack<false>(a, t, b->p, s, has_prev ? &prev : nullptr, &packed);
+    if (!stageA_set(a, s, &packed, &done)) return false;
+    stageA_buf_touched(b, done);   // the next set's pack waits for this tile's reads
     return true;
 }
 

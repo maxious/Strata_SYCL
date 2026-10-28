@@ -476,8 +476,10 @@ if(STRATA_SYCL_PARITY)
   set_tests_properties(sycl_payload_pairs PROPERTIES ENVIRONMENT "STRATA_SYCL_A770_FAST=1;STRATA_DOORBELL_CHECK=1")   # opt-in paths; publish_res copies x only with the check
   add_executable(xmx_gemm_bench ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_gemm_bench.cpp)   # XMX quantized GEMM vs dequant+oneMKL
   target_link_libraries(xmx_gemm_bench PRIVATE strata_kernels strata_prefill)   # -qmkl for the oneMKL reference
+  add_test(NAME xmx_gemm_bench COMMAND xmx_gemm_bench)   # prints MATCH / NO MATCH; RC 0 when under 0.1% of the elements are outside 1%
   add_executable(xmx_group_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/xmx_group_parity.cpp)   # A770: fused grouped XMX
   target_link_libraries(xmx_group_parity PRIVATE strata_kernels strata_prefill)
+  add_test(NAME xmx_group_parity COMMAND xmx_group_parity)   # prints MATCH / NO MATCH (RC 0 = within tolerance; a JIT build on Battlemage SKIPs with RC 0)
   add_executable(esimd_moe_parity ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/esimd_moe_parity.cpp)   # 151-b70: fused int8 expert products vs dequant+oneMKL and FP64
   target_link_libraries(esimd_moe_parity PRIVATE strata_kernels strata_prefill)
   add_test(NAME esimd_moe_parity COMMAND esimd_moe_parity 60 8 2)   # 151-b70: skips (exit 0) on a device without the s8 8x16x32 DPAS
