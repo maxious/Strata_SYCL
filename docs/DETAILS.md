@@ -1332,3 +1332,149 @@ mean KL from the stock model 0.063 nats (max 4.1), perplexity +15% on code, +2.3
   the original 2,682 in 46 s. Speed: 4K IQ2_XS 465 prompt / 78.7 output tokens/s against 467 / 78.3 for the original.
 - UD-Q4_K_XL on a 64 GB PC with a 12 GB RTX 5070: 7-8.5 tok/s, picks the same tokens as llama.cpp on the same file at 97.5-99% of the
   positions of short greedy answers and 90-91% after a 16K prompt ([UNSLOTH_Q4.md](UNSLOTH_Q4.md#quality-against-llamacpp-on-the-same-file)).
+
+### DeepSeek V4.1-Flash SYCL on Intel Arc Pro B60 (stageA, decode, sharding)
+
+**Measured on:** 2x Intel Arc Pro B60 (Battlemage G21, 22.71 GiB each), oneAPI 2026.2, SYCL engine
+`strata-dsv41` 0.1.51, model DeepSeek-V4.1-Flash-1017-GSQ-RCO (IQ2_XXS, 4 shards, ~138 GB, 40 layers,
+n_embd 2560, n_ff 640, n_exp 384, 6 experts per token). Worktree branch `dsv41-trellis-w2`.
+
+The stageA tile path (joint_matrix A-stage, `STRATA_XMX_SG16=1`, AOT `bmg-g21`) is parity-clean on both
+build flavors. The gate suite (G1-G5, G7) matched on gateAOT and gateJIT with RC 0, and the negative
+control (G6) was caught with RC 1. At small batch sizes (M=2, 16, 32) the stageA tile is faster than the
+legacy f16 tile. At M=160, the target batch size, it is slower. The default stays off.
+
+**StageA kernel timing (AOT, GPU 0, reps 50, n_ff=512 unless noted):**
+
+| M | stageA gate/up (us) | legacy gate/up (us) | stageA down (us) | legacy down (us) |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 145.0 | 234.9 | 65.8 | 96.8 |
+| 16 | 177.9 | 179.3 | 64.2 | 67.6 |
+| 32 | 98.4 | 177.8 | 80.0 | 80.0 |
+| 160 | 360.1 | 280.1 | 180.3 | 178.9 |
+| 160 (n_ff=640) | 399.3 | 347.4 | 176.3 | REFUSED |
+
+The legacy path refuses n_ff=640 because 640 is not divisible by 256 (its guard requires it). The
+stageA tile handles n_ff=640, which is the model's real value.
+
+**StageA kernel timing (AOT, GPU 1, same conditions):**
+
+| M | stageA gate/up (us) | legacy gate/up (us) | stageA down (us) | legacy down (us) |
+| ---: | ---: | ---: | ---: | ---: |
+| 2 | 143.5 | 253.7 | 25.0 | 66.0 |
+| 16 | 80.1 | 171.3 | 25.3 | 65.5 |
+| 32 | 71.9 | 171.3 | 25.9 | 66.0 |
+| 160 | 311.2 | 237.8 | 124.4 | 131.3 |
+| 160 (n_ff=640) | 385.5 | 296.1 | 154.3 | REFUSED |
+
+On GPU 1 the stageA tile is faster at M=2 through M=32 (43-62% faster on gate/up, 61-62% on down) but
+15-31% slower on gate/up at M=160. The down matrix is tied or marginally faster at M=160 on GPU 1.
+
+**StageA kernel timing (JIT, scalar stand-in, no joint_matrix):** The stageA scalar stand-in is
+5-10x slower than legacy. At M=160 n_ff=512: gate/up 6220 us vs 841 us, down 3980 us vs 628 us. This is
+expected without joint_matrix and confirms the AOT XMX path is the production-relevant form.
+
+**Gap: stageA slower at M=160, default stays off.** The stageA tile is 15-31% slower than the legacy
+f16 tile for gate/up at M=160 on both cards. The plan's IS-1 requires faster prompt-path expert FFN
+matmuls at M>1, and at M=160 the flag-on path is slower. The stageA kernel remains available opt-in
+for small-batch workloads (M<=32) where it is faster. The dispatch arm that would route to it is not
+yet landed in the production path.
+
+**Decode tok/s (prebuilt JIT engine, legacy path, fixed 1-sentence prompt, 24 tokens):** One card:
+0.84 tok/s (24 tokens in 27324 ms, RC 0). Two cards (`--gpus 0,1 --experts 5`): 1.28 tok/s (24 tokens
+in 17983 ms, RC 0). The stageA kernel is not in the production dispatch path, so these are baseline
+legacy path speeds.
+
+**Two-card sharding (B60 pair, prebuilt JIT engine, fixed prompt, 9 tokens, `--experts 5`):** One
+card 1.41 tok/s (5692 ms), two cards 4.10 tok/s (1951 ms), a 2.9x speedup. The engine splits layers
+across the cards: CUDA0 holds layers [0,20] with 2277 of 8064 experts in VRAM, CUDA1 holds layers
+[21,39]+head with 2089 of 7296. No silent single-card fallback. With the default auto experts-per-word
+rule (top-6 on the larger two-card VRAM), the model's greedy first token is EOS for this prompt.
+Forcing `--experts 5` reproduces the one-card answer. This is a sampling difference, not a sharding
+defect.
+
+**VRAM residency (B60 pair, fresh JIT build, `--experts 5 --dspark off`, fixed prompt, 8 tokens):**
+Resident (default `--vram-experts 1.0`, 1807 of 15360 experts in VRAM, 15.88 GB): 1.55 tok/s (4526/4524
+ms on two runs). Non-resident (`--vram-experts 0.15`, 221 of 15360 in VRAM, 2.23 GB): 0.84 tok/s
+(8372/8378 ms). The delta is 0.71 tok/s, a 46% drop. The CPU lane computes 214/204 of 1400 experts
+(15%) when resident and 1148/1137 of 1400 (82%) when non-resident. CPU-lane time rises from 30.12 to
+81.89 ms per token; head wait from 610 to 1161 ms. The RAM store auto-sized to 110.2 GB of the 114.4
+asked, so the thrash is CPU-lane recompute, not SSD churn. Coverage limit: measured at the engine
+surface (`strata-dsv41 --ids`), not through `strata launch --serve`, because the Terminal's hardware
+scan does not see the B60 cards for the `deepseek41` family on this rig. The SYCL engine itself sees
+and uses both cards.
+
+**Window crossover (B60, JIT + AOT bmg-g21, reps 100, n_embd 2560, n_ff 640, MXFP4):** The light
+path (`light_gate_up`/`light_down`) is ineligible for this model. Its guard requires `n_ff % 256 == 0`,
+but n_ff=640 gives a remainder of 128. Both functions returned false at T=8 and T=16 in both build
+flavors. The tile path works and produces nonzero output.
+
+| Build | T | tile gate/up (us) | tile down (us) |
+| --- | ---: | ---: | ---: |
+| JIT | 8 | 884.6 | 218.3 |
+| JIT | 16 | 762.1 | 157.7 |
+| AOT | 8 | 424.0 | 55.1 |
+| AOT | 16 | 251.9 | 55.8 |
+
+No crossover can be adopted: the light path cannot serve the model at any T.
+
+**Gate GEMV i8 (B60, AOT bmg-g21, n_exp=256, D=2560, T=1, reps 200/500):** Int8 weights read
+666,624 bytes vs F32's 2,631,680, a 3.95x reduction (ratio 0.2533). Timing is noise-level at M=1:
+run 1 i8 16.967 us vs F32 18.689 us (1.10x), run 2 i8 17.632 us vs F32 16.631 us (0.94x). The two are
+within measurement noise for a 2.5 MB weight read. Bit-identical output: 0 of 256 match, max abs
+diff 0.942. The F32 kernel matches its CPU reference 200/256 (max diff 2.44e-04); the i8 kernel
+matches its own 188/256. Per-row int8 quantization cannot produce bit-identical answers. Nothing
+adopted.
+
+**Gate+up launch fusion (B60 pair, prebuilt JIT + AOT bmg-g21, `xmx_gemm_bench` mode=gu, reps 50):**
+Static analysis of the shipped code shows gate and up are already fused into one kernel
+(`gate_up_kernel`, a single `s->submit`). There is no separate gate launch followed by an up launch.
+There is no unfused variant to measure, so no gain can be attributed to fusion. The per-token launch
+count is 7 SYCL kernel launches per MoE layer per decode token: gemv_f32 (router gate), route (MoE
+topk), q8_quant (activation), gate_up_kernel (fused gate+up), q8_quant (hidden), down_kernel,
+mx_combine_kernel.
+
+The fused gate+up GEMM was measured at decode-relevant M values:
+
+| Build | M | xmx time (ms) | xmx GFLOP/s |
+| --- | ---: | ---: | ---: |
+| JIT | 1 | 0.449 | 15 |
+| JIT | 8 | 0.548 | 96 |
+| JIT | 16 | 0.283 | 371 |
+| JIT | 160 | 0.341 | 3077 |
+| AOT | 1 | 0.530 | 12 |
+| AOT | 16 | 0.265 | 395 |
+| AOT | 160 | 0.424 | 2475 |
+
+**Trellis A-stage probe (B60, JIT SPIR-V, oneAPI 2026.2, 512 rows x 2048 k x 16 entries, min of
+100 event-timed invocations):** A joint_matrix A-stage tile is feasible for the trellis block types
+on this stack. One 128-value block is 8 joint_matrix 16x16x16 K-steps, with weights staged in SLM as
+fp16 and activations split hi/lo fp16.
+
+| Type | portable-FMA (us) | joint_matrix (us) | speedup |
+| --- | ---: | ---: | ---: |
+| TQK6 | 782.7 | 371.2 | 2.11x |
+| TQK7 | 824.5 | 381.1 | 2.16x |
+| TQK5X | 778.6 | 366.9 | 2.12x |
+| TQK4X | 759.5 | 354.1 | 2.14x |
+| TQK5T | 774.5 | 380.7 | 2.03x |
+| TQK4T | 835.9 | 367.4 | 2.28x |
+
+Correctness: the joint_matrix tile matches the F32 host contract within maxabs 0.062 (2.0e-4
+relative). The portable-FMA lane matches within maxabs 3.66e-4 (1.4e-6 relative). The decode
+(stream window to 15-bit state to codebook word) was re-verified bit-exact against the production
+lane for all six types.
+
+**Hazard note: sub-group size.** The portable-FMA lane's block reduction uses
+`dpct::permute_sub_group_by_xor` with logical size 32, which is only inside dpct's documented contract
+on a sub-group of at least 32. The B60 exposes sub-group sizes {16, 32}. With no launch property the
+build picks 16 and the lane produces garbage (maxabs inf against the host contract) at 239-247 us.
+Forcing `sub_group_size<32>` makes it exact at 760-836 us. Any adoption comparison must pin the
+sub-group size explicitly. The shipped `ds4_tq.dp.cpp` kernel's effective sub-group size on this stack
+was not tested. Measurement only: nothing adopted, no source file touched.
+
+Evidence: every number above is captured in the evidence logs under
+`.omo/evidence/dsv41-trellis-sg16-perf/` (`task-6-b60-measurement.log`, `task-7-vram-residency.log`,
+`task-8-two-card-sharding.log`, `task-9-window-crossover.log`, `task-10-gate-gemv-i8.log`,
+`task-11-launch-fusion.log`, `task-13-trellis-a-stage-probe.log`). The mapping from each number to its
+evidence-log line is in `task-12-dsv41-trellis-sg16-perf.log` in the same directory.
