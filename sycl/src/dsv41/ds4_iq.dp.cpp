@@ -1307,7 +1307,7 @@ void set_tc_stageA_kernel(const StageAArgs a, unsigned char *smem, uint32_t *tab
     const int nr = hi - lo;
     const int n0 = item_ct1.get_group(1) * kStageAN;   // the tile's weight rows
     const int m0 = item_ct1.get_group(2) * kStageAM;   // the tile's activation rows
-    if (nr <= 0 || m0 >= nr || n0 >= a.n_out) return;   // (uniform in the work-group: the barriers below)
+    if (nr <= a.skip_le || m0 >= nr || n0 >= a.n_out) return;   // (uniform in the work-group: the barriers below; skip_le: the light kernels' experts)
     load_tab<T>(tab);
     // the codebook is in shared memory now (load_tab: tid < 4 writes it).  set_tc_kernel carries exactly this
     // barrier between its load_tab and the first deq8 read; it was missing here, and a deq8 that ran before the
@@ -2089,6 +2089,66 @@ void launch_stageA(const StageAArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
     });
 }
 
+// ---------------------------------------------------------------- the dispatch arm (todo 4)
+// The B plane's pack: the set's activation rows staged into the ext_intel_packed layout the tile reads straight from
+// global memory (the todo-1 bijection: the plane's element (k, m) at (k / 2) * mpad * 2 + 2 m + (k & 1) halfs, the
+// plane's row stride mpad * 2, an expert's plane bstride bytes apart).  Gate / up: the row idx[local] of xf rounded
+// to F16 (the legacy tile's own rounding of the same row); down: the local row of xh's F16 bits verbatim.  The light
+// kernels' experts (at most skip_le rows) and the padding rows stay zero: the tile never reads them (its experts all
+// have more rows than skip_le, and its output stores stop at the expert's rows).
+template <bool GATE_UP>
+void stageA_pack_kernel(const StageAArgs a, const int* idx, const float* xf, const uint16_t* xh,
+                        int ldx, sycl::half* buf, sycl::item<3> it) {
+    const int e = (int) it.get_id(0), r = (int) it.get_id(1), k = (int) it.get_id(2);
+    const int lo = a.bounds[e] - a.row0, hi = a.bounds[e + 1] - a.row0;
+    if (hi - lo <= a.skip_le) return;   // (the light kernels took this expert's rows)
+    sycl::half v = sycl::half(0.0f);
+    if (r < hi - lo) {
+        if (GATE_UP) v = sycl::vec<float, 1>(xf[(size_t) idx[lo + r] * ldx + k])
+                          .convert<sycl::half, sycl::rounding_mode::rte>()[0];
+        else v = sycl::bit_cast<sycl::half, unsigned short>(xh[(size_t) (lo + r) * ldx + k]);
+    }
+    buf[(size_t) e * (a.bstride / sizeof(sycl::half)) + (size_t) (k >> 1) * (size_t) (a.mpad * 2) +
+        (size_t) 2 * r + (k & 1)] = v;
+}
+template <bool GATE_UP>
+void launch_stageA_pack(const StageAArgs &a, const SetArgs &t, sycl::half* buf, dpct::queue_ptr s) {
+    s->submit([&](sycl::handler &cgh) {
+        dpct::has_capability_or_fail(s->get_device(), {sycl::aspect::fp16});
+        cgh.parallel_for(sycl::range<3>((size_t) a.n_exp, (size_t) a.mpad, (size_t) a.k),
+                         [=](sycl::item<3> it) {
+                             stageA_pack_kernel<GATE_UP>(a, t.idx, t.xf, t.xh, t.ldx, buf, it);
+                         });
+    });
+}
+// the B planes' scratch, per stream (as the light sets' LightBuf below): one buffer a (device, queue), grown as
+// the sets need; kStageABufMax is the cap a set's plane may ask for - a bigger set stays on the legacy tiles
+constexpr size_t kStageABufMax = (size_t) 512 << 20;   // bytes
+struct StageABuf {
+    sycl::half* p = nullptr;
+    size_t cap = 0;   // halfs
+};
+std::mutex g_samu;
+std::map<std::pair<int, dpct::queue_ptr>, StageABuf> g_stageA;   // (device, queue): one queue handle per device
+StageABuf *stageA_buf(dpct::queue_ptr s, size_t need_halfs) {
+    dpct::device_ext &dev_ct1 = dpct::get_current_device();
+    sycl::queue &q_ct1 = dev_ct1.in_order_queue();
+    std::lock_guard<std::mutex> lk(g_samu);
+    int dev = dpct::get_current_device_id();
+    StageABuf& b = g_stageA[{dev, s}];
+    if (b.cap < need_halfs) {
+        if (b.p != nullptr) dpct::dpct_free(b.p, q_ct1);
+        b = StageABuf{};
+        b.p = (sycl::half *) sycl::malloc_device(need_halfs * sizeof(sycl::half), q_ct1);
+        if (b.p == nullptr) {
+            std::fprintf(stderr, "ds4 iq: the stageA B plane's scratch (%zu MB) failed\n", need_halfs * 2 >> 20);
+            return nullptr;
+        }
+        b.cap = need_halfs;
+    }
+    return &b;
+}
+
 // the light sets' int8 rows, per stream (kLightMaxExp kLightRows rows of k)
 struct LightBuf {
     int8_t* q = nullptr;
@@ -2549,14 +2609,104 @@ bool stageA_set(const StageAArgs &a, dpct::queue_ptr s) {
     return true;
 }
 
+// The dispatch arm (todo 4, GAP-3): the eligible types' sets to the i8 A-stage tile, the packed B plane staged from
+// the set's own inputs first.  STRATA_DS4_NO_STAGEA=1 kills the arm (every set on the legacy tiles, the reason logged
+// once); the eligibility mask holds a type only when its parity row exists - IQ4_NL: the todo-3 stageA gate suite
+// (ds4_stageA_gate.cpp, G1-G5 on the B60) drives it and no registered ds4_parity row runs NL through the set path
+// (the legacy tiles refuse it: the arm is NL's only route).  IQ4_XS keeps the legacy tiles until todo 5 registers the
+// stageA output rows - routing it now would move ds4_parity's registered XS set row, and the suite must stay
+// byte-identical with the arm on.  The arm decides before anything launches: a shape it does not take leaves the
+// legacy path (guards and all) exactly as it was.
+bool stageA_on() {   // STRATA_DS4_NO_STAGEA=1: every set through the legacy tiles (as tc_ok / light_on)
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_DS4_NO_STAGEA");
+        return !(v != nullptr && v[0] == '1');
+    }();
+    return on;
+}
+bool stageA_eligible(int t) {   // the mask: a type enters the tile path only when its parity row exists
+    return t == kIQ4_NL;
+}
+std::atomic<bool> g_sa_log_off{false}, g_sa_log_route{false}, g_sa_log_ilg[256]{};
+void stageA_log_once(std::atomic<bool>& flag, const char* line) {
+    bool e = false;
+    if (flag.compare_exchange_strong(e, true)) std::fprintf(stderr, "ds4 iq: stageA: %s\n", line);
+}
+// the arm's decision for one set (the reasons logged once, the light scratch's failure-line form)
+bool stageA_take(bool gate_up, const SetArgs &a) {
+    if (!stageA_on()) {
+        stageA_log_once(g_sa_log_off, "off (STRATA_DS4_NO_STAGEA): the sets take the legacy tiles");
+        return false;
+    }
+    const int t = gate_up ? a.tg : a.td;
+    if (!stageA_eligible(t)) {
+        bool e = false;
+        if (g_sa_log_ilg[t & 255].compare_exchange_strong(e, true)) {
+            char line[160];
+            std::snprintf(line, sizeof line, "%s has no stageA parity row: the sets take the legacy tiles", name(t));
+            std::fprintf(stderr, "ds4 iq: stageA: %s\n", line);
+        }
+        return false;
+    }
+    // the tile's own host gates (stageA_set re-checks them): a shape the tile does not take launches nothing
+    const int K = gate_up ? a.n_embd : a.n_ff, N = gate_up ? a.n_ff : a.n_embd;
+    if (a.wbase == nullptr || a.bounds == nullptr) return false;
+    if (gate_up ? (a.xf == nullptr || a.idx == nullptr) : a.xh == nullptr) return false;
+    if (gate_up ? a.h == nullptr : a.y == nullptr) return false;
+    if (a.n_exp < 1 || a.max_rows <= 1) return false;   // (M = 1: the memory floor, not a tile)
+    if (K % kStageABlk != 0 || K / kStageABlk < kStageASplit) return false;
+    if (N % kStageAN != 0) return false;
+    const long long mpad = (a.max_rows + kStageAM - 1) / kStageAM * (long long) kStageAM;
+    if ((long long) a.n_exp * K * mpad * 2 > (long long) kStageABufMax) return false;   // the packed plane's scratch
+    return true;
+}
+void stageA_log_route(int t) {   // the arm took the type but the route failed after the host gates
+    char line[160];
+    std::snprintf(line, sizeof line, "%s: the packed plane's scratch or the launcher refused: back on the legacy tiles",
+                  name(t));
+    stageA_log_once(g_sa_log_route, line);
+}
+// the arm's route: pack the set's rows into the B plane, then the tile launch (both on the caller's stream, in
+// order).  false: the caller falls back to its legacy tiles (NL: it refuses, as before the arm).
+bool stageA_route(bool gate_up, const SetArgs &t, dpct::queue_ptr s) {
+    const int K = gate_up ? t.n_embd : t.n_ff;
+    const int mpad = (t.max_rows + kStageAM - 1) / kStageAM * kStageAM;
+    StageABuf* b = stageA_buf(s, (size_t) t.n_exp * (size_t) K * (size_t) mpad);
+    if (b == nullptr) return false;
+    StageAArgs a{};
+    a.wbase = t.wbase; a.stride = t.stride;
+    a.tr[0] = t.tr[0]; a.tr[1] = t.tr[1]; a.tr[2] = t.tr[2];
+    a.bounds = t.bounds; a.row0 = t.row0; a.max_rows = t.max_rows; a.n_exp = t.n_exp;
+    a.n_out = gate_up ? t.n_ff : t.n_embd;
+    a.k = K;
+    a.bpack = b->p; a.bstride = (size_t) K * mpad * 2; a.mpad = mpad;
+    a.limit = t.limit;
+    a.h = t.h; a.y = t.y; a.ldo = t.ldo;
+    a.tg = gate_up ? t.tg : t.td;
+    a.gate_up = gate_up;
+    a.skip_le = t.skip_le;
+    if (gate_up) launch_stageA_pack<true>(a, t, b->p, s);
+    else launch_stageA_pack<false>(a, t, b->p, s);
+    if (!stageA_set(a, s)) return false;
+    return true;
+}
+
 bool set_gate_up(const SetArgs &a, dpct::queue_ptr s) {
     if (is_tq(a.tg)) return tq::set_gate_up(a, s);
-    if (a.tg == kIQ4_NL) return false;   // (32-value blocks: no set-tile parity row drives IQ4_NL yet)
-    if (a.n_embd % 256 != 0 || a.n_ff % BN != 0) return false;
+    const bool take = stageA_take(true, a);   // (the arm decides before anything launches: a refused shape leaves the legacy path whole)
+    if (!take) {
+        if (a.tg == kIQ4_NL) return false;   // (32-value blocks: no set-tile parity row drives IQ4_NL - the arm is its only route)
+        if (a.n_embd % 256 != 0 || a.n_ff % BN != 0) return false;
+    }
     SetArgs t = a;
     if (light_gate_up(a, s)) {   // the experts of a few rows; the tiles the others
         if (a.max_rows <= kLightRows) return true;
         t.skip_le = kLightRows;
+    }
+    if (take && stageA_route(true, t, s)) return true;
+    if (take) {   // the scratch failed, or the launcher refused what the host gates passed (never the legacy tiles for NL)
+        stageA_log_route(a.tg);
+        if (a.tg == kIQ4_NL) return false;
     }
     const dpct::dim3 grid((unsigned)((a.max_rows + BM - 1) / BM),
                           (unsigned)(a.n_ff / BN), (unsigned)a.n_exp);
@@ -2568,12 +2718,20 @@ bool set_gate_up(const SetArgs &a, dpct::queue_ptr s) {
 
 bool set_down(const SetArgs &a, dpct::queue_ptr s) {
     if (is_tq(a.td)) return tq::set_down(a, s);
-    if (a.td == kIQ4_NL) return false;   // (32-value blocks: no set-tile parity row drives IQ4_NL yet)
-    if (a.n_ff % 256 != 0 || a.n_embd % BN != 0) return false;
+    const bool take = stageA_take(false, a);
+    if (!take) {
+        if (a.td == kIQ4_NL) return false;   // (32-value blocks: no set-tile parity row drives IQ4_NL - the arm is its only route)
+        if (a.n_ff % 256 != 0 || a.n_embd % BN != 0) return false;
+    }
     SetArgs t = a;
     if (light_down(a, s)) {
         if (a.max_rows <= kLightRows) return true;
         t.skip_le = kLightRows;
+    }
+    if (take && stageA_route(false, t, s)) return true;
+    if (take) {
+        stageA_log_route(a.td);
+        if (a.td == kIQ4_NL) return false;
     }
     const dpct::dim3 grid((unsigned)((a.max_rows + BM - 1) / BM),
                           (unsigned)(a.n_embd / BN), (unsigned)a.n_exp);
