@@ -639,6 +639,7 @@ class gate_up_wrapper {
     gate_up_wrapper(const Args &a_, sycl::local_accessor<uint32_t, 1> l, sycl::local_accessor<int, 1> e,
                     sycl::local_accessor<int, 1> x)
         : a(a_), lut(l), ent(e), xr(x) {}
+    [[sycl::reqd_sub_group_size(32)]]
     void operator()(sycl::nd_item<3>) const {
         gate_up_kernel<K, COMPUTED, WORDS>(a,
             lut.get_multi_ptr<sycl::access::decorated::no>().get(),
@@ -653,6 +654,7 @@ class down_wrapper {
   public:
     down_wrapper(const Args &a_, sycl::local_accessor<uint32_t, 1> l, sycl::local_accessor<int, 1> e)
         : a(a_), lut(l), ent(e) {}
+    [[sycl::reqd_sub_group_size(32)]]
     void operator()(sycl::nd_item<3>) const {
         down_kernel<K, COMPUTED, WORDS>(a,
             lut.get_multi_ptr<sycl::access::decorated::no>().get(),
@@ -666,6 +668,7 @@ class set_wrapper {
   public:
     set_wrapper(const SetArgs &a_, sycl::local_accessor<uint32_t, 1> l, sycl::local_accessor<int, 1> r)
         : a(a_), lut(l), rowsel(r) {}
+    [[sycl::reqd_sub_group_size(32)]]
     void operator()(sycl::nd_item<3>) const {
         set_kernel<K, COMPUTED, GATE_UP, WORDS>(a,
             lut.get_multi_ptr<sycl::access::decorated::no>().get(),
@@ -679,6 +682,7 @@ class mv_wrapper {
   public:
     mv_wrapper(const MvJob &j_, sycl::local_accessor<uint32_t, 1> l, sycl::local_accessor<int, 1> c)
         : j(j_), lut(l), cols(c) {}
+    [[sycl::reqd_sub_group_size(32)]]
     void operator()(sycl::nd_item<3>) const {
         mv_kernel<K, COMPUTED, WORDS>(j,
             lut.get_multi_ptr<sycl::access::decorated::no>().get(),
