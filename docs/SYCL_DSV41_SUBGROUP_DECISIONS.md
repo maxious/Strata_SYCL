@@ -78,8 +78,8 @@ built and no run of that kernel is in this round's logs.
 
 | Kernel Class | File | Line | reqd Size | Rationale | Device Verified |
 | --- | --- | --- | --- | --- | --- |
-| ds4_tq tile_dot | ds4_tq.dp.cpp | 291 | 32 | Mask 16, one step of the pair swap. No pin at HEAD: `gate_up_wrapper` (:695) and `down_wrapper` (:708) launch without one. Checkbox 1.2 adds them. | compile-only (w1-aot.log) |
-| ds4_tq tile_dot | ds4_tq.dp.cpp | 294 | 32 | Mask 16, the second operand of the same step. `set_wrapper` (:721) and `mv_wrapper` (:734) also launch unpinned at HEAD. | compile-only (w1-aot.log) |
+| ds4_tq tile_dot | ds4_tq.dp.cpp | 291 | 32 | Mask 16, one step of the pair swap. All four tq wrappers are pinned `[[sycl::reqd_sub_group_size(32)]]`: `gate_up_wrapper` at `ds4_tq.dp.cpp:642`, `down_wrapper` at :657, `set_wrapper` at :671, `mv_wrapper` at :685. Those are the pin lines at the integration tip 7bd2f17d (`git show 7bd2f17d:sycl/src/dsv41/ds4_tq.dp.cpp | grep -n reqd_sub_group_size` -> 642, 657, 671, 685); `:695`, `:708`, `:721`, `:734` are the four `parallel_for` launch lines, not pins. This wave-2 worktree carries no tq pin yet (`grep -n reqd_sub_group_size sycl/src/dsv41/ds4_tq.dp.cpp` -> rc 1); checkbox 1.2 brings the four pins here. | compile-only (w1-aot.log) |
+| ds4_tq tile_dot | ds4_tq.dp.cpp | 294 | 32 | Mask 16, the second operand of the same step. Covered by the same four pins - `reqd(32)` at `ds4_tq.dp.cpp:642`, :657, :671 and :685, one per wrapper (`gate_up_wrapper`, `down_wrapper`, `set_wrapper`, `mv_wrapper`). | compile-only (w1-aot.log) |
 | ds4_iq warp_sum | ds4_iq.dp.cpp | 654 | 32 | Masks 16..1. The launches pin 32 at HEAD: `mv_kernel` (:2354, :2369, :2384), `light_q8_kernel` (:2317), `light_kernel_rows` (:2259, :2277, :2293). | B60 run (w1-u-parity.log) |
 | ds4_iq lanes_sum | ds4_iq.dp.cpp | 694 | 32 | Masks 16/RW down to 1. `kGuRW` is 1, so the gate and up path reaches mask 16 and needs 32; `kDnRW` is 2, so the down path stops at 8. Both launches pin 32 anyway: `gate_up_kernel` (:1867, :1892), `down_kernel` (:1927, :1950). | compile-only (w1-aot.log) |
 | ds4_iq light_q8_kernel | ds4_iq.dp.cpp | 1587 | 32 | Masks 16..1, the Q8 scale's max. The launch pins 32 at HEAD (:2317). | compile-only (w1-aot.log) |
@@ -164,7 +164,30 @@ rejected by `ocloc`. `w1-b5-ninja.log` built `ds4_gguf.dp.cpp`, `ds4_softmax.dp.
 succeeded`.
 
 No row here is claimed as device verified for the two `ds4_tq` gap rows. The `tq` harness needs a model file and
-was not run in this round's logs, so those rows stay compile-only until a run lands.
+was not run in this round's logs, so those rows stay compile-only until a run lands.  The four tq wrappers are
+pinned `[[sycl::reqd_sub_group_size(32)]]` at `ds4_tq.dp.cpp:642`, :657, :671 and :685 - `gate_up_wrapper`,
+`down_wrapper`, `set_wrapper` and `mv_wrapper`, one pin each - at the integration tip 7bd2f17d.  This branch has
+no tq pin yet: `grep -n reqd_sub_group_size sycl/src/dsv41/ds4_tq.dp.cpp` -> rc 1.  No run of a pinned tq kernel
+is in this round's logs either, so the pinned rows are compile-only as well.
+
+## The staged opt-in switch (`STRATA_XMX_F16_STAGE`)
+
+`STRATA_XMX_F16_STAGE=1` is a runtime switch for the IQ4_XS set tiles in `ds4_iq.dp.cpp`. Set it before the program
+starts. With it on, the gate/up tiles split each activation row into its F16 value and the bits the F16 rounding
+dropped, and run the two multiplies into the same F32 accumulator. It is off by default, so the normal launch is the
+one this branch shipped before. It does nothing unless the build carries the staged kernel, and only the AOT build
+for `bmg-g21` carries it (`STRATA_XMX_SG16=ON`); the JIT build has none.  The gate that turns it on is
+`sycl/CMakeLists.txt:40-41`, which fires for an AOT device starting with `bmg` or `lnl`; `bmg-g21` is the
+device this PC has, and it is the only build whose staged instantiation was run.  The down rows arrive as
+F16 bits, so their residual is zero and the switch leaves them as they were.
+
+Measured on this PC's Intel Arc Pro B60 on 2026-10-29, with the bmg-g21 AOT artifact of this branch and
+`ds4_parity --only iq_set_tc`: gate/up goes from 1792/8192 bits exact to 7936/8192 at `n_embd=256 n_ff=256`, and
+from 2048/8192 to 8192/8192 at `n_embd=512 n_ff=256`.  Both legs report 0 values outside (rel 2.0e-4, floor 1.0e-3),
+and the down rows keep their default counts, 1024/8192 and 2048/16384
+(`w2-parity-aot-default.log`, `w2-parity-aot-staged.log`).  The controls still fail on purpose: `--bad-scale-gu`
+lands 32 values outside on the 256-wide row and 31 on the 512-wide one, and `--bad-scale` lands 32 on each down row
+(`w2-parity-aot-bad-scale-gu-staged.log`, `w2-parity-aot-bad-scale-staged.log`).
 
 One note on the harness verdict: `ds4_parity` exits 1 in both builds, `NO MATCH: 3 values outside one BF16 ulp`, in
 the `stageA` sets at M = 16 and M = 17. Those are the XMX `reqd(16)` tiles, not a sub-group reduction, and the same
