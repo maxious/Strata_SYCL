@@ -183,6 +183,14 @@ struct Rng {
     }
 };
 
+// Deterministic per-index byte for the iq_set_tc rows below: the same value on every run, so the staged and
+// default legs of that family can be diffed body-for-body.
+uint8_t rng_next(size_t i) {
+    unsigned long long s = i * 6364136222842883251ull + 0x20261029ull;
+    s = s * 6364136222842883251ull + 1442695040888963407ull;
+    return (uint8_t) ((s >> 33) & 0xFF);
+}
+
 // The block's scale fields get small finite fp16 values (random bits could land on NaN or huge scales); the quants and
 // 6-bit scale pairs stay seeded-random.
 void fill_block(int type, uint8_t* row, Rng& rng) {
@@ -394,9 +402,22 @@ float iq_dot(const BStrips& s, int n, const float* x, int K) {
 
 // gate/up: h[r][c] = F16 (rte) clamped swiglu of the two dots, as the tile kernel's store:
 // ds4_gguf.cu:800 above (and ds4_iq.dp.cpp's set_tc_kernel store, sycl::vec<>::convert rte).
+// x_f16 says whether the inputs are rounded to F16 first.  The MXFP4 tiles take F16 inputs, so their rows pass true.
+// The IQ4_XS rows pass false: set_kernel, the light path, keeps a.xf as fp32 (ds4_iq.dp.cpp:959-961), and the tile
+// kernel rounds it to F16 (rte) at :1162-1168 - a per-term loss of at most half an F16 ulp, which over 512 terms
+// stays inside this family's tolerance (rel 2.0e-4, floor 1.0e-3), so one reference serves both the default and the
+// staged leg, where the staged kernel hands the tile the fp32 value again (:1174-1188, gate/up rows only).  Measured
+// on this PC's Intel Arc Pro B60 with this branch's bmg-g21 AOT artifact: the two legs do NOT report the same counts.
+// The staged leg makes far more bits exact - gate/up 1792/8192 to 7936/8192 at n_embd=256, 2048/8192 to 8192/8192 at
+// n_embd=512 - while both legs report 0 values outside, and the down rows keep their default counts (1024/8192,
+// 2048/16384).  --bad-scale-gu still lands outside on the staged leg: 32 values on the 256-wide row, 31 on the
+// 512-wide one.  Logs: w2-parity-aot-default.log, w2-parity-aot-staged.log, w2-parity-aot-bad-scale-gu-staged.log.
 void ref_iq_set_gate_up(const uint8_t* blob, size_t tr0, size_t tr1, const float* x, int ldx, const int* idx,
-                        int n_embd, int n_ff, float limit, int r0, int r1, uint16_t* h, int ldh) {
-    const size_t rb = (size_t) strata::ds4::gguf::iq::block_bytes(strata::ds4::gguf::iq::kIQ4_XS);
+                        int n_embd, int n_ff, float limit, int r0, int r1, uint16_t* h, int ldh, bool x_f16 = true) {
+    // A gate/up weight row covers the whole K = n_embd, so it holds n_embd / 256 IQ4_XS blocks, and the kernel
+// reads a row at row_bytes_t<T>(K) = (K / kQK<T>) * Ty<T>::B (ds4_iq.dp.cpp:69, kQK 256 for IQ4_XS at :59).
+    // block_bytes() is one block, so it is the row size only when K is one block wide.
+    const size_t rb = strata::ds4::gguf::iq::row_bytes(strata::ds4::gguf::iq::kIQ4_XS, n_embd);
     BStrips sg, su;
     sg.init(n_embd, n_ff);
     su.init(n_embd, n_ff);
@@ -408,7 +429,8 @@ void ref_iq_set_gate_up(const uint8_t* blob, size_t tr0, size_t tr1, const float
     for (int r = r0; r < r1; ++r) {
         const int src = idx[r];
         for (int k = 0; k < n_embd; ++k)
-            xk[k] = static_cast<float>(sycl::bit_cast<sycl::half>(f16_rn(x[(size_t) src * ldx + k])));
+            xk[k] = x_f16 ? static_cast<float>(sycl::bit_cast<sycl::half>(f16_rn(x[(size_t) src * ldx + k])))
+                          : x[(size_t) src * ldx + k];
         for (int c = 0; c < n_ff; ++c) {
             float gg = iq_dot(sg, c, xk.data(), n_embd), uu = iq_dot(su, c, xk.data(), n_embd);
             if (limit > 0.0f) {
@@ -424,7 +446,9 @@ void ref_iq_set_gate_up(const uint8_t* blob, size_t tr0, size_t tr1, const float
 // down: y[r][c] = the raw F32 sums (the kernel's y store rounds nothing).
 void ref_iq_set_down(const uint8_t* blob, size_t tr2, const uint16_t* xh, int ldx, int n_embd, int n_ff,
                      int r0, int r1, float* y, int ldy) {
-    const size_t rb = (size_t) strata::ds4::gguf::iq::block_bytes(strata::ds4::gguf::iq::kIQ4_XS);
+    // A down weight row covers the whole K = n_ff, so it holds n_ff / 256 IQ4_XS blocks, and the kernel reads a
+    // row at row_bytes_t<T>(K) (ds4_iq.dp.cpp:68).  block_bytes() alone is one block.
+    const size_t rb = strata::ds4::gguf::iq::row_bytes(strata::ds4::gguf::iq::kIQ4_XS, n_ff);
     BStrips sd;
     sd.init(n_ff, n_embd);
     for (int c = 0; c < n_embd; ++c) iq_pack_row(sd, c, blob + tr2 + (size_t) c * rb, n_ff);
@@ -994,6 +1018,8 @@ void run_iq_mv_row(sycl::queue& q, int type, Tally& t) {
 constexpr int kDecRows = 4, kDecBpr = 4;   // 16 canonical blocks of 32 values: 512 F16 bits a row
 constexpr int kDecFmtQ8_0 = 0, kDecFmtIQ4_NL = 1, kDecFmtMXFP4 = 2;
 bool g_weird_scale = false;   // --weird-scale: NaN / denormal scale blocks (adversarial class malformed_input)
+bool g_bad_scale_gu = false;  // --bad-scale-gu: one wrong gate scale byte (the set-tile rows read these)
+bool g_bad_scale_dn = false;  // --bad-scale: one wrong down scale byte
 
 int dec_block_bytes(int fmt) { return fmt == kDecFmtQ8_0 ? 34 : fmt == kDecFmtIQ4_NL ? 18 : 17; }
 
@@ -1409,6 +1435,322 @@ const char* kFamilies[] = {"sparse_attn", "gemv_f32", "gemv_f16", "gemv_f16_rows
                            "hc_pre_norm", "hc_mix_scale", "pred_proj_k", "softmax",
                            "decode_q8_0", "decode_iq4_nl", "decode_mxfp4"};
 
+// ---- the staged-path rows for the expert-set tiles (plan todo 2.3) ----
+// The same two dispatches the default run drives inline: the IQ4_XS set through gguf::iq::set_gate_up /
+// set_down (ds4_iq.dp.cpp's launch_set, which reads STRATA_XMX_F16_STAGE and picks the staged instantiation
+// where the joint_matrix tiles exist) and the MXFP4 set through gguf::set_gate_up / set_down.
+// Behind --only iq_set_tc.  Tolerance: a value is inside when |dev-ref| <= 2.0e-4 * |ref| OR
+// |dev-ref| <= kDownAbsTol, the absolute floor the down rows already use (ds4_parity.cpp:241).
+// The default run's inline blocks above are untouched, so its output stays byte-identical.
+// Every row here is a tile row: the harness gives one expert all 32 rows (idx[r] = r, n_exp = 1), so its span is
+// hi - lo = 32.  A tile skips an expert only when that span is <= skip_le (ds4_iq.dp.cpp:1110 for IQ4_XS,
+// ds4_gguf.dp.cpp:1135 for MXFP4), and skip_le is kLightRows = 16 whenever the set has more rows than that
+// (ds4_gguf.dp.cpp:2202-2211, ds4_iq.dp.cpp:2819, :2844).  32 > 16, so the tiles take rows 0..31:
+// the IQ4_XS light kernel early-returns on a span over kLightRows (ds4_iq.dp.cpp:1622) and the MXFP4 tile
+// guard drops a tile only when the span is <= skip_le (ds4_gguf.dp.cpp:1356; :1398 is inside the wmma kk
+// loop).  Both families below compare rows 0..max_rows, so every row the tiles wrote is checked.
+constexpr float kSetRelTol = 2.0e-4f;
+
+bool set_inside(float dev, float ref, float& max_diff) {
+    const float diff = std::fabs(dev - ref);
+    if (diff > max_diff) max_diff = diff;
+    return diff <= std::fabs(ref) * kSetRelTol || diff <= kDownAbsTol;
+}
+
+void run_iq_set_tc_rows(sycl::queue& q, Tally& t) {
+    const int t_q = strata::ds4::gguf::iq::kIQ4_XS;
+    // One weight row is K / block_values blocks wide, and the kernel reads a row at row_bytes_t<T>(K)
+    // (ds4_iq.dp.cpp:68) - the same bytes iq::row_bytes() reports (ds4_iq.dp.hpp:46).  A 512-wide IQ4_XS row is
+    // 272 bytes, not the 136 of one block: laying a slab out at one block per row makes the kernel read row 2c
+    // for column c, and columns past n_ff / 2 reach into the next slab.
+    // The shapes the IQ4_XS set dispatch accepts: gate/up needs n_embd a multiple of 256 and n_ff a multiple
+    // of BN, down needs n_ff a multiple of 256 and n_embd a multiple of BN (ds4_iq.dp.cpp:2814, :2839, BN = 64
+    // at :899).  The ne gates at :2665 and :2674 use kWarps*kGuRW and kWarps*kDnRW, and the light kernels need
+    // both multiples of 256 (:2683, :2688).  544x352 fails n_ff % BN (352 % 64 = 32), so it launches nothing.
+    const int shapes[2][2] = {{256, 256}, {512, 256}};
+    for (int si = 0; si < 2; ++si) {
+        const int n_embd = shapes[si][0], n_ff = shapes[si][1];
+        const int max_rows = 32, ldx = n_embd, ldh = n_ff, ldy = n_embd;
+        const size_t rb_gu = strata::ds4::gguf::iq::row_bytes(t_q, n_embd);   // gate/up rows: K = n_embd
+        const size_t rb_dn = strata::ds4::gguf::iq::row_bytes(t_q, n_ff);     // down rows: K = n_ff
+        const size_t tr0 = 0, tr1 = (size_t) n_ff * rb_gu, tr2 = tr1 + (size_t) n_ff * rb_gu;
+        const size_t stride = tr2 + (size_t) n_embd * rb_dn;
+        std::vector<uint8_t> blob(stride);
+        for (int part = 0; part < 3; ++part) {
+            const size_t base = part == 0 ? tr0 : part == 1 ? tr1 : tr2;
+            const size_t rb = part < 2 ? rb_gu : rb_dn;
+            const int rows = part < 2 ? n_ff : n_embd;
+            for (int r = 0; r < rows; ++r) {
+                uint8_t* row = blob.data() + base + (size_t) r * rb;
+                for (size_t i = 0; i < rb; ++i) row[i] = rng_next(i * 251 + (size_t) part * 977);
+                // The scale fields stay small and finite, the way fill_block does for the types it fills
+                // (ds4_parity.cpp:196): IQ4_XS's block is d at bytes 0/1, scales_h at 2/3, scales_l at 4..11,
+                // the quants at 8..135 (Ty<kIQ4_XS>::B = 136, ds4_iq.dp.cpp:43, decode at :268,:269 and :509,:510).
+                // A random scales_h/scales_l makes ls - 32 up to 31, so the sub-block scale reaches d * 31 and
+                // the sums run past the +-10 clamp; one fp16 ulp then exceeds this family's tolerance.  scales_h
+                // = 0xAAAA pins every sub-block's high bits to 2 (ls >= 32), and each scales_l nibble to 0..3,
+                // so ls - 32 is 0..3 and the sub-block scale stays d * 3 at most.
+                const uint16_t u = sycl::bit_cast<uint16_t>(sycl::half(0.01f));
+                const size_t bb = (size_t) strata::ds4::gguf::iq::block_bytes(t_q);
+                for (size_t blk = 0; blk < rb / bb; ++blk) {   // a row of width K holds rb / bb blocks
+                    uint8_t* b = row + blk * bb;
+                    b[0] = (uint8_t) (u & 0xFF);
+                    b[1] = (uint8_t) (u >> 8);
+                    b[2] = 0xAA;
+                    b[3] = 0xAA;
+                    for (int i = 0; i < 8; ++i) {
+                        const uint8_t lo = (uint8_t) (rng_next(i * 61 + (size_t) part * 131 + blk * 7919) & 3u);
+                        b[4 + i] = (uint8_t) (lo | (lo << 4));
+                    }
+                }
+            }
+        }
+        std::vector<float> xf((size_t) max_rows * ldx);
+        for (size_t i = 0; i < xf.size(); ++i)
+            xf[i] = ((int) (rng_next(i * 131 + 7) | (rng_next(i * 131 + 7) << 8)) - 32768) / 655360.0f;
+        std::vector<int> idx(max_rows);
+        for (int r = 0; r < max_rows; ++r) idx[r] = r;
+        std::vector<uint16_t> xh((size_t) max_rows * ldh);
+        for (size_t i = 0; i < xh.size(); ++i)   // F16 rows in +-[0.5, 1): finite, away from zero
+            xh[i] = (uint16_t) ((rng_next(i * 197 + 13) | (rng_next(i * 197 + 13) << 8)) & 0xBBFFu);
+        std::vector<uint16_t> href((size_t) max_rows * ldh), hg((size_t) max_rows * ldh);
+        std::vector<float> yref((size_t) max_rows * ldy), yg((size_t) max_rows * ldy);
+        ref_iq_set_gate_up(blob.data(), tr0, tr1, xf.data(), ldx, idx.data(), n_embd, n_ff, 10.0f,
+                           0, max_rows, href.data(), ldh, false);
+        ref_iq_set_down(blob.data(), tr2, xh.data(), ldh, n_embd, n_ff, 0, max_rows, yref.data(), ldy);
+        if (g_bad_scale_gu) {
+            const size_t at = tr0 + 2;   // scales_h's low byte: bit 3 is sub-block 1's ls high bit, so ls goes up by 32
+            // (the pair at sh bits 2*ib..2*ib+1 is shifted << 4: ds4_iq.dp.cpp:268,:269, and :509,:510).
+            blob[at] ^= 0x08;
+            printf("iq_set_tc negative control: one wrong gate scale byte, blob[%zu] ^= 0x08 (gate row 0 "
+                   "scales_h); the reference is from the clean blob\n", at);
+        }
+        if (g_bad_scale_dn) {
+            const size_t at = tr2 + 2;
+            blob[at] ^= 0x08;
+            printf("iq_set_tc negative control: one wrong down scale byte, blob[%zu] ^= 0x08 (down row 0 "
+                   "scales_h); the reference is from the clean blob\n", at);
+        }
+        const int bounds_h[2] = {0, max_rows};
+        uint8_t* w = (uint8_t*) sycl::malloc_device(blob.size(), q);
+        int* bounds = (int*) sycl::malloc_device(sizeof(bounds_h), q);
+        int* didx = (int*) sycl::malloc_device(idx.size() * sizeof(int), q);
+        float* dxf = (float*) sycl::malloc_device(xf.size() * sizeof(float), q);
+        uint16_t* dxh = (uint16_t*) sycl::malloc_device(xh.size() * sizeof(uint16_t), q);
+        uint16_t* dh = (uint16_t*) sycl::malloc_device(hg.size() * sizeof(uint16_t), q);
+        float* dy = (float*) sycl::malloc_device(yg.size() * sizeof(float), q);
+        q.memcpy(w, blob.data(), blob.size());
+        q.memcpy(bounds, bounds_h, sizeof(bounds_h));
+        q.memcpy(didx, idx.data(), idx.size() * sizeof(int));
+        q.memcpy(dxf, xf.data(), xf.size() * sizeof(float));
+        q.memcpy(dxh, xh.data(), xh.size() * sizeof(uint16_t));
+        q.wait();
+        strata::ds4::gguf::iq::SetArgs sa{};
+        sa.wbase = w;
+        sa.stride = stride;
+        sa.tr[0] = tr0; sa.tr[1] = tr1; sa.tr[2] = tr2;
+        sa.bounds = bounds;
+        sa.row0 = 0;
+        sa.max_rows = max_rows;
+        sa.n_exp = 1;
+        sa.n_embd = n_embd;
+        sa.n_ff = n_ff;
+        sa.limit = 10.0f;
+        sa.xf = dxf;
+        sa.idx = didx;
+        sa.ldx = ldx;
+        sa.h = dh;
+        sa.ldo = ldh;
+        sa.tg = t_q;
+        sa.td = t_q;
+        const bool ok_gu = strata::ds4::gguf::iq::set_gate_up(sa, &q);
+        strata::ds4::gguf::iq::SetArgs sd = sa;
+        sd.xf = nullptr;
+        sd.idx = nullptr;
+        sd.xh = dxh;
+        sd.ldx = ldh;
+        sd.h = nullptr;
+        sd.y = dy;
+        sd.ldo = ldy;
+        const bool ok_dn = strata::ds4::gguf::iq::set_down(sd, &q);
+        q.wait();
+        if (ok_gu) q.memcpy(hg.data(), dh, hg.size() * sizeof(uint16_t));
+        if (ok_dn) q.memcpy(yg.data(), dy, yg.size() * sizeof(float));
+        q.wait();
+        int g_exact = 0, g_near = 0, g_bad = 0, d_exact = 0, d_near = 0, d_bad = 0;
+        if (!ok_gu) {
+            printf("iq_set_tc IQ4_XS set gate/up tile n_embd=%d n_ff=%d: FAIL (set_gate_up launched nothing)\n",
+                   n_embd, n_ff);
+            ++g_bad;
+        } else {
+            int shown = 0;
+            for (size_t i = 0; i < hg.size(); ++i) {
+                const float a = static_cast<float>(sycl::bit_cast<sycl::half>(hg[i]));
+                const float b = static_cast<float>(sycl::bit_cast<sycl::half>(href[i]));
+                if (hg[i] == href[i]) ++g_exact;
+                else if (set_inside(a, b, t.max_diff)) ++g_near;
+                else {
+                    ++g_bad;
+                    if (shown < 3) {
+                        printf("  gate/up outside: row %d col %d ref %04x (%g) device %04x (%g)\n",
+                               (int) (i / (size_t) ldh), (int) (i % (size_t) ldh), href[i], (double) b, hg[i], (double) a);
+                        ++shown;
+                    }
+                }
+            }
+        }
+        printf("iq_set_tc IQ4_XS set gate/up tile n_embd=%d n_ff=%d: %d/%d fp16 bits exact, %d within tol "
+               "(rel %.1e, floor %.1e), %d outside\n",
+               n_embd, n_ff, g_exact, g_exact + g_near + g_bad, g_near, kSetRelTol, kDownAbsTol, g_bad);
+        if (!ok_dn) {
+            printf("iq_set_tc IQ4_XS set down tile n_embd=%d n_ff=%d: FAIL (set_down launched nothing)\n",
+                   n_embd, n_ff);
+            ++d_bad;
+        } else {
+            int shown = 0;
+            for (size_t i = 0; i < yg.size(); ++i) {
+                const float a = yg[i], b = yref[i];
+                if (a == b) ++d_exact;
+                else if (set_inside(a, b, t.max_diff)) ++d_near;
+                else {
+                    ++d_bad;
+                    if (shown < 3) {
+                        printf("  down outside: row %d col %d ref %g device %g\n",
+                               (int) (i / (size_t) ldy), (int) (i % (size_t) ldy), (double) b, (double) a);
+                        ++shown;
+                    }
+                }
+            }
+        }
+        printf("iq_set_tc IQ4_XS set down tile n_embd=%d n_ff=%d: %d/%d fp32 values exact, %d within tol "
+               "(rel %.1e, floor %.1e), %d outside\n",
+               n_embd, n_ff, d_exact, d_exact + d_near + d_bad, d_near, kSetRelTol, kDownAbsTol, d_bad);
+        t.exact += g_exact + d_exact; t.near += g_near + d_near; t.bad += g_bad + d_bad;
+        sycl::free(w, q); sycl::free(bounds, q); sycl::free(didx, q); sycl::free(dxf, q); sycl::free(dxh, q);
+        sycl::free(dh, q); sycl::free(dy, q);
+    }
+}
+
+void run_mx_set_tc_rows(sycl::queue& q, Tally& t) {
+    const int shapes[2][2] = {{2560, 640}, {128, 128}};
+    for (int si = 0; si < 2; ++si) {
+        const int n_embd = shapes[si][0], n_ff = shapes[si][1];
+        const int max_rows = 32, ldx = n_embd, ldh = n_ff, ldy = n_embd;
+        // The layout the default MXFP4 set rows use: a row is mx_row_bytes(k) bytes, one E8M0 byte + 16 payload
+        // bytes per 32-element block, and gate/up and down rows sit at tr0, tr1, tr2.
+        const size_t rb = strata::ds4::gguf::mx_row_bytes(n_embd);
+        const size_t prb_dn = strata::ds4::gguf::mx_row_bytes(n_ff);
+        const size_t tr0 = 0, tr1 = (size_t) n_ff * rb, tr2 = tr1 * 2;
+        const size_t stride = tr2 + (size_t) n_embd * prb_dn;
+        std::vector<uint8_t> blob(stride);
+        for (size_t i = 0; i < blob.size(); ++i) blob[i] = rng_next(i);
+        for (int part = 0; part < 3; ++part) {   // the E8M0 scales: small powers of two keep the weights exact in F16
+            const size_t base = part == 0 ? tr0 : part == 1 ? tr1 : tr2;
+            const int rows = part < 2 ? n_ff : n_embd, k = part < 2 ? n_embd : n_ff;
+            const size_t prb = strata::ds4::gguf::mx_row_bytes(k);
+            for (int r = 0; r < rows; ++r)
+                for (int b = 0; b < k / 32; ++b)
+                    blob[base + (size_t) r * prb + (size_t) b * 17] =
+                        (uint8_t) (128 + (rng_next(base + (size_t) r * prb + (size_t) b * 17) & 3));
+        }
+        std::vector<float> xf((size_t) max_rows * ldx);
+        for (size_t i = 0; i < xf.size(); ++i)
+            xf[i] = ((int) (rng_next(i * 131 + 7) | (rng_next(i * 131 + 7) << 8)) - 32768) / 32768.0f;
+        std::vector<int> idx(max_rows);
+        for (int r = 0; r < max_rows; ++r) idx[r] = r;
+        std::vector<uint16_t> xh((size_t) max_rows * ldh);
+        for (size_t i = 0; i < xh.size(); ++i)   // F16 rows in +-[0.5, 1): finite, away from zero
+            xh[i] = (uint16_t) ((rng_next(i * 197 + 13) | (rng_next(i * 197 + 13) << 8)) & 0xBBFFu);
+        std::vector<uint16_t> href((size_t) max_rows * ldh), hg((size_t) max_rows * ldh);
+        std::vector<float> yref((size_t) max_rows * ldy), yg((size_t) max_rows * ldy);
+        ref_mx_set_gate_up(blob.data(), tr0, tr1, xf.data(), ldx, idx.data(), n_embd, n_ff, 10.0f,
+                           0, max_rows, href.data(), ldh);
+        ref_mx_set_down(blob.data(), tr2, xh.data(), ldh, n_embd, n_ff, 0, max_rows, yref.data(), ldy);
+        if (g_bad_scale_gu) {
+            const size_t at = tr0 + (size_t) 16 * rb;   // gate row 16's first E8M0 byte, inside the compared rows
+            blob[at] ^= 0x10;
+            printf("iq_set_tc negative control: one wrong MXFP4 gate scale byte, blob[%zu] ^= 0x10 (gate row 16 "
+                   "E8M0); the reference is from the clean blob\n", at);
+        }
+        if (g_bad_scale_dn) {
+            const size_t at = tr2 + (size_t) 16 * prb_dn;   // down row 16's first E8M0 byte
+            blob[at] ^= 0x10;
+            printf("iq_set_tc negative control: one wrong MXFP4 down scale byte, blob[%zu] ^= 0x10 (down row 16 "
+                   "E8M0); the reference is from the clean blob\n", at);
+        }
+        const int bounds_h[2] = {0, max_rows};
+        uint8_t* w = (uint8_t*) sycl::malloc_device(blob.size(), q);
+        int* bounds = (int*) sycl::malloc_device(sizeof(bounds_h), q);
+        int* didx = (int*) sycl::malloc_device(idx.size() * sizeof(int), q);
+        float* dxf = (float*) sycl::malloc_device(xf.size() * sizeof(float), q);
+        uint16_t* dxh = (uint16_t*) sycl::malloc_device(xh.size() * sizeof(uint16_t), q);
+        uint16_t* dh = (uint16_t*) sycl::malloc_device(xh.size() * sizeof(uint16_t), q);
+        float* dy = (float*) sycl::malloc_device((size_t) max_rows * ldy * sizeof(float), q);
+        q.memcpy(w, blob.data(), blob.size());
+        q.memcpy(bounds, bounds_h, sizeof(bounds_h));
+        q.memcpy(didx, idx.data(), idx.size() * sizeof(int));
+        q.memcpy(dxf, xf.data(), xf.size() * sizeof(float));
+        q.memcpy(dxh, xh.data(), xh.size() * sizeof(uint16_t));
+        q.wait();
+        if (!strata::ds4::gguf::prepare(&q)) {
+            printf("iq_set_tc MXFP4 set tile n_embd=%d n_ff=%d: FAIL (no scratch)\n", n_embd, n_ff);
+            t.bad += 1;
+            sycl::free(w, q); sycl::free(bounds, q); sycl::free(didx, q); sycl::free(dxf, q); sycl::free(dxh, q);
+            sycl::free(dh, q); sycl::free(dy, q);
+            continue;
+        }
+        strata::dsv41k::exl3::SetArgs sa{};
+        sa.wbase = w;
+        sa.stride = stride;
+        sa.lay.fmt = strata::ds4::gguf::kFmtMXFP4;
+        sa.lay.trellis[0] = tr0; sa.lay.trellis[1] = tr1; sa.lay.trellis[2] = tr2;
+        sa.n_exp = 1;
+        sa.bounds = bounds;
+        sa.row0 = 0;
+        sa.max_rows = max_rows;
+        sa.n_embd = n_embd;
+        sa.n_ff = n_ff;
+        sa.limit = 10.0f;
+        strata::ds4::gguf::set_gate_up(sa, dxf, ldx, didx, dh, ldh, &q);
+        strata::ds4::gguf::set_down(sa, dxh, ldh, dy, ldy, &q);
+        q.wait();
+        if (strata::ds4::gguf::launch_errors() != 0) {
+            printf("iq_set_tc MXFP4 set tile n_embd=%d n_ff=%d: FAIL (%d launch errors)\n", n_embd, n_ff,
+                   strata::ds4::gguf::launch_errors());
+            t.bad += 1;
+        }
+        q.memcpy(hg.data(), dh, hg.size() * sizeof(uint16_t));
+        q.memcpy(yg.data(), dy, yg.size() * sizeof(float));
+        q.wait();
+        int g_exact = 0, g_near = 0, g_bad = 0, d_exact = 0, d_near = 0, d_bad = 0;
+        for (int r = 0; r < max_rows; ++r) {   // rows 0..15 are tile-written here too: see the header at :1441
+            for (int c = 0; c < n_ff; ++c) {
+                const size_t i = (size_t) r * ldh + c;
+                const float a = static_cast<float>(sycl::bit_cast<sycl::half>(hg[i]));
+                const float b = static_cast<float>(sycl::bit_cast<sycl::half>(href[i]));
+                if (hg[i] == href[i]) ++g_exact;
+                else if (set_inside(a, b, t.max_diff)) ++g_near;
+                else ++g_bad;
+            }
+            for (int c = 0; c < n_embd; ++c) {
+                const float a = yg[(size_t) r * ldy + c], b = yref[(size_t) r * ldy + c];
+                if (a == b) ++d_exact;
+                else if (set_inside(a, b, t.max_diff)) ++d_near;
+                else ++d_bad;
+            }
+        }
+        printf("iq_set_tc MXFP4 set gate/up tile n_embd=%d n_ff=%d: %d/%d fp16 bits exact, %d within tol "
+               "(rel %.1e, floor %.1e), %d outside\n",
+               n_embd, n_ff, g_exact, g_exact + g_near + g_bad, g_near, kSetRelTol, kDownAbsTol, g_bad);
+        printf("iq_set_tc MXFP4 set down tile n_embd=%d n_ff=%d: %d/%d fp32 values exact, %d within tol "
+               "(rel %.1e, floor %.1e), %d outside\n",
+               n_embd, n_ff, d_exact, d_exact + d_near + d_bad, d_near, kSetRelTol, kDownAbsTol, d_bad);
+        t.exact += g_exact + d_exact; t.near += g_near + d_near; t.bad += g_bad + d_bad;
+        sycl::free(w, q); sycl::free(bounds, q); sycl::free(didx, q); sycl::free(dxf, q); sycl::free(dxh, q);
+        sycl::free(dh, q); sycl::free(dy, q);
+    }
+}
+
 bool run_family(const char* name, sycl::queue& q, bool neg, Tally& t) {
     if (!std::strcmp(name, "sparse_attn")) run_sparse_attn_row(q, neg, t);
     else if (!std::strcmp(name, "gemv_f32")) run_gemv_f32_row(q, neg, t);
@@ -1421,6 +1763,13 @@ bool run_family(const char* name, sycl::queue& q, bool neg, Tally& t) {
     else if (!std::strcmp(name, "decode_q8_0")) run_decode_row(q, kDecFmtQ8_0, "decode_q8_0", neg, t);
     else if (!std::strcmp(name, "decode_iq4_nl")) run_decode_row(q, kDecFmtIQ4_NL, "decode_iq4_nl", neg, t);
     else if (!std::strcmp(name, "decode_mxfp4")) run_decode_row(q, kDecFmtMXFP4, "decode_mxfp4", neg, t);
+    else if (!std::strcmp(name, "iq_set_tc")) {
+        // The expert-set tiles through the set dispatch, with the staged-path tolerance.  In the JIT build
+        // STRATA_XMX_SG16 is undefined, so launch_set has no staged instantiation and these rows measure the
+        // scalar stand-in; only the AOT XMX build (bmg|lnl) compiles the joint_matrix tiles.
+        run_iq_set_tc_rows(q, t);
+        run_mx_set_tc_rows(q, t);
+    }
     else return false;
     return true;
 }
@@ -1433,8 +1782,8 @@ int main(int argc, char** argv) {
     const char* only = nullptr;
     bool neg = false, neg_stageA = false;
     for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--bad-scale-gu")) bad_scale_gu = true;
-        else if (!std::strcmp(argv[i], "--bad-scale")) bad_scale_dn = true;
+        if (!std::strcmp(argv[i], "--bad-scale-gu")) bad_scale_gu = true, g_bad_scale_gu = true;
+        else if (!std::strcmp(argv[i], "--bad-scale")) bad_scale_dn = true, g_bad_scale_dn = true;
         else if (!std::strcmp(argv[i], "--dump") && i + 1 < argc) dump = argv[++i];
         else if (!std::strcmp(argv[i], "--only") && i + 1 < argc) only = argv[++i];
         else if (!std::strcmp(argv[i], "--neg") && i + 1 < argc) only = argv[++i], neg = true;

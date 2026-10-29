@@ -1039,6 +1039,17 @@ constexpr int kSetSmemGu = BM * kLdT * 2 + BN * kLdT * 2 + BN * kLdT * 2 + 2 * (
 constexpr int kSetSmemOutGu = BM * (BN + 4) * 4 + BM * (BN + 4) * 4;
 constexpr int kSetSmemDn = BM * kLdT * 2 + BN * kLdT * 2 + 1 * kLdT * 2 + (BN / 16) * 512 * 2 + 1 * 512 * 2;
 constexpr int kSetSmemOutDn = BM * (BN + 4) * 4 + 1 * (BN + 4) * 4;
+// the shared block a tc launch allocates: max(Tiles, Out).  The staged gate/up instantiation puts the residual A
+// plane (BM * kLdT F16 rows) beside Tiles, so its block is max(Tiles + lo, Out): 19456 + 5120 = 24576, inside the
+// Out it already allocates (34816).  The Arc Pro B60 runs that gate/up launch today at 34816 bytes.  The staged
+// down instantiation needs no residual plane - its rows arrive as F16 bits, so their residual is exactly zero -
+// and it keeps the default block.
+constexpr int kSetSmemLaunchGu = kSetSmemOutGu > kSetSmemGu ? kSetSmemOutGu : kSetSmemGu;
+constexpr int kSetSmemLaunchDn = kSetSmemOutDn > kSetSmemDn ? kSetSmemOutDn : kSetSmemDn;
+constexpr int kSetSmemStageLo = BM * kLdT * 2;   // the staged instantiation's second A plane
+constexpr int kSetSmemLaunchStagedGu = kSetSmemLaunchGu > kSetSmemGu + kSetSmemStageLo
+                                       ? kSetSmemLaunchGu : kSetSmemGu + kSetSmemStageLo;
+constexpr int kSetSmemLaunchStagedDn = kSetSmemLaunchDn;   // the staged down kernel has no residual A plane
 // the i8 A-stage tile's shape (todo 3): a 16 x 16 output tile (16 weight rows x 16 activation rows), the K range
 // split over four sub-groups, the A staging (half) and the Part planes (float) both live in the shared block
 constexpr int kStageAN = 16;          // the N tile: the weight rows a tile covers
@@ -1054,7 +1065,7 @@ constexpr int kSetSmemStageAGu = kSetSmemStageATilesGu + kSetSmemStageAOutGu;
 constexpr int kSetSmemStageATilesDn = 1 * kStageASplit * kStageAN * kStageALdA * 2;
 constexpr int kSetSmemStageAOutDn = 1 * kStageASplit * kStageAN * kStageALdP * 4;
 constexpr int kSetSmemStageADn = kSetSmemStageATilesDn + kSetSmemStageAOutDn;
-template <int T, bool GATE_UP>
+template <int T, bool GATE_UP, bool STAGED = false>
 /*
 DPCT1110:11: The total declared local variable size in device function
 set_tc_kernel exceeds 128 bytes and may cause high register pressure. Consult
@@ -1082,6 +1093,14 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
     static_assert(sizeof(Tiles) <= (GATE_UP ? (kSetSmemOutGu > kSetSmemGu ? kSetSmemOutGu : kSetSmemGu)
                                             : (kSetSmemOutDn > kSetSmemDn ? kSetSmemOutDn : kSetSmemDn)),
                   "set_tc_kernel: Tiles with the packed XMX strips exceeds the launch's shared block");
+
+    // The staged path's second A plane sits beside Tiles, at smem + sizeof(Tiles); the launch gives this
+    // instantiation max(Tiles + lo, Out) bytes.  Out overlaps that region, but the K loop's closing barrier is
+    // the last read of a residual row and joint_matrix_store writes Out after it, so the overlap is ordered.
+    // Only the staged instantiation is constrained: the default one keeps the three asserts above unchanged.
+    static_assert(!STAGED || sizeof(Tiles) + (GATE_UP ? kSetSmemStageLo : 0) <=
+                  (GATE_UP ? kSetSmemLaunchStagedGu : kSetSmemLaunchStagedDn),
+                  "set_tc_kernel: the staged lo plane exceeds the launch's shared block");
 
     Tiles& Tl = *reinterpret_cast<Tiles*>(smem);
     Out& O = *reinterpret_cast<Out*>(smem);
@@ -1152,6 +1171,21 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
             Tl.x[tr][tq * 8 + j] = v;
         }
 #ifdef STRATA_XMX_SG16
+        if constexpr (STAGED && GATE_UP) {
+            // The split's second A plane, beside Tiles: hi is the value Tl.x already holds, lo is what the F16
+            // rounding dropped - tile_dot's split on gfx12, which feeds the same accumulator twice.  Only the
+            // gate/up rows arrive as F32, so only they gain bits the rounding lost: the down rows arrive as F16
+            // bits, their residual is exactly zero, and the second multiply below would add nothing to them.
+            sycl::half *xl = reinterpret_cast<sycl::half *>(smem + sizeof(Tiles));
+#pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                float f = 0.0f;
+                if (sr >= 0) f = a.xf[(size_t) sr * a.ldx + (size_t) kb * 32 + tq * 8 + j];
+                xl[tr * kLdT + tq * 8 + j] =
+                    sycl::vec<float, 1>(f - (float) Tl.x[tr][tq * 8 + j])
+                        .convert<sycl::half, sycl::rounding_mode::rte>()[0];
+            }
+        }
         // the pack reads Tl.wg/Tl.wu rows staged by the other threads of this 32-value step; the only
         // barrier used to sit after the pack, so stage -> pack was unsynchronized (stale weights landed
         // in the B strips on the B60, and the tile's output moved between runs).
@@ -1187,6 +1221,20 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
             if (GATE_UP) {
                 jm::joint_matrix_load(sg, fb, lptr(&Tl.pu[wn][(kk >> 1) * 32]), 32);
                 jm::joint_matrix_mad(sg, fu, fa, fb, fu);
+            }
+            if constexpr (STAGED && GATE_UP) {
+                // The split's second multiply, for the gate/up rows only (their residual plane is filled above):
+                // the residual rows against the same packed weights.  The weights are exact F16 in shared memory,
+                // so their own lo part is identically zero - the plan's hi*hi + hi*lo + lo*hi + lo*lo per tile
+                // reduces to these two mads, hi first and lo second, as tile_dot does.  fb is reloaded from pw:
+                // the branch above left it holding the up strip.
+                sycl::half *xl = reinterpret_cast<sycl::half *>(smem + sizeof(Tiles));
+                jm::joint_matrix<sycl::sub_group, sycl::half, jm::use::a, 16, 16, jm::layout::row_major> fl;
+                jm::joint_matrix_load(sg, fl, lptr(&xl[wm_ * 16 * kLdT + kk]), kLdT);
+                jm::joint_matrix_load(sg, fb, lptr(&Tl.pw[wn][(kk >> 1) * 32]), 32);
+                jm::joint_matrix_mad(sg, fg, fl, fb, fg);
+                jm::joint_matrix_load(sg, fb, lptr(&Tl.pu[wn][(kk >> 1) * 32]), 32);
+                jm::joint_matrix_mad(sg, fu, fl, fb, fu);
             }
         }
 #else
@@ -1256,7 +1304,7 @@ void set_tc_kernel(const SetArgs a, unsigned char *smem, uint32_t *tab,
 // the kernel functor (as ds4_gguf's mx_set_tc_wrapper): the sub-group 16 requirement belongs to the kernel's
 // operator(), not to the free function it calls - and only where the 8x16x16 tiles exist (STRATA_XMX_SG16:
 // an AOT bmg / lnl build; a JIT build runs the scalar path above with whatever sub-group the device picks)
-template <int T, bool GU>
+template <int T, bool GU, bool STAGED = false>
 struct set_tc_wrapper {
     SetArgs a;
     sycl::local_accessor<unsigned char, 1> smem;
@@ -1266,7 +1314,7 @@ struct set_tc_wrapper {
     [[sycl::reqd_sub_group_size(16)]]
 #endif
     void operator()(sycl::nd_item<3> item_ct1) const {
-        set_tc_kernel<T, GU>(
+        set_tc_kernel<T, GU, STAGED>(
             a, smem.get_multi_ptr<sycl::access::decorated::no>().get(),
             tab.get_multi_ptr<sycl::access::decorated::no>().get(),
             src.get_multi_ptr<sycl::access::decorated::no>().get());
@@ -1793,6 +1841,21 @@ bool tc_ok() {   // as ds4_gguf.cu's: sm_70 and later, STRATA_DS4_NO_TC=1 keeps 
 #endif
 }
 
+// STRATA_XMX_F16_STAGE=1: the XMX set tiles split each activation row into its F16 value and the residual the
+// rounding dropped, and run the two multiplies into the same F32 accumulator (ds4_tq.dp.cpp's tile_dot on gfx12).
+// Read once here, on the host, never in the kernel's hot path; opt-in, so the default launch is the old one.
+// Only the AOT XMX build has the joint_matrix tiles, so the flag does nothing in the JIT form.
+// The guard is the one its two callers sit in: a JIT build has no staged instantiation, so it has no reader.
+#ifdef STRATA_XMX_SG16
+bool f16_stage_on() {
+    static const bool on = [] {
+        const char* v = std::getenv("STRATA_XMX_F16_STAGE");
+        return v != nullptr && v[0] == '1';
+    }();
+    return on;
+}
+#endif
+
 // ---------------------------------------------------------------- dispatch
 // F(T) for the type t at run time; false when it is not one of these
 #define DS4_IQ_SWITCH(t, F)          \
@@ -1991,9 +2054,17 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
                 memory size in the migrated code is correct.
                 */
                 // audit note: DPCT1083 accepted — the local-memory sizes come from the port's own formulas at each launch, and the ds4 launch parity rows run them; a change needs a measured divergence
+                // the staged gate/up instantiation needs the residual plane beside Tiles; the staged down one
+                // has no residual plane, and the default instantiations ask for the exact same block they
+                // always did (the ternaries below are that same expression, named).
+#ifdef STRATA_XMX_SG16
+                const bool staged = f16_stage_on();
+#else
+                const bool staged = false;   // no joint_matrix tiles in the JIT form: no staged kernel exists
+#endif
                 sycl::local_accessor<unsigned char, 1> smem_acc_ct1(
-                    sycl::range<1>(GU ? (kSetSmemOutGu > kSetSmemGu ? kSetSmemOutGu : kSetSmemGu)
-                                      : (kSetSmemOutDn > kSetSmemDn ? kSetSmemOutDn : kSetSmemDn)),
+                    sycl::range<1>(staged ? (GU ? kSetSmemLaunchStagedGu : kSetSmemLaunchStagedDn)
+                                          : (GU ? kSetSmemLaunchGu : kSetSmemLaunchDn)),
                     cgh);
                 sycl::local_accessor<uint32_t, 1> tab_acc_ct1(
                     sycl::range<1>(Ty<T>::TAB > 0 ? Ty<T>::TAB : 1), cgh);
@@ -2006,10 +2077,21 @@ void launch_set(const SetArgs &a, dpct::dim3 grid, dpct::queue_ptr s) {
                 sycl::local_accessor<int, 1> src_acc_ct1(
                     sycl::range<1>(64 /*BM*/), cgh);
 
-                cgh.parallel_for<dpct_kernel_name<set_tc_wrapper<T, GU>>>(
-                    sycl::nd_range<3>(grid * sycl::range<3>(1, 1, kThreads),
-                                      sycl::range<3>(1, 1, kThreads)),
-                    set_tc_wrapper<T, GU>{a, smem_acc_ct1, tab_acc_ct1, src_acc_ct1});
+#ifdef STRATA_XMX_SG16
+                // the opt-in staged tile: a separate kernel instantiation, so the default one below compiles as it did
+                if (staged) {
+                    cgh.parallel_for<dpct_kernel_name<set_tc_wrapper<T, GU, true>>>(
+                        sycl::nd_range<3>(grid * sycl::range<3>(1, 1, kThreads),
+                                          sycl::range<3>(1, 1, kThreads)),
+                        set_tc_wrapper<T, GU, true>{a, smem_acc_ct1, tab_acc_ct1, src_acc_ct1});
+                } else
+#endif
+                {
+                    cgh.parallel_for<dpct_kernel_name<set_tc_wrapper<T, GU>>>(
+                        sycl::nd_range<3>(grid * sycl::range<3>(1, 1, kThreads),
+                                          sycl::range<3>(1, 1, kThreads)),
+                        set_tc_wrapper<T, GU>{a, smem_acc_ct1, tab_acc_ct1, src_acc_ct1});
+                }
             });
         }
         return;
