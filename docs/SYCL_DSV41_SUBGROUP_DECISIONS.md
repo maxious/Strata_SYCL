@@ -11,6 +11,53 @@ The audit's kernel names and launch lines were read from an earlier pass. Each r
 `849a7a5a`, so the kernel class is the function that holds the call at HEAD and the launch lines are HEAD's. Where
 the audit disagreed, the row says so.
 
+## Probe evidence
+
+The numbers below are copied verbatim from the probe logs in `.omo/evidence/ulw-research-sg16-round2/`, run on
+this PC on 2026-10-29: `sg-probe.log` for the sizes, `aot-probe.log` for the negative controls.
+
+The hardware is an Intel(R) Arc(TM) Pro B60 Graphics, Battlemage G21, which is `bmg-g21` in the AOT device target,
+under oneAPI 2026.2 with `icpx` 2026.2.0 (2026.2.0.20261001). The probe saw four device entries, driver versions
+26.35.39758.10 and 1.17.39758+10, and all four report the same sizes.
+
+The verdict block in `sg-probe.log`:
+
+```
+sg-default=16, supported=[16, 32], jit_rc=0, aot_rc=0, reqd16_rc=0, reqd32_rc=0
+```
+
+The negative controls, recorded in `aot-probe.log`:
+
+```
+SUPPORTING_EVIDENCE neg_aot_compile=1 reqd8_aot=compile_error reqd64_aot=compile_error neg_jit_run=kernel_not_supported(13)
+VERDICT aot_compile=0 reqd32_aot=ok reqd16_aot=ok jit=ok
+```
+
+What each value proves:
+
+- `sg-default=16`. A kernel with no pin of its own gets 16 lanes.
+- `supported=[16, 32]`. These are the only two sizes the card accepts. The log writes them with a space after the
+  comma, and that is kept here.
+- `jit_rc=0`, `aot_rc=0`, `reqd16_rc=0`, `reqd32_rc=0`. A kernel pinned at 16 and a kernel pinned at 32 each built
+  and ran on the card, under JIT and under AOT for `spir64`. Neither was silently skipped: the readback verified
+  every element was written.
+- `neg_aot_compile=1`. A source that pins 8 and 64 fails the AOT build with exit 1 and produces no binary. `ocloc`
+  names the offending kernel, and the two sizes give two different messages: "Kernel compiled with required
+  subgroup size 8, which is unsupported on this platform" for 8, "Unsupported required sub group size" for 64.
+- `reqd8_aot=compile_error`, `reqd64_aot=compile_error`. Both sizes are refused at compile time under AOT, not at
+  link time and not at run time. The whole translation unit fails.
+- `neg_jit_run=kernel_not_supported(13)`. Under JIT the same source compiles fine and throws when the kernel is
+  submitted, with errc 13. `exception.hpp` in 2026.2 names 13 `kernel_not_supported` and 12
+  `feature_not_supported`, and `SYCLCategory::message()` returns the generic "SYCL Error" for both, so the number
+  is the only thing that tells them apart. The message is "Sub-group size N is not supported on the device".
+
+A bad pin is caught at build time under AOT and only at submission under JIT. AOT is the stricter path, which is
+why a pin outside {16, 32} cannot ship.
+
+One note on the plan against the logs: checkbox 3.2 lists all ten fields as coming from `sg-probe.log`, but that
+log's verdict line carries only the six above. The four negative-control fields are recorded in `aot-probe.log`,
+in the same evidence directory. The logs are the authoritative record, so the values here are theirs.
+
 ## The rule
 
 A permute swaps a value with the lane `mask` away. A lane only swaps inside its own sub group, so a mask of 16
@@ -19,7 +66,7 @@ a kernel that permutes at mask 16 must ask for 32 with `[[sycl::reqd_sub_group_s
 the mask-16 step swaps a lane with itself, and the sum loses the other half of the block. Nothing fails: the
 answer is quietly wrong.
 
-Sizes the card takes: 16 and 32. 8 and 64 are refused at build time (`compile_error` in `sg-probe.log`), and 64 is
+Sizes the card takes: 16 and 32. 8 and 64 are refused at build time (`compile_error` in `aot-probe.log`), and 64 is
 refused again by `ocloc` in the AOT build (`build_kernel_failure` in `w1-aot.log`). A pin outside `{16, 32}`
 cannot ship.
 
