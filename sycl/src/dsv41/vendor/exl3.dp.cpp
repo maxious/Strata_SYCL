@@ -1030,23 +1030,20 @@ void win_combine_kernel(const KWin a) {
                 a.sh_out != nullptr ? a.sh_out[(size_t) t * a.n_embd + r] : 0.0f);
 }
 
-void win_wait_kernel(const unsigned* p, unsigned v, uint32_t spin_max) {
+void win_wait_kernel(const unsigned* p, unsigned v, uint32_t spin_max, strata::AnsRec* rec, unsigned* fault,
+                     uint32_t rearm_max) {
     if (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2) !=
         0) return;
     // the answer's flag is in device memory (the host's copy engine wrote it): a device-scope atomic is the read
     // that sees a copy engine's write (a plain read is served from the GPU's cache, so the host's store was never
     // seen).  The wait is bounded (the same bound the token path's wait takes): an unbounded one that never sees
     // its flag wedges the card (the driver resets the GT) instead of failing this window.
-    uint32_t reads = 0;
-    unsigned last = 0;
-    while (reads < spin_max) {
-        last = strata::dev_load(p);
-        ++reads;
-        if (last == v) break;
-    }
-    // the window path's wait writes no record: the flag it spins on may be in host memory (the host's store) or
-    // in the card's memory (the host's copy engine wrote it there), and the two have different layouts.  Its bound is
-    // the same, and the engine's report names the site.
+    // the same wait the token path's wait is (strata::answer_wait), with this wait's site.  The record and the fault
+    // word come from the engine's thread (strata::tl_ans_wait), named by the launcher.  (Before this, the window's
+    // wait wrote nothing at all: a batched decode step that ran to its bound mixed the slot's bits from up to 64
+    // requests earlier and no report line said so - the engine's own record showed "the window path 0" while its
+    // token-path waits were faulting.)
+    strata::answer_wait(p, v, rec, fault, spin_max, rearm_max, strata::kSpinAnswerWin);
     // audit note: DPCT1008 accepted — __nanosleep was a spin hint only; the sync it sat beside is already carried
     /*
     DPCT1008:80: __nanosleep function is not defined in SYCL. This is a
@@ -2324,12 +2321,14 @@ bool win_experts(const WinArgs &a, dpct::queue_ptr s) {
         !dispatch<RunWinDown>(a.lay.K[2], a.lay.cb, w, groups, s))
         return false;
                 if (a.wait_ptr != nullptr) {
-                    const uint32_t spin = strata::answer_spin_max();   // the bound the wait takes (read on the host)
+                    const uint32_t spin = strata::answer_spin_max();   // the bound the wait's first slice takes
+                    const uint32_t rearm = strata::answer_rearm_max();   // and its second slice's
+                    const strata::AnsWait aw = strata::tl_ans_wait;   // the engine's record and fault word for this wait
                     s->parallel_for(
                         sycl::nd_range<3>(sycl::range<3>(1, 1, 32),
                                           sycl::range<3>(1, 1, 32)),
                         [=](sycl::nd_item<3> item_ct1) {
-                                win_wait_kernel(a.wait_ptr, a.wait_val, spin);
+                                win_wait_kernel(a.wait_ptr, a.wait_val, spin, aw.rec, aw.fault, rearm);
                         });
                 }
         s->parallel_for(

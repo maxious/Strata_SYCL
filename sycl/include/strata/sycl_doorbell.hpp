@@ -103,6 +103,16 @@ struct AnsSlot {
 // The answer's wait sites: the token path's wait (one token a window) and the window path's wait (a window of
 // tokens).  Both spin on the same kind of flag, in device memory.
 enum : unsigned { kSpinAnswerToken = 1, kSpinAnswerWin = 2 };
+// the wait needed its second slice: its first one ran to the bound without the answer (the record's site carries it
+// on top of the site above, so the report masks it off to say which path the wait was on).
+enum : unsigned { kSpinAnswerArm = 4u };
+
+// The window path's answer wait, named by the thread that launches the window's experts: the record of the wait and
+// the fault word.  They cannot go in the shared WinArgs struct - the record and the word are the SYCL engine's own,
+// the struct is the CPU side's - so the engine sets them on its thread and the launcher reads them on the same
+// thread, and passes them to its wait as kernel arguments.
+struct AnsWait { AnsRec* rec = nullptr; unsigned* fault = nullptr; };
+inline thread_local AnsWait tl_ans_wait;
 
 // The decode's answer wait: the card waits for the CPU lane's part (the experts it does not hold), so the bound has
 // to outlast a cold expert read (the disk: ~0.1 s, ~40,000 reads at the 2.4 us one measured in this header) and stay
@@ -119,6 +129,22 @@ inline uint32_t answer_spin_max() {
     return v;
 }
 
+// The answer wait's second slice, in reads (DS4_ANSWER_REARM; unset: 200,000; 0: no second slice, and the wait keeps
+// its single-slice shape).  This is for an answer that is *late*, not one that is gone: the CPU lane's cold expert
+// read from the disk is ~0.1 s (this header's measured 2.4 us per uncached read, ~40,000 reads) and the copy engine's
+// hand-back adds its own trip to it, so a wait whose first slice ran out may still have its answer to come.  The
+// whole wait stays bounded at spin_max + rearm_max reads (~2.9 s at the defaults), so a hand-back that never lands
+// cannot spin past the driver's ~5 s job timeout (the GT resets instead of failing the request).
+inline uint32_t answer_rearm_max() {
+    static const uint32_t v = [] {
+        if (const char* e = std::getenv("DS4_ANSWER_REARM")) {
+            const long n = std::atol(e);
+            if (n >= 0) return (uint32_t) n;
+        }
+        return 200000u;
+    }();
+    return v;
+}
 // A bounded wait's record (the hand-off's waits, whose flags are host-mapped): the reads it made, the last value it
 // read, the value it waited for, and the request's seq.  The device writes them; the host reads them back.
 struct SpinRec {
@@ -182,6 +208,45 @@ template<class T> inline void sys_store_mapped(T* p, T v) {
     sycl::atomic_ref<T, sycl::memory_order::relaxed, sycl::memory_scope::system>(*p).store(v);
 }
 #endif
+
+// sys_store is the doorbell's own uncached store (declared above): the answer wait's stores go through it, so
+// the mark and the record reach the host while the kernel is still running (an atomic store would reach it only when
+// the kernel ends on an Arc).
+// The answer's wait, both paths (the token path's and the window path's): bounded in two slices.  The flag is read
+// with the uncached read (strata::dev_load), so the host's store and the copy engine's write are both seen, and its
+// value has to be *this request's* seq: a slot that carries the value from up to 64 requests earlier reads as "not
+// yet", never as an answer (measured above, on an Arc Pro B60).  A slice that ends without the flag marks the fault
+// word with the seq it waited for - the host sees the miss while the answer can still come, not only after the whole
+// wait is lost - and, when a second slice is armed, spins for rearm_max reads more.  A wait that gets the flag in the
+// second slice clears the mark again, so a mark means an answer this wait did not see, and the engine ends the run
+// rather than going on with bits from a different request.  The record says the same for the window path, whose wait
+// used to write nothing at all: the reads across both slices, the last value read, 1 when neither slice saw the flag,
+// and the site with kSpinAnswerArm added when a second slice was needed.
+inline void answer_wait(const unsigned* flag, unsigned seq, AnsRec* rec, unsigned* fault,
+                        uint32_t spin_max, uint32_t rearm_max, unsigned site) {
+    uint32_t reads = 0, again = 0;
+    unsigned last = 0;
+    while (reads < spin_max) {
+        last = dev_load(flag);
+        ++reads;
+        if (last == seq) break;
+    }
+    if (last != seq) {
+        if (fault != nullptr) sys_store(fault, seq);
+        while (again < rearm_max) {
+            last = dev_load(flag);
+            ++reads; ++again;
+            if (last == seq) break;
+        }
+        if (last == seq && fault != nullptr) sys_store(fault, 0u);   // (the answer came: the mark is withdrawn)
+    }
+    if (rec != nullptr) {
+        sys_store((volatile unsigned*) &rec->reads, reads);
+        sys_store((volatile unsigned*) &rec->last, last);
+        sys_store((volatile unsigned*) &rec->fault, last != seq ? 1u : 0u);
+        sys_store((volatile unsigned*) &rec->site, site + (again > 0 ? kSpinAnswerArm : 0u));
+    }
+}
 // plain = true: an ordinary store. On the i915 driver (Arc A750) a plain store to host USM reaches the host in time
 // and the uncached hint only slows the publish (decode -11% on an A750, 4K prompt, 5 rounds); on xe it must be hinted.
 // STRATA_DOORBELL_PLAIN=0/1 overrides. The launchers read this on the host and pass it to the kernel.

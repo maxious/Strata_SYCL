@@ -1016,8 +1016,11 @@ struct Model::Impl {
     // answers in resps with the CPU lane's part, and the device waits for the answer only before the expert sum
     Req* reqs = nullptr;
     Resp* resps = nullptr;
-    unsigned* answer_fault = nullptr;   // the card marks it when its wait for an answer ran to its bound
+    unsigned* answer_fault = nullptr;   // the card marks it when its wait for an answer ran to its bound, and clears
+                                        // it again when the answer comes in the wait's second slice
     std::atomic<bool> faulted{false};   // the run ends: the card never saw an answer
+    std::atomic<unsigned long long> ans_waits{0};   // the answer waits this run submitted (both paths)
+    std::atomic<unsigned long long> ans_bound{0};   // the ones that ran to their bound without the answer
     std::string spins_report;           // the waits' last report (the same numbers are not printed twice)
     unsigned seq_issued = 0;
     std::atomic<int> layer_of[kRing];
@@ -7454,6 +7457,30 @@ struct Model::Impl {
             std::fprintf(stderr, "ds4: expert cache: %lld swaps after the prompt (%.0f ms)\n", (long long) (st.swaps - s0),
                          now_ms() - t0);
     }
+    // WP-8's option (1): the same swap rounds, run on a thread while the server has no request in flight, stopped by `cancel`.
+    // The prompt path keeps its DS4_SETTLE_MS budget, so this is pure addition: an agent's turn ends, the swaps go in while
+    // it runs its tool, and the next turn's answer finds them.  Interrupting costs one round (a swap of ~9 MB, a millisecond
+    // or two) because cancel is tested between rounds, and cache_tick_swaps is the same call the prompt path makes.
+    void cache_settle_idle(const std::atomic<bool>& cancel) {
+        if (!o.expert_cache || cache_ths.empty()) return;
+        static const double budget = env_f("DS4_SETTLE_IDLE_MS", 6000.0f);
+        const double t0 = now_ms();
+        const int64_t s0 = st.swaps;
+        while (!cancel.load(std::memory_order_acquire) && now_ms() - t0 < budget) {
+            for (Layer& l : L) {
+                if (l.mtp || l.spare_vram < 0 || l.swap_pending) continue;
+                l.cpu_hits.clear();
+                for (int e = 0; e < l.n_exp; ++e)
+                    if (l.slot[(size_t) e] < 0 && l.heat[(size_t) e] >= 2.0f) l.cpu_hits.push_back(e);
+            }
+            cache_tick_swaps(0);
+            if (sw_inflight == 0) break;   // (nothing queued: no layer's best CPU-lane expert is hotter than its coldest VRAM one)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (o.verbose)
+            std::fprintf(stderr, "ds4: expert cache: %lld swaps in the idle (%.0f ms, cancelled %d)\n",
+                         (long long) (st.swaps - s0), now_ms() - t0, cancel.load() ? 1 : 0);
+    }
     void cache_tick(int T) {
         cache_tick_swaps(T);
         store_sync();
@@ -7706,8 +7733,20 @@ struct Model::Impl {
         auto last = std::chrono::steady_clock::now();
         std::vector<Ent> ents;
         while (!quit.load(std::memory_order_relaxed)) {
-            if (answer_fault != nullptr && *(volatile unsigned*) answer_fault != 0) {   // the card's wait ran to its bound
-                std::fprintf(stderr, "ds4: the card never saw an answer (its wait ran to its bound): the run ends here\n");
+            // the card marks the word with the seq it was waiting for when its wait's first slice ran to its bound, and
+            // clears it again when the answer comes during the wait's second slice (strata::answer_wait).  So a word
+            // that is marked here is an answer that wait did not see: its combine has already run without the CPU
+            // lane's part, reading the slot's value from up to 64 requests earlier (measured on an Arc Pro B60,
+            // 2026-10-26), and the run ends here rather than going on with bits from a different request.  (At the
+            // shipped bound the mark used to be written only for a bound below the credible one, so a wait that gave
+            // up at the default said nothing: unconfirmed static analysis until the run that shows it, and the bound
+            // hits the flagged run of 2026-10-31 printed.)
+            if (answer_fault != nullptr && *(volatile unsigned*) answer_fault != 0) {
+                const unsigned lost = *(volatile unsigned*) answer_fault;
+                std::fprintf(stderr, "ds4: the card never saw the answer for request %u (its wait ran to its bound and "
+                                     "its second slice too; %llu of %llu answer waits in this run did): the run ends here\n",
+                             lost, (unsigned long long) (ans_bound.load() + 1), (unsigned long long) ans_waits.load());
+                ++ans_bound;
                 faulted = true;
                 break;
             }
@@ -7912,21 +7951,30 @@ struct Model::Impl {
         char b[512];
         for (Dev& d : devs) {
             if (d.ans_rec == nullptr) continue;
-            int waits = 0, at_bound = 0, token_waits = 0, win_waits = 0;
-            unsigned most = 0, last = 0, target = 0;
+            int waits = 0, at_bound = 0, token_waits = 0, win_waits = 0, rearmed = 0;
+            unsigned most = 0, last = 0;
             for (int i = 0; i < kRing; ++i) {
-                const strata::AnsRec& rec = d.ans_rec[i];
+                const strata::AnsRec rec = d.ans_rec[i];
                 if (rec.reads == 0) continue;
                 ++waits;
-                if (rec.site == strata::kSpinAnswerWin) ++win_waits; else ++token_waits;
+                // the site says which path the wait was on, with strata::kSpinAnswerArm on top when it needed its
+                // second slice; the record is this slot's last wait only, so the counts are the waits since the last
+                // report: the record is written away here (it used to be kept, which is why the flagged run of
+                // 2026-10-31 printed the same 168 bound hits and nothing more for the next 52 minutes - a sample that
+                // never changes is not a count)
+                const unsigned path = rec.site & ~strata::kSpinAnswerArm;
+                if ((rec.site & strata::kSpinAnswerArm) != 0) ++rearmed;
+                if (path == strata::kSpinAnswerWin) ++win_waits; else ++token_waits;
                 at_bound += rec.fault ? 1 : 0;
                 if (rec.reads > most) most = rec.reads;
                 last = rec.last;
+                d.ans_rec[i] = strata::AnsRec{};
             }
+            ans_bound += (unsigned long long) at_bound;   // the run's total, kept apart from the report's sample
             std::snprintf(b, sizeof b,
                           "ds4: the card's waits for the answer (device %d): %d waits (the token path %d, the window path %d), "
-                          "the most reads %u, the last value read %u, %d hit the bound\n",
-                          d.id, waits, token_waits, win_waits, most, last, at_bound);
+                          "the most reads %u, the last value read %u, %d hit the bound, %d re-armed\n",
+                          d.id, waits, token_waits, win_waits, most, last, at_bound, rearmed);
             rep += b;
         }
         for (Dev& d : devs) {
@@ -7956,6 +8004,12 @@ struct Model::Impl {
                           st.prof_ms[5]);
             rep += b;
         }
+        // the run's totals, kept in the engine (not in the records, which are per-slot samples): the line the run's
+        // acceptance is read from
+        char bc[128];
+        std::snprintf(bc, sizeof bc, "ds4: %llu answer waits in this run, %llu of them hit the bound\n",
+                      (unsigned long long) ans_waits.load(), (unsigned long long) ans_bound.load());
+        rep += bc;
         if (rep.empty() || rep == spins_report) return;   // (the same numbers as last time)
         spins_report = rep;
         std::fprintf(stderr, "%s", rep.c_str());
@@ -11345,7 +11399,7 @@ struct Model::Impl {
                 if (mx) gg::moe_gate_up(ma, d.x, d.xg, s);
                 else x3::moe_gate_up(ma, d.x, d.xg, s);
                 prof_mark(d, 3);
-                if (lead) wait_seq(ans_flag, sq, d.ans_rec + slot, answer_fault, s);
+                if (lead) { ++ans_waits; wait_seq(ans_flag, sq, d.ans_rec + slot, answer_fault, s); }
                 prof_mark(d, 4);
                 if (mx) gg::moe_down(ma, d.xg, d.sh_out, d.moe_out, s);
                 else x3::moe_down(ma, d.xg, d.sh_out, d.moe_out, s);
@@ -11371,6 +11425,11 @@ struct Model::Impl {
                 wa.cpu_flag = lead ? (answer_copy ? d.ans_cpu + (size_t) slot * kWin : resps[slot].cpu) : nullptr;
                 wa.wait_ptr = lead ? ans_flag : nullptr;
                 wa.wait_val = sq;
+                // the window path's wait records the same way the token path's does: the engine names this request's
+                // record and fault word on the thread that launches the window's experts (strata::tl_ans_wait), and
+                // the launcher reads them there and gives them to its wait
+                strata::tl_ans_wait = lead ? strata::AnsWait{d.ans_rec + slot, answer_fault} : strata::AnsWait{};
+                if (lead) ++ans_waits;
                 wa.x = d.x;
                 wa.x_stride = (size_t) D;
                 wa.h = d.xg;
@@ -11731,6 +11790,9 @@ void Model::set_images(std::vector<Image> images) {
     p_->imgs = std::move(images);
 }
 int Model::draft_block() const { return p_->g.n_mtp > 0 ? p_->g.d_block : 0; }
+// The CUDA build answers this with Impl::rdna4() (the AMD RDNA4 cards whose dspark_cum default is 0.5).  This build is
+// the Intel SYCL engine: no device in it is gfx1200/gfx1201, so the answer is false and the default stays 0.
+bool Model::gpus_are_gfx12() const { return false; }
 bool Model::draft(int y, std::vector<int>& d, std::vector<float>& c, std::string& err, float t, float tp, int tk,
                   float mp, uint64_t seed, uint64_t counter) {
     return p_->draft(y, d, c, err, t, tp, tk, mp, seed, counter);
@@ -11754,6 +11816,7 @@ bool Model::slot_load(const uint8_t* data, size_t bytes, int64_t n_pos, std::str
     return p_->slot_load(data, bytes, n_pos, err);
 }
 std::string Model::slot_identity() const { return p_->slot_identity(); }
+void Model::settle_idle(const std::atomic<bool>& cancel) { p_->cache_settle_idle(cancel); }
 void Model::save_profile() const { p_->save_profile(); }
 const Stats& Model::stats() const {
     Stats& st = p_->st;

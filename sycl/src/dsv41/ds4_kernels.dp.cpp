@@ -1678,29 +1678,17 @@ void publish_kernel(Req* req, unsigned seq) {
     strata::sys_store((volatile unsigned*) &req->seq, seq);
 }
 
-void wait_seq_kernel(const unsigned* seq_ptr, unsigned seq, strata::AnsRec* rec, unsigned* fault, uint32_t spin_max) {
+void wait_seq_kernel(const unsigned* seq_ptr, unsigned seq, strata::AnsRec* rec, unsigned* fault, uint32_t spin_max,
+                     uint32_t rearm_max) {
     if (sycl::ext::oneapi::this_work_item::get_nd_item<3>().get_local_id(2) !=
         0) return;
     // the SYCL port: the flag is either in host memory (the host's store, which the uncached read sees) or in the
     // card's memory (the host's copy engine wrote it there), and the read goes to memory every time either way (a
-    // plain read is served from the GPU's cache).  The spin is bounded (the bound the launcher passes): a wait that
-    // runs to its bound never saw the flag, and it says so in the record it writes.
-    uint32_t reads = 0;
-    unsigned last = 0;
-    while (reads < spin_max) {
-        last = strata::dev_load(seq_ptr);
-        ++reads;
-        if (last == seq) break;
-    }
-    if (rec != nullptr) {
-        strata::sys_store((volatile unsigned*) &rec->reads, reads);
-        strata::sys_store((volatile unsigned*) &rec->last, last);
-        strata::sys_store((volatile unsigned*) &rec->fault, last != seq ? 1u : 0u);
-        strata::sys_store((volatile unsigned*) &rec->site, strata::kSpinAnswerToken);
-    }
-    // a bound below the answer's needs is not credible (the operator's bound was too tight): the host ends the run
-    if (spin_max < strata::kAnswerCredibleReads && fault != nullptr)
-        strata::sys_store((volatile unsigned*) fault, seq);
+    // plain read is served from the GPU's cache).  The wait is strata::answer_wait: two bounded slices, the mark of a
+    // miss at the first slice's end, the mark withdrawn when the answer comes in the second one, and the record.
+    // (Before this, one slice and a mark only when the bound was *below* the credible one: at the shipped bound the
+    // wait gave up without ever telling the host, and the combine went on with the slot's other request's bits.)
+    strata::answer_wait(seq_ptr, seq, rec, fault, spin_max, rearm_max, strata::kSpinAnswerToken);
     /*
     DPCT1078:39: Consider replacing memory_order::acq_rel with
     memory_order::seq_cst for correctness if strong memory order restrictions
@@ -2499,11 +2487,12 @@ void route_ahead(const float *logits, const float *bias, int n, int m, int T,
 }
 void wait_seq(const unsigned *seq_ptr, unsigned seq, strata::AnsRec *rec, unsigned *fault,
               dpct::queue_ptr s) {
-    const uint32_t spin = decode_spin_max();   // the bound the wait takes (read on the host)
+    const uint32_t spin = decode_spin_max();   // the bound the wait's first slice takes (read on the host)
+    const uint32_t rearm = strata::answer_rearm_max();   // its second slice, 0: the wait's single-slice shape
     s->parallel_for(
         sycl::nd_range<3>(sycl::range<3>(1, 1, 32), sycl::range<3>(1, 1, 32)),
         [=](sycl::nd_item<3> item_ct1) {
-            wait_seq_kernel(seq_ptr, seq, rec, fault, spin);
+            wait_seq_kernel(seq_ptr, seq, rec, fault, spin, rearm);
         });
 }
 

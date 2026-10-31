@@ -276,8 +276,10 @@ void zc_stage(unsigned long long *plan, const int *idx,
               const unsigned long long *zc_tab, int k, uint8_t *stage,
               size_t stride, size_t bytes, dpct::queue_ptr s);
 /// Waits (one thread, on the device) until *seq_ptr == seq.  The flag is in host memory (the host's store) or in the
-/// card's memory (the host's copy engine wrote it there); either way the read goes to memory every time, and the
-/// wait writes its record and its bound hit into the host-mapped record the launcher names.
+/// card's memory (the host's copy engine wrote it there); either way the read goes to memory every time.  The wait is
+/// two bounded slices (strata::answer_wait): a miss at the first slice's end marks the host-mapped fault word with
+/// the seq it waited for, the second slice can still get the answer and clears the mark again, and the record says
+/// what it read and whether a second slice was needed.
 void wait_seq(const unsigned *seq_ptr, unsigned seq, strata::AnsRec *rec, unsigned *fault,
               dpct::queue_ptr s);
 /// A chunk's routed experts as sorted rows: the picks (t, i < k) of T tokens (idx rows kPicks apart) by the virtual
